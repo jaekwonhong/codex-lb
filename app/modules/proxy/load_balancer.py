@@ -64,6 +64,7 @@ from app.core.usage.refresh_policy import usage_freshness_horizon_seconds
 from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import Account, AccountStatus, AdditionalUsageHistory, StickySessionKind, UsageHistory
 from app.db.snapshot import clone_row
+from app.modules.member_auth_handoff.rotation_events import observe_quota_exceeded
 from app.modules.proxy._load_balancer.error_rate import (
     ErrorRateWeightingPolicy,
     error_rate_weight_multiplier,
@@ -885,6 +886,8 @@ class LoadBalancer:
                     relative_availability_power=relative_availability_power,
                     relative_availability_top_k=relative_availability_top_k,
                     required_account_id=required_account_id,
+                    # Unresolved owner-bearing continuity is not fresh routing.
+                    require_unambiguous_account=require_unambiguous_account,
                     budget_threshold_pct=budget_threshold_pct,
                     secondary_budget_threshold_pct=secondary_budget_threshold_pct,
                     routing_costs_by_account_id=routing_costs_by_account_id,
@@ -1655,6 +1658,7 @@ class LoadBalancer:
         sticky_key: str | None,
         sticky_kind: StickySessionKind | None,
         reallocate_sticky: bool,
+        require_unambiguous_account: bool = False,
         sticky_max_age_seconds: int | None,
         budget_threshold_pct: float = 95.0,
         secondary_budget_threshold_pct: float = 100.0,
@@ -1682,6 +1686,7 @@ class LoadBalancer:
             sticky_key=sticky_key,
             sticky_kind=sticky_kind,
             reallocate_sticky=reallocate_sticky,
+            require_unambiguous_account=require_unambiguous_account,
             sticky_max_age_seconds=sticky_max_age_seconds,
             budget_threshold_pct=budget_threshold_pct,
             secondary_budget_threshold_pct=secondary_budget_threshold_pct,
@@ -1726,7 +1731,18 @@ class LoadBalancer:
             handle_quota_exceeded(state, error)
             self._sync_runtime_state(account, state)
             async with self._repo_factory() as repos:
-                await self._persist_state(repos.accounts, account, state)
+                persisted = await self._persist_state(repos.accounts, account, state)
+            if persisted and account.blocked_at is not None:
+                try:
+                    await observe_quota_exceeded(
+                        account,
+                        datetime.fromtimestamp(float(account.blocked_at), tz=timezone.utc),
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to persist automatic member rotation event after quota exhaustion",
+                        extra={"account_id": account.id},
+                    )
             self._selection_inputs_cache.invalidate()
 
     async def mark_permanent_failure(self, account: Account, error_code: str) -> bool:
@@ -2025,7 +2041,7 @@ class LoadBalancer:
         accounts_repo: AccountsRepository,
         account: Account,
         state: AccountState,
-    ) -> None:
+    ) -> bool:
         reset_at_int = int(state.reset_at) if state.reset_at else None
         blocked_at_int = int(state.blocked_at) if state.blocked_at else None
         status_changed = account.status != state.status
@@ -2034,17 +2050,20 @@ class LoadBalancer:
         blocked_changed = account.blocked_at != blocked_at_int
 
         if status_changed or reason_changed or reset_changed or blocked_changed:
-            await accounts_repo.update_status(
+            updated = await accounts_repo.update_status(
                 account.id,
                 state.status,
                 state.deactivation_reason,
                 reset_at_int,
                 blocked_at=blocked_at_int,
             )
+            if not updated:
+                return False
             account.status = state.status
             account.deactivation_reason = state.deactivation_reason
             account.reset_at = reset_at_int
             account.blocked_at = blocked_at_int
+        return True
 
     async def _persist_state_if_current(
         self,

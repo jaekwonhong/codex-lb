@@ -12,7 +12,9 @@ import {
   getAccountUsageResetCredits,
   getRateLimitResetCredits,
   importAccount,
+  importLocalOAuthFile,
   listAccounts,
+  listLocalOAuthImportFiles,
   pauseAccount,
   probeAccount,
   reactivateAccount,
@@ -87,6 +89,17 @@ export function useAccountMutations() {
     },
     onError: (error: Error) => {
       toast.error(error.message || t("accounts.toasts.importFailed"));
+    },
+  });
+
+  const localImportMutation = useMutation({
+    mutationFn: importLocalOAuthFile,
+    onSuccess: () => {
+      toast.success("Account imported");
+      void invalidateAccountRelatedQueries(queryClient);
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Import failed");
     },
   });
 
@@ -244,6 +257,7 @@ export function useAccountMutations() {
 
   return {
     importMutation,
+    localImportMutation,
     pauseMutation,
     resumeMutation,
     setAliasMutation,
@@ -256,6 +270,15 @@ export function useAccountMutations() {
     updateMutation,
     resetCreditConsumeMutation,
   };
+}
+
+export function useLocalOAuthImportFiles(enabled: boolean) {
+  return useQuery({
+    queryKey: ["accounts", "local-oauth-import-files"],
+    queryFn: listLocalOAuthImportFiles,
+    enabled,
+    staleTime: 0,
+  });
 }
 
 export function useRateLimitResetCredits(

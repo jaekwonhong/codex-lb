@@ -47,6 +47,8 @@ describe("StickySessionsSection", () => {
         offset: 0,
         limit: 10,
       },
+      deleteFilteredRequest: { staleOnly: false, accountQuery: "", keyQuery: "" },
+      filtersSettling: false,
       setAccountQuery,
       setKeyQuery,
       setSort,
@@ -166,6 +168,8 @@ describe("StickySessionsSection", () => {
         offset: 10,
         limit: 10,
       },
+      deleteFilteredRequest: { staleOnly: false, accountQuery: "", keyQuery: "" },
+      filtersSettling: false,
       setAccountQuery: vi.fn(),
       setKeyQuery: vi.fn(),
       setSort: vi.fn(),
@@ -216,6 +220,8 @@ describe("StickySessionsSection", () => {
         offset: 0,
         limit: 10,
       },
+      deleteFilteredRequest: { staleOnly: false, accountQuery: "", keyQuery: "" },
+      filtersSettling: false,
       setAccountQuery: vi.fn(),
       setKeyQuery: vi.fn(),
       setSort: vi.fn(),
@@ -277,6 +283,8 @@ describe("StickySessionsSection", () => {
         offset: 0,
         limit: 10,
       },
+      deleteFilteredRequest: { staleOnly: false, accountQuery: "sticky-a", keyQuery: "" },
+      filtersSettling: false,
       setAccountQuery: vi.fn(),
       setKeyQuery: vi.fn(),
       setSort: vi.fn(),
@@ -338,6 +346,8 @@ describe("StickySessionsSection", () => {
         offset: 0,
         limit: 10,
       },
+      deleteFilteredRequest: { staleOnly: false, accountQuery: "", keyQuery: "" },
+      filtersSettling: false,
       setAccountQuery: vi.fn(),
       setKeyQuery: vi.fn(),
       setSort: vi.fn(),
@@ -387,5 +397,115 @@ describe("StickySessionsSection", () => {
 
     expect(screen.getByRole("button", { name: "Updated ↓" })).toBeInTheDocument();
     expect(screen.getByText("1–10 of 20")).toBeInTheDocument();
+  });
+
+  it("keeps an exact single-delete target visible when deletion fails", async () => {
+    const user = userEvent.setup();
+    const deleteMutation = {
+      mutateAsync: vi.fn().mockRejectedValue(new Error("delete failed")),
+      isPending: false,
+      error: new Error("delete failed"),
+    };
+    useStickySessionsMock.mockReturnValue({
+      params: {
+        staleOnly: false,
+        accountQuery: "",
+        keyQuery: "",
+        sortBy: "updated_at",
+        sortDir: "desc",
+        offset: 0,
+        limit: 10,
+      },
+      deleteFilteredRequest: { staleOnly: false, accountQuery: "", keyQuery: "" },
+      filtersSettling: false,
+      setAccountQuery: vi.fn(),
+      setKeyQuery: vi.fn(),
+      setSort: vi.fn(),
+      setOffset: vi.fn(),
+      setLimit: vi.fn(),
+      stickySessionsQuery: {
+        data: {
+          entries: [
+            {
+              key: "session-exact",
+              displayName: "exact@example.com",
+              kind: "prompt_cache",
+              createdAt: "2026-03-10T12:00:00Z",
+              updatedAt: "2026-03-10T12:05:00Z",
+              expiresAt: null,
+              isStale: false,
+            },
+          ],
+          stalePromptCacheCount: 0,
+          total: 1,
+          hasMore: false,
+        },
+        isLoading: false,
+        isFetching: false,
+        error: null,
+      },
+      deleteMutation,
+      deleteFilteredMutation: { mutateAsync: vi.fn(), isPending: false, error: null },
+      purgeMutation: { mutateAsync: vi.fn(), isPending: false, error: null },
+    } as never);
+
+    render(<StickySessionsSection />);
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("session-exact");
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() => expect(deleteMutation.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("session-exact");
+  });
+
+  it("deletes the filter snapshot that was confirmed even if the live filter later changes", async () => {
+    const user = userEvent.setup();
+    const deleteFilteredMutation = {
+      mutateAsync: vi.fn().mockResolvedValue({ deletedCount: 1 }),
+      isPending: false,
+      error: null,
+    };
+    const makeHookState = (accountQuery: string) => ({
+      params: {
+        staleOnly: false,
+        accountQuery,
+        keyQuery: "",
+        sortBy: "updated_at",
+        sortDir: "desc",
+        offset: 0,
+        limit: 10,
+      },
+      deleteFilteredRequest: { staleOnly: false, accountQuery, keyQuery: "" },
+      filtersSettling: false,
+      setAccountQuery: vi.fn(),
+      setKeyQuery: vi.fn(),
+      setSort: vi.fn(),
+      setOffset: vi.fn(),
+      setLimit: vi.fn(),
+      stickySessionsQuery: {
+        data: { entries: [], stalePromptCacheCount: 0, total: 1, hasMore: false },
+        isLoading: false,
+        isFetching: false,
+        error: null,
+      },
+      deleteMutation: { mutateAsync: vi.fn(), isPending: false, error: null },
+      deleteFilteredMutation,
+      purgeMutation: { mutateAsync: vi.fn(), isPending: false, error: null },
+    });
+
+    useStickySessionsMock.mockReturnValue(makeHookState("first") as never);
+    const rendered = render(<StickySessionsSection />);
+    await user.click(screen.getByRole("button", { name: "Delete Filtered" }));
+    expect(screen.getByRole("alertdialog")).toHaveTextContent("1");
+
+    useStickySessionsMock.mockReturnValue(makeHookState("second") as never);
+    rendered.rerender(<StickySessionsSection />);
+    await user.click(screen.getByRole("button", { name: "Delete Filtered" }));
+    await waitFor(() => {
+      expect(deleteFilteredMutation.mutateAsync).toHaveBeenCalledWith({
+        staleOnly: false,
+        accountQuery: "first",
+        keyQuery: "",
+      });
+    });
   });
 });

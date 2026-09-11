@@ -34,6 +34,7 @@ class ModelSourceCreateRequest(DashboardModel):
     name: str = Field(min_length=1, max_length=128)
     base_url: str = Field(min_length=1, max_length=2048)
     api_key: str | None = Field(default=None, min_length=1)
+    is_enabled: bool = True
     supports_chat_completions: bool = True
     supports_responses: bool = False
     supports_audio_transcriptions: bool = False

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Request, Response
 
@@ -13,6 +14,7 @@ from app.core.auth.dependencies import (
 )
 from app.core.auth.refresh import RefreshError
 from app.core.clients.usage import UsageFetchError
+from app.core.config.settings import get_settings
 from app.core.exceptions import (
     DashboardBadRequestError,
     DashboardConflictError,
@@ -24,6 +26,7 @@ from app.core.multipart import ACCOUNT_IMPORT_MULTIPART_POLICY, bounded_multipar
 from app.core.multipart_fields import required_upload
 from app.core.upstream_proxy import UpstreamProxyRouteError
 from app.dependencies import AccountsContext, get_accounts_context, get_proxy_service_for_app
+from app.modules.accounts.local_import import LocalOAuthImportError, list_local_oauth_files, read_local_oauth_file
 from app.modules.accounts.repository import AccountIdentityConflictError
 from app.modules.accounts.schemas import (
     AccountAliasRequest,
@@ -46,6 +49,11 @@ from app.modules.accounts.schemas import (
     AccountUsageResetConsumeRequest,
     AccountUsageResetConsumeResponse,
     AccountUsageResetCreditsResponse,
+    LocalOAuthFileResponse,
+    LocalOAuthFilesResponse,
+    LocalOAuthImportRequest,
+    WorkspaceRoutingPolicyUpdateRequest,
+    WorkspaceRoutingPolicyUpdateResponse,
 )
 from app.modules.accounts.service import (
     AccountNotProbableError,
@@ -230,6 +238,39 @@ async def import_account(
             max_bytes=ACCOUNT_IMPORT_MULTIPART_POLICY.max_file_bytes,
             param="auth_json",
         )
+    return await _import_account_raw(request, raw, context)
+
+
+@router.get("/import/local-files", response_model=LocalOAuthFilesResponse)
+async def list_local_oauth_import_files(
+    _write_access=Depends(require_dashboard_write_access),
+) -> LocalOAuthFilesResponse:
+    available, files = list_local_oauth_files(get_settings().oauth_import_dir)
+    return LocalOAuthFilesResponse(
+        available=available,
+        files=[LocalOAuthFileResponse(name=item.name, size_bytes=item.size_bytes) for item in files],
+    )
+
+
+@router.post("/import/local", response_model=AccountImportResponse)
+async def import_local_oauth_file(
+    request: Request,
+    payload: LocalOAuthImportRequest,
+    _write_access=Depends(require_dashboard_write_access),
+    context: AccountsContext = Depends(get_accounts_context),
+) -> AccountImportResponse:
+    try:
+        raw = read_local_oauth_file(get_settings().oauth_import_dir, payload.filename)
+    except LocalOAuthImportError as exc:
+        raise DashboardBadRequestError(str(exc), code=exc.code) from exc
+    return await _import_account_raw(request, raw, context)
+
+
+async def _import_account_raw(
+    request: Request,
+    raw: bytes,
+    context: AccountsContext,
+) -> AccountImportResponse:
     try:
         response = await context.service.import_account(raw)
         AuditService.log_async(
@@ -403,6 +444,30 @@ async def update_account_routing_policy(
     if not success:
         raise DashboardNotFoundError("Account not found", code="account_not_found")
     return AccountRoutingPolicyUpdateResponse(account_id=account_id, routing_policy=payload.routing_policy)
+
+
+@router.put(
+    "/workspaces/{workspace_account_id}/burn-first",
+    response_model=WorkspaceRoutingPolicyUpdateResponse,
+)
+async def update_workspace_burn_first(
+    workspace_account_id: UUID,
+    payload: WorkspaceRoutingPolicyUpdateRequest,
+    _write_access=Depends(require_dashboard_write_access),
+    context: AccountsContext = Depends(get_accounts_context),
+) -> WorkspaceRoutingPolicyUpdateResponse:
+    result = await context.service.apply_workspace_routing_policy(
+        str(workspace_account_id),
+        enabled=payload.enabled,
+    )
+    return WorkspaceRoutingPolicyUpdateResponse(
+        workspace_account_id=result.workspace_account_id,
+        enabled=result.enabled,
+        changed_count=result.changed_count,
+        burn_first_count=result.burn_first_count,
+        normal_count=result.normal_count,
+        preserve_count=result.preserve_count,
+    )
 
 
 @router.delete("/{account_id}", response_model=AccountDeleteResponse)

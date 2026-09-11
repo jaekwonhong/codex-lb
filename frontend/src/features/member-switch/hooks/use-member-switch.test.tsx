@@ -1,0 +1,175 @@
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it } from "vitest";
+import { useMemberSwitch } from "./use-member-switch";
+import { installMemberSwitchMocks, makeRunView, memberIdentity } from "@/test/mocks/member-switch";
+import { readRunLocator } from "@/features/member-switch/active-flow";
+
+describe("server-owned member switch", () => {
+  let mock: ReturnType<typeof installMemberSwitchMocks>;
+  beforeEach(() => { localStorage.clear(); sessionStorage.clear(); mock = installMemberSwitchMocks(); });
+  async function mount() {
+    const hook = renderHook(() => useMemberSwitch(false));
+    await waitFor(() => expect(hook.result.current.checked).toBe(true));
+    return hook;
+  }
+  async function preview(hook: Awaited<ReturnType<typeof mount>>) {
+    await act(hook.result.current.loadCatalog);
+    await act(() => hook.result.current.preview("cdp-1", "cdp-1-target"));
+  }
+  it("restores from the server without browser storage and never mutates on lifecycle events", async () => {
+    mock.run = makeRunView({ phase: "membership_requested", operationId: "operation-1", allowedActions: ["observe_membership"] });
+    const hook = await mount();
+    expect(hook.result.current.flow?.id).toBe(mock.run.id);
+    await act(async () => { window.dispatchEvent(new Event("focus")); window.dispatchEvent(new Event("online")); });
+    expect(mock.requests.map((item) => item.method)).toEqual(["GET", "GET"]);
+    expect(readRunLocator()).toBe(mock.run.id);
+  });
+  it("does not request anything as a read-only caller", async () => {
+    const hook = renderHook(() => useMemberSwitch(true));
+    await act(hook.result.current.loadCatalog);
+    await act(hook.result.current.refresh);
+    expect(mock.requests).toEqual([]);
+  });
+  it("sends one run command and no direct Companion traffic", async () => {
+    const hook = await mount(); await preview(hook);
+    await act(async () => { await Promise.all([hook.result.current.command("start"), hook.result.current.command("start")]); });
+    const commands = mock.requests.filter((item) => item.path.endsWith("/commands"));
+    expect(commands).toHaveLength(1);
+    expect(commands[0].body).toMatchObject({ action: "start", expectedRevision: 2 });
+    expect(mock.requests.every((item) => item.path.startsWith("/api/member-switch-runs"))).toBe(true);
+  });
+  it("does not refresh live membership while an unfinished run is active", async () => {
+    mock.run = makeRunView({ phase: "membership_requested", operationId: "operation-1", allowedActions: ["observe_membership"] });
+    const hook = await mount();
+    await act(hook.result.current.loadCatalog);
+    expect(mock.requests.filter((item) => item.path.endsWith("/catalog/refresh"))).toEqual([]);
+  });
+  it("shows the confirmed operation member immediately without a mid-run catalog refresh", async () => {
+    const hook = await mount(); await preview(hook);
+    await act(() => hook.result.current.command("start"));
+    await act(() => hook.result.current.command("observe_membership"));
+    expect(hook.result.current.catalog?.workspaces[0].currentMembers).toEqual([
+      { email: memberIdentity.targetEmail, userId: memberIdentity.targetUserId,
+        presetId: memberIdentity.presetId, authState: "unknown", authAccountId: null },
+    ]);
+    expect(hook.result.current.catalog?.workspaces[0].membershipCode).toBe("confirmed_by_operation");
+    expect(mock.requests.filter((item) => item.path.endsWith("/catalog/refresh"))).toHaveLength(1);
+  });
+  it("finishing a preflight failure does not auto-reclaim the owner browser via catalog", async () => {
+    mock.run = makeRunView({phase: "needs_attention", lastCode: "ego_owner_profile_login_required",
+      operationId: "operation-1", allowedActions: ["observe_membership", "finish"]});
+    const hook = await mount();
+    await act(() => hook.result.current.command("finish"));
+    expect(hook.result.current.flow?.phase).toBe("completed");
+    expect(mock.requests.filter(item => item.path.endsWith("/catalog/refresh"))).toHaveLength(0);
+    expect(hook.result.current.catalog).toBeNull();
+    await act(hook.result.current.loadCatalog);
+    expect(mock.requests.filter(item => item.path.endsWith("/catalog/refresh"))).toHaveLength(1);
+    expect(mock.requests.filter(item => item.path.endsWith("/commands"))).toHaveLength(1);
+  });
+  it("refreshes actual membership once after a successful finish", async () => {
+    mock.run = makeRunView({
+      phase: "auth_confirmed", operationId: "operation-1", authState: "completed", allowedActions: ["finish"],
+    });
+    const hook = await mount();
+    await act(() => hook.result.current.command("finish"));
+    expect(hook.result.current.flow?.phase).toBe("completed");
+    expect(mock.requests.filter((item) => item.path.endsWith("/commands"))).toHaveLength(1);
+    expect(mock.requests.filter((item) => item.path.endsWith("/catalog/refresh"))).toHaveLength(1);
+  });
+  it("lost response blocks another command until a stored-state refresh, then explicit reconciliation", async () => {
+    const hook = await mount(); await preview(hook); mock.loseResponseFor = "start";
+    await act(() => hook.result.current.command("start"));
+    expect(hook.result.current.checked).toBe(false);
+    await act(() => hook.result.current.command("start"));
+    expect(mock.requests.filter((item) => item.path.endsWith("/commands"))).toHaveLength(1);
+    await act(hook.result.current.refresh);
+    expect(hook.result.current.flow?.phase).toBe("outcome_unknown");
+    await act(() => hook.result.current.command("reconcile"));
+    expect(hook.result.current.flow?.phase).toBe("membership_requested");
+  });
+  it("a lost create response is recovered even after all browser storage is erased", async () => {
+    const hook = await mount(); mock.loseResponseFor = "create"; await preview(hook);
+    const id = readRunLocator(); expect(id).toBe(mock.run?.id);
+    hook.unmount(); localStorage.clear();
+    const restored = await mount();
+    expect(restored.result.current.flow?.id).toBe(id);
+    expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs")).toHaveLength(1);
+  });
+  it("does not advance auth through the stored status button", async () => {
+    mock.run = makeRunView({ phase: "auth_prepared", handoffId: "auth-1", authState: "oauth_pending", allowedActions: ["observe_auth", "advance_auth"] });
+    const hook = await mount(); await act(() => hook.result.current.command("observe_auth"));
+    expect(hook.result.current.flow?.authState).toBe("oauth_pending");
+    expect(mock.requests.filter((item) => item.method === "POST").map((item) => item.body)).toEqual([
+      expect.objectContaining({ action: "observe_auth" }),
+    ]);
+  });
+  it("a stale revision conflicts rather than starting another operation", async () => {
+    const hook = await mount(); await preview(hook);
+    mock.run = { ...mock.run!, revision: 10 };
+    await act(() => hook.result.current.command("start"));
+    expect(hook.result.current.error).toBe("revision_conflict");
+    expect(mock.run.phase).toBe("previewed");
+    await act(hook.result.current.refresh); expect(hook.result.current.flow?.revision).toBe(10);
+  });
+  it("creates and advances an OAuth-only enrollment without a member-switch run", async () => {
+    mock.catalog.workspaces[0].currentMembers = [{
+      email: memberIdentity.targetEmail,
+      userId: memberIdentity.targetUserId,
+      presetId: memberIdentity.presetId,
+      authState: "absent",
+      authAccountId: null,
+    }];
+    const hook = await mount();
+    await act(hook.result.current.loadCatalog);
+    await act(() => hook.result.current.startAuthEnrollment(
+      "cdp-1", memberIdentity.presetId, memberIdentity.targetEmail, memberIdentity.targetUserId,
+    ));
+    expect(hook.result.current.enrollment?.phase).toBe("prepared");
+    expect(hook.result.current.flow).toBeNull();
+    expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs")).toEqual([]);
+
+    await act(() => hook.result.current.enrollmentCommand("prepare_auth"));
+    expect(hook.result.current.enrollment?.userCode).toBe("ABCD-EFGH");
+    await act(() => hook.result.current.enrollmentCommand("open_auth_browser"));
+    expect(hook.result.current.enrollment?.phase).toBe("auth_browser_opened");
+    expect(hook.result.current.enrollment?.browserProfileId).toBe("CodexLB-account-target");
+    await act(() => hook.result.current.enrollmentCommand("advance_auth"));
+    expect(hook.result.current.enrollment?.phase).toBe("auth_confirmed");
+    await act(() => hook.result.current.enrollmentCommand("finish"));
+    expect(hook.result.current.enrollment?.phase).toBe("completed");
+    expect(mock.requests.filter((item) => item.path.endsWith("/commands")).map((item) => item.body)).toEqual([
+      expect.objectContaining({ action: "prepare_auth" }),
+      expect.objectContaining({ action: "open_auth_browser" }),
+      expect.objectContaining({ action: "advance_auth" }),
+      expect.objectContaining({ action: "finish" }),
+    ]);
+  });
+  it("blocks catalog browser work after an unresolved create response", async () => {
+    const hook = await mount(); mock.loseResponseFor = "create"; await preview(hook);
+    expect(hook.result.current.checked).toBe(false);
+    const before = mock.requests.filter(item => item.path.endsWith("/catalog/refresh")).length;
+    await act(hook.result.current.loadCatalog);
+    expect(mock.requests.filter(item => item.path.endsWith("/catalog/refresh"))).toHaveLength(before);
+    await act(hook.result.current.refresh);
+    expect(hook.result.current.flow?.id).toBe(mock.run?.id);
+  });
+  it("does not create a preview for an unconfirmed workspace", async () => {
+    mock.catalog.workspaces[0].membershipCode = "ego_owner_profile_login_required";
+    mock.catalog.workspaces[0].currentMembers = [];
+    const hook = await mount(); await preview(hook);
+    expect(mock.requests.filter(item => item.path === "/api/member-switch-runs")).toHaveLength(0);
+    expect(hook.result.current.flow).toBeNull();
+    expect(readRunLocator()).toBeNull();
+  });
+  it("rejects OAuth enrollment from failed observation even when a stale member is present", async () => {
+    mock.catalog.workspaces[0].membershipCode = "ego_owner_identity_unavailable";
+    mock.catalog.workspaces[0].currentMembers = [{ email: memberIdentity.targetEmail,
+      userId: memberIdentity.targetUserId, presetId: memberIdentity.presetId, authState: "absent", authAccountId: null }];
+    const hook = await mount(); await act(hook.result.current.loadCatalog);
+    await act(() => hook.result.current.startAuthEnrollment("cdp-1", memberIdentity.presetId,
+      memberIdentity.targetEmail, memberIdentity.targetUserId));
+    expect(mock.requests.filter(item => item.path === "/api/member-switch-runs/oauth-enrollments")).toHaveLength(0);
+  });
+
+});

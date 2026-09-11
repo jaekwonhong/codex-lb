@@ -23,6 +23,7 @@ import type {
   UpstreamProxyEndpointTestResponse,
 } from "@/features/settings/schemas";
 import { formatCompactAccountId } from "@/utils/account-identifiers";
+import { getErrorMessage } from "@/utils/errors";
 import { formatSlug } from "@/utils/formatters";
 
 export type AccountDetailProps = {
@@ -218,14 +219,22 @@ function AccountNameField({
   const { t } = useTranslation();
   const [isEditing, setIsEditing] = useState(false);
   const [aliasDraft, setAliasDraft] = useState(alias ?? "");
+  const [aliasError, setAliasError] = useState<string | null>(null);
 
   const handleSave = async () => {
+    if (busy || readOnly) return;
+    setAliasError(null);
     const trimmed = aliasDraft.trim();
-    await onSetAlias(accountId, trimmed === "" ? null : trimmed);
-    setIsEditing(false);
+    try {
+      await onSetAlias(accountId, trimmed === "" ? null : trimmed);
+      setIsEditing(false);
+    } catch (error) {
+      setAliasError(getErrorMessage(error, t("accounts.detail.aliasSaveFailed")));
+    }
   };
 
   const handleCancel = () => {
+    setAliasError(null);
     setAliasDraft(alias ?? "");
     setIsEditing(false);
   };
@@ -274,6 +283,7 @@ function AccountNameField({
             <X className="size-4" />
           </Button>
         </div>
+        {aliasError ? <p role="alert" className="text-xs text-destructive">{aliasError}</p> : null}
         <p className="text-xs text-muted-foreground">
           {t("accounts.detail.aliasHelp")}
         </p>

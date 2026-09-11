@@ -69,7 +69,7 @@ export default defineConfig({
     globals: true,
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",
-    exclude: ["browser-smoke/**", "screenshots/**", "node_modules/**"],
+    exclude: ["browser-smoke/**", "screenshots/**", "offline-review/**", "node_modules/**"],
     fileParallelism: false,
     testTimeout: 15_000,
     coverage: {

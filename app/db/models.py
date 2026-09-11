@@ -33,6 +33,31 @@ class Base(DeclarativeBase):
     pass
 
 
+class MemberSwitchControlRecord(Base):
+    """Durable admission and last command receipt; external I/O is outside transactions."""
+
+    __tablename__ = "member_switch_control_records"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    active_scope: Mapped[str | None] = mapped_column(String, nullable=True, unique=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[str] = mapped_column(Text, nullable=False)
+    pending_action: Mapped[str | None] = mapped_column(String, nullable=True)
+    command_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    command_hash: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    __table_args__ = (CheckConstraint("revision >= 0", name="ck_member_switch_revision"),)
+
+
+class MemberSwitchCommandReceipt(Base):
+    __tablename__ = "member_switch_command_receipts"
+
+    record_id: Mapped[str] = mapped_column(ForeignKey("member_switch_control_records.id"), primary_key=True)
+    command_id: Mapped[str] = mapped_column(String, primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+
+
 def _enum_values(enum_cls: type[Enum]) -> list[str]:
     return [str(member.value) for member in enum_cls]
 

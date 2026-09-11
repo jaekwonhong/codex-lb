@@ -125,6 +125,7 @@ export function createAccountSummary(
 	return AccountSummarySchema.parse({
 		accountId: "acc_primary",
 		chatgptAccountId: "chatgpt_acc_primary",
+		chatgptUserId: "user-primary",
 		email: "primary@example.com",
 		alias: null,
 		displayName: "primary@example.com",

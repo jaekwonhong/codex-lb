@@ -1,0 +1,6 @@
+- [ ] Freeze current main, release source and operating identities.
+- [ ] Reproduce late-reply, failed refresh and missing-locator UX defects in isolation.
+- [ ] Apply minimal request-lifecycle and feedback fixes; verify affected behavior.
+- [ ] Validate static build/browser scenarios and unchanged backend/Companion boundaries.
+- [ ] Commit and merge only reviewed changes; stage and deploy immutable beta image.
+- [ ] Record runtime identity, retained predecessor, non-destructive health and limitations.

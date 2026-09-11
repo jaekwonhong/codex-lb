@@ -1,0 +1,198 @@
+[
+  {
+    "request": {
+      "commandId": "449262fb-5d10-47fc-b7f2-2d2d2a3a8acf",
+      "clientFlowId": "1020a249-6337-4e43-834c-cb819dbf4a1a",
+      "action": "prepare_session",
+      "memberSwitchOperationId": "6afbd24dc711422387346442f617991a",
+      "identity": {
+        "workspaceId": "cdp-1",
+        "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+        "presetId": "cdp-1-target",
+        "targetEmail": "target@example.com",
+        "targetUserId": "user-Target123",
+        "catalogFingerprint": "6fbb5f509548d28c2d765217d00102ac97b12d763d5a41d088fb3fafa6a2d6c6"
+      },
+      "browserOperationId": null,
+      "verificationUrl": null,
+      "userCode": null
+    },
+    "receipt": {
+      "schemaVersion": 1,
+      "commandId": "449262fb-5d10-47fc-b7f2-2d2d2a3a8acf",
+      "clientFlowId": "1020a249-6337-4e43-834c-cb819dbf4a1a",
+      "action": "prepare_session",
+      "memberSwitchOperationId": "6afbd24dc711422387346442f617991a",
+      "identity": {
+        "workspaceId": "cdp-1",
+        "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+        "presetId": "cdp-1-target",
+        "targetEmail": "target@example.com",
+        "targetUserId": "user-Target123",
+        "catalogFingerprint": "6fbb5f509548d28c2d765217d00102ac97b12d763d5a41d088fb3fafa6a2d6c6"
+      },
+      "requestHash": "8ae4960492db542587c0a0c396e6f433bb023ddc8833f7487dd547d5b235d84b",
+      "state": "completed",
+      "code": "ready",
+      "recordedAt": "2026-09-06T08:54:43.307288+00:00",
+      "browserOperationId": null,
+      "session": {
+        "ready": true,
+        "code": "ready",
+        "targetEmail": "target@example.com",
+        "reauthenticated": false,
+        "trace": [],
+        "outcomeUnknown": false
+      },
+      "browser": null,
+      "close": null
+    }
+  },
+  {
+    "request": {
+      "commandId": "0c8c97dc-fd26-4726-88d8-632c443fc2d8",
+      "clientFlowId": "1020a249-6337-4e43-834c-cb819dbf4a1a",
+      "action": "open_browser",
+      "memberSwitchOperationId": "6afbd24dc711422387346442f617991a",
+      "identity": {
+        "workspaceId": "cdp-1",
+        "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+        "presetId": "cdp-1-target",
+        "targetEmail": "target@example.com",
+        "targetUserId": "user-Target123",
+        "catalogFingerprint": "6fbb5f509548d28c2d765217d00102ac97b12d763d5a41d088fb3fafa6a2d6c6"
+      },
+      "browserOperationId": null,
+      "verificationUrl": "https://auth.openai.com/codex/device",
+      "userCode": "TEST-CODE"
+    },
+    "receipt": {
+      "schemaVersion": 1,
+      "commandId": "0c8c97dc-fd26-4726-88d8-632c443fc2d8",
+      "clientFlowId": "1020a249-6337-4e43-834c-cb819dbf4a1a",
+      "action": "open_browser",
+      "memberSwitchOperationId": "6afbd24dc711422387346442f617991a",
+      "identity": {
+        "workspaceId": "cdp-1",
+        "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+        "presetId": "cdp-1-target",
+        "targetEmail": "target@example.com",
+        "targetUserId": "user-Target123",
+        "catalogFingerprint": "6fbb5f509548d28c2d765217d00102ac97b12d763d5a41d088fb3fafa6a2d6c6"
+      },
+      "requestHash": "fb737af426dda4e084ba3ff8b7238981ffc18ea9b9596f0276de05203ec3a354",
+      "state": "completed",
+      "code": "user_action_required",
+      "recordedAt": "2026-09-06T08:54:43.322001+00:00",
+      "browserOperationId": null,
+      "session": null,
+      "browser": {
+        "accepted": true,
+        "state": "user_action_required",
+        "code": "user_action_required",
+        "browserOperationId": "35187a0b416c440d91798e1fa03820aa",
+        "targetEmail": "target@example.com",
+        "clipboardReady": false,
+        "outcomeUnknown": false
+      },
+      "close": null
+    }
+  },
+  {
+    "request": {
+      "commandId": "f6ebde68-ea88-491b-bf33-d65691bf2863",
+      "clientFlowId": "1020a249-6337-4e43-834c-cb819dbf4a1a",
+      "action": "close_browser",
+      "memberSwitchOperationId": "6afbd24dc711422387346442f617991a",
+      "identity": {
+        "workspaceId": "cdp-1",
+        "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+        "presetId": "cdp-1-target",
+        "targetEmail": "target@example.com",
+        "targetUserId": "user-Target123",
+        "catalogFingerprint": "6fbb5f509548d28c2d765217d00102ac97b12d763d5a41d088fb3fafa6a2d6c6"
+      },
+      "browserOperationId": "35187a0b416c440d91798e1fa03820aa",
+      "verificationUrl": null,
+      "userCode": null
+    },
+    "receipt": {
+      "schemaVersion": 1,
+      "commandId": "f6ebde68-ea88-491b-bf33-d65691bf2863",
+      "clientFlowId": "1020a249-6337-4e43-834c-cb819dbf4a1a",
+      "action": "close_browser",
+      "memberSwitchOperationId": "6afbd24dc711422387346442f617991a",
+      "identity": {
+        "workspaceId": "cdp-1",
+        "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+        "presetId": "cdp-1-target",
+        "targetEmail": "target@example.com",
+        "targetUserId": "user-Target123",
+        "catalogFingerprint": "6fbb5f509548d28c2d765217d00102ac97b12d763d5a41d088fb3fafa6a2d6c6"
+      },
+      "requestHash": "ff1a8937d03ce2307baa92bd87fee534a93f53cf00d904d79d7e8ed059ab4e58",
+      "state": "completed",
+      "code": "auth_target_closed",
+      "recordedAt": "2026-09-06T08:54:43.331568+00:00",
+      "browserOperationId": "35187a0b416c440d91798e1fa03820aa",
+      "session": null,
+      "browser": null,
+      "close": {
+        "closed": true,
+        "code": "auth_target_closed",
+        "outcomeUnknown": false
+      }
+    }
+  },
+  {
+    "request": {
+      "commandId": "9eac864f-3938-4137-b697-fa5567c33d3d",
+      "clientFlowId": "0163caaf-d190-4c11-9372-dad1ad9bae4f",
+      "action": "prepare_session",
+      "memberSwitchOperationId": "6afbd24dc711422387346442f617991a",
+      "identity": {
+        "workspaceId": "cdp-1",
+        "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+        "presetId": "cdp-1-target",
+        "targetEmail": "target@example.com",
+        "targetUserId": "user-Target123",
+        "catalogFingerprint": "6fbb5f509548d28c2d765217d00102ac97b12d763d5a41d088fb3fafa6a2d6c6"
+      },
+      "browserOperationId": null,
+      "verificationUrl": null,
+      "userCode": null
+    },
+    "receipt": {
+      "schemaVersion": 1,
+      "commandId": "9eac864f-3938-4137-b697-fa5567c33d3d",
+      "clientFlowId": "0163caaf-d190-4c11-9372-dad1ad9bae4f",
+      "action": "prepare_session",
+      "memberSwitchOperationId": "6afbd24dc711422387346442f617991a",
+      "identity": {
+        "workspaceId": "cdp-1",
+        "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+        "presetId": "cdp-1-target",
+        "targetEmail": "target@example.com",
+        "targetUserId": "user-Target123",
+        "catalogFingerprint": "6fbb5f509548d28c2d765217d00102ac97b12d763d5a41d088fb3fafa6a2d6c6"
+      },
+      "requestHash": "c7ca4b8f1af3bc86053380a00f4e0d3c7c2cb9e255dd64c4047e82c279452660",
+      "state": "completed",
+      "code": "participant_owner_mismatch",
+      "recordedAt": "2026-09-06T08:54:43.33681+00:00",
+      "browserOperationId": null,
+      "session": {
+        "ready": false,
+        "code": "participant_owner_mismatch",
+        "targetEmail": "target@example.com",
+        "reauthenticated": false,
+        "trace": [
+          "participant_owner_mismatch"
+        ],
+        "outcomeUnknown": false
+      },
+      "browser": null,
+      "close": null
+    }
+  }
+]

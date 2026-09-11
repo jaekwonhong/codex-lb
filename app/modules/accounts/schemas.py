@@ -82,6 +82,7 @@ class AccountAdditionalQuota(DashboardModel):
 class AccountSummary(DashboardModel):
     account_id: str
     chatgpt_account_id: str | None = None
+    chatgpt_user_id: str | None = None
     email: str
     alias: str | None = None
     display_name: str
@@ -145,6 +146,20 @@ class AccountImportResponse(DashboardModel):
     status: str
 
 
+class LocalOAuthFileResponse(DashboardModel):
+    name: str
+    size_bytes: int = Field(ge=0)
+
+
+class LocalOAuthFilesResponse(DashboardModel):
+    available: bool
+    files: list[LocalOAuthFileResponse] = Field(default_factory=list)
+
+
+class LocalOAuthImportRequest(DashboardModel):
+    filename: str = Field(min_length=1, max_length=255)
+
+
 class OpenCodeOAuthAuth(DashboardModel):
     type: str = "oauth"
     refresh: str
@@ -195,6 +210,19 @@ class AccountRoutingPolicyUpdateRequest(DashboardModel):
 class AccountRoutingPolicyUpdateResponse(DashboardModel):
     account_id: str
     routing_policy: str
+
+
+class WorkspaceRoutingPolicyUpdateRequest(DashboardModel):
+    enabled: bool
+
+
+class WorkspaceRoutingPolicyUpdateResponse(DashboardModel):
+    workspace_account_id: str
+    enabled: bool
+    changed_count: int = Field(ge=0)
+    burn_first_count: int = Field(ge=0)
+    normal_count: int = Field(ge=0)
+    preserve_count: int = Field(ge=0)
 
 
 class AccountDeleteResponse(DashboardModel):

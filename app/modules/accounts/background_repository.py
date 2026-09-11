@@ -99,6 +99,7 @@ class BackgroundAccountsRepository:
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool:
         async with get_background_session() as session:
             return await AccountsRepository(session).rotate_tokens(
@@ -115,6 +116,7 @@ class BackgroundAccountsRepository:
                 workspace_id=workspace_id,
                 workspace_label=workspace_label,
                 seat_type=seat_type,
+                routing_policy_override=routing_policy_override,
             )
 
     async def update_account_metadata(

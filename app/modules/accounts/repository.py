@@ -178,6 +178,15 @@ def _store_request_usage_summaries(
         _request_usage_summary_cache.pop(oldest, None)
     _request_usage_summary_cache[key] = (summaries, time.monotonic() + ttl_seconds)
 
+@dataclass(frozen=True, slots=True)
+class WorkspaceRoutingPolicyResult:
+    workspace_account_id: str
+    enabled: bool
+    changed_count: int
+    burn_first_count: int
+    normal_count: int
+    preserve_count: int
+
 
 class AccountIdentityConflictError(Exception):
     def __init__(self, email: str) -> None:
@@ -443,7 +452,13 @@ class AccountsRepository:
     async def upsert_reauthorized(self, account: Account) -> Account:
         return await self.upsert_account_slot(account, preserve_unknown_workspace_duplicates=False)
 
-    async def replace_reauthorized(self, account_id: str, account: Account) -> Account | None:
+    async def replace_reauthorized(
+        self,
+        account_id: str,
+        account: Account,
+        *,
+        routing_policy_override: str | None = None,
+    ) -> Account | None:
         """Replace credentials on the exact local row selected for reauthentication."""
         async with sqlite_writer_section():
             if self._dialect_name() == "postgresql":
@@ -456,6 +471,7 @@ class AccountsRepository:
             if existing is None:
                 return None
             await self._apply_account_replacement(existing, account)
+            _apply_workspace_routing_policy_override(existing, routing_policy_override)
             await self._session.commit()
             await self._session.refresh(existing)
             return existing
@@ -480,12 +496,16 @@ class AccountsRepository:
         *,
         preserve_unknown_workspace_duplicates: bool | None = None,
         preserve_identity_slots: bool = False,
+        reconcile_existing_id: bool = False,
+        routing_policy_override: str | None = None,
     ) -> Account:
         async with sqlite_writer_section():
             return await self._upsert_account_slot_unlocked(
                 account,
                 preserve_unknown_workspace_duplicates=preserve_unknown_workspace_duplicates,
                 preserve_identity_slots=preserve_identity_slots,
+                reconcile_existing_id=reconcile_existing_id,
+                routing_policy_override=routing_policy_override,
             )
 
     async def _upsert_account_slot_unlocked(
@@ -494,6 +514,8 @@ class AccountsRepository:
         *,
         preserve_unknown_workspace_duplicates: bool | None = None,
         preserve_identity_slots: bool = False,
+        reconcile_existing_id: bool = False,
+        routing_policy_override: str | None = None,
         _identity_lock_attempt: int = 0,
     ) -> Account:
         if preserve_unknown_workspace_duplicates is None:
@@ -527,20 +549,33 @@ class AccountsRepository:
                     account,
                     preserve_unknown_workspace_duplicates=preserve_unknown_workspace_duplicates,
                     preserve_identity_slots=preserve_identity_slots,
+                    reconcile_existing_id=reconcile_existing_id,
                     _identity_lock_attempt=_identity_lock_attempt + 1,
                 )
 
         existing = await self._account_by_slot_identity(account)
         if existing:
             await self._apply_account_replacement(existing, account)
+            _apply_workspace_routing_policy_override(existing, routing_policy_override)
             await self._session.commit()
             await self._session.refresh(existing)
             return existing
 
         existing_by_id = await self._session.get(Account, account.id)
         if existing_by_id:
+            if (
+                reconcile_existing_id
+                and existing_by_id.chatgpt_account_id == account.chatgpt_account_id
+                and existing_by_id.email.casefold() == account.email.casefold()
+            ):
+                await self._apply_account_replacement(existing_by_id, account)
+                _apply_workspace_routing_policy_override(existing_by_id, routing_policy_override)
+                await self._session.commit()
+                await self._session.refresh(existing_by_id)
+                return existing_by_id
             if _same_unknown_workspace_identity(existing_by_id, account) and not preserve_unknown_workspace_duplicates:
                 await self._apply_account_replacement(existing_by_id, account)
+                _apply_workspace_routing_policy_override(existing_by_id, routing_policy_override)
                 await self._session.commit()
                 await self._session.refresh(existing_by_id)
                 return existing_by_id
@@ -556,10 +591,12 @@ class AccountsRepository:
                 existing_by_email = None
             if existing_by_email:
                 await self._apply_account_replacement(existing_by_email, account)
+                _apply_workspace_routing_policy_override(existing_by_email, routing_policy_override)
                 await self._session.commit()
                 await self._session.refresh(existing_by_email)
                 return existing_by_email
 
+        _apply_workspace_routing_policy_override(account, routing_policy_override)
         self._session.add(account)
         await self._session.commit()
         await self._session.refresh(account)
@@ -999,6 +1036,44 @@ class AccountsRepository:
             await self._session.commit()
             return result.scalar_one_or_none() is not None
 
+    async def apply_workspace_routing_policy(
+        self,
+        workspace_account_id: str,
+        *,
+        enabled: bool,
+    ) -> WorkspaceRoutingPolicyResult:
+        routing_policy = "burn_first" if enabled else "normal"
+        async with sqlite_writer_section():
+            result = await self._session.execute(
+                update(Account)
+                .where(Account.chatgpt_account_id == workspace_account_id)
+                .where(Account.routing_policy != "preserve")
+                .where(Account.routing_policy != routing_policy)
+                .values(routing_policy=routing_policy)
+                .returning(Account.id)
+            )
+            changed_count = len(result.scalars().all())
+            counts = {
+                policy: int(count)
+                for policy, count in (
+                    await self._session.execute(
+                        select(Account.routing_policy, func.count(Account.id))
+                        .where(Account.chatgpt_account_id == workspace_account_id)
+                        .group_by(Account.routing_policy)
+                    )
+                ).all()
+            }
+            await self._session.commit()
+        return WorkspaceRoutingPolicyResult(
+            workspace_account_id=workspace_account_id,
+            enabled=enabled,
+            changed_count=changed_count,
+            burn_first_count=counts.get("burn_first", 0),
+            normal_count=counts.get("normal", 0),
+            preserve_count=counts.get("preserve", 0),
+        )
+
+
     async def begin_delete(self, account_id: str, *, delete_history: bool = False) -> bool:
         """Mark an account for background deletion; commits in milliseconds.
 
@@ -1240,6 +1315,7 @@ class AccountsRepository:
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool:
         """Persist rotated access/refresh/id token ciphertext under a mandatory
         compare-and-set on the refresh-token ciphertext.
@@ -1258,7 +1334,7 @@ class AccountsRepository:
         async with sqlite_writer_section():
             if self._dialect_name() == "postgresql":
                 await self._lock_postgresql_account_identity_membership(account_id, chatgpt_account_id)
-            values: dict[str, bytes | datetime | str] = {
+            values: dict[str, Any] = {
                 "access_token_encrypted": access_token_encrypted,
                 "refresh_token_encrypted": refresh_token_encrypted,
                 "id_token_encrypted": id_token_encrypted,
@@ -1278,6 +1354,11 @@ class AccountsRepository:
                 values["workspace_label"] = workspace_label
             if seat_type is not None:
                 values["seat_type"] = seat_type
+            if routing_policy_override is not None:
+                values["routing_policy"] = case(
+                    (Account.routing_policy == "preserve", Account.routing_policy),
+                    else_=routing_policy_override,
+                )
             stmt = (
                 update(Account)
                 .where(Account.id == account_id)
@@ -1589,6 +1670,11 @@ def _apply_account_updates(target: Account, source: Account) -> None:
     # detached — history loss was requested by the earlier delete).
     target.delete_requested_at = None
     target.delete_history_requested = False
+
+
+def _apply_workspace_routing_policy_override(target: Account, routing_policy: str | None) -> None:
+    if routing_policy is not None and target.routing_policy != "preserve":
+        target.routing_policy = routing_policy
 
 
 def _slot_lock_key(account: Account, *, preserve_unknown_workspace_duplicates: bool = True) -> str:

@@ -26,6 +26,7 @@ import type {
   StickySessionKind,
   StickySessionSortBy,
   StickySessionSortDir,
+  StickySessionsDeleteFilteredRequest,
 } from "@/features/sticky-sessions/schemas";
 import { useDialogState } from "@/hooks/use-dialog-state";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
@@ -72,6 +73,8 @@ export function StickySessionsSection({ disabled = false }: StickySessionsSectio
   const dateDisplayFormat = useDateDisplayFormatStore((state) => state.dateDisplayFormat);
   const {
     params,
+    deleteFilteredRequest,
+    filtersSettling,
     setAccountQuery,
     setKeyQuery,
     setSort,
@@ -84,7 +87,10 @@ export function StickySessionsSection({ disabled = false }: StickySessionsSectio
   } = useStickySessions();
   const deleteDialog = useDialogState<StickySessionIdentifier>();
   const deleteSelectedDialog = useDialogState<StickySessionIdentifier[]>();
-  const deleteFilteredDialog = useDialogState<number>();
+  const deleteFilteredDialog = useDialogState<{
+    count: number;
+    request: StickySessionsDeleteFilteredRequest;
+  }>();
   const purgeDialog = useDialogState();
   const [selectedRowIds, setSelectedRowIds] = useState<string[]>([]);
 
@@ -104,7 +110,8 @@ export function StickySessionsSection({ disabled = false }: StickySessionsSectio
   const busy = disabled || deleteMutation.isPending || deleteFilteredMutation.isPending || purgeMutation.isPending;
   const hasEntries = entries.length > 0;
   const hasAnyRows = total > 0;
-  const hasActiveTextFilter = params.accountQuery.trim().length > 0 || params.keyQuery.trim().length > 0;
+  const hasActiveTextFilter =
+    deleteFilteredRequest.accountQuery.trim().length > 0 || deleteFilteredRequest.keyQuery.trim().length > 0;
   const visibleRowIdSet = useMemo(() => new Set(entries.map((entry) => stickySessionRowId(entry))), [entries]);
   const selectedRowIdSet = useMemo(() => new Set(selectedRowIds), [selectedRowIds]);
   const selectedEntries = useMemo(
@@ -122,6 +129,7 @@ export function StickySessionsSection({ disabled = false }: StickySessionsSectio
   const someVisibleSelected = selectedCount > 0 && !allVisibleSelected;
   const selectedDeleteTargets = deleteSelectedDialog.data ?? [];
   const selectedDeleteCount = selectedDeleteTargets.length;
+  const deleteFilteredTarget = deleteFilteredDialog.data;
 
   useEffect(() => {
     if (!stickySessionsQuery.isLoading && total > 0 && entries.length === 0 && params.offset > 0) {
@@ -203,8 +211,8 @@ export function StickySessionsSection({ disabled = false }: StickySessionsSectio
             size="sm"
             variant="outline"
             className="h-8 text-xs"
-            disabled={busy || !hasActiveTextFilter || total === 0}
-            onClick={() => deleteFilteredDialog.show(total)}
+            disabled={busy || filtersSettling || stickySessionsQuery.isFetching || !hasActiveTextFilter || total === 0}
+            onClick={() => deleteFilteredDialog.show({ count: total, request: deleteFilteredRequest })}
           >
 	            {t("stickySessions.actions.deleteFiltered")}
           </Button>
@@ -379,17 +387,22 @@ export function StickySessionsSection({ disabled = false }: StickySessionsSectio
 	              })
 	            : ""
 	        }
-	        confirmLabel={t("common.actions.delete")}
+        confirmLabel={t("common.actions.delete")}
+        pending={deleteMutation.isPending}
+        keepOpenOnConfirm
+        confirmDisabled={!deleteDialog.data}
         onOpenChange={deleteDialog.onOpenChange}
         onConfirm={() => {
-          if (!deleteDialog.data) {
-            return;
-          }
-          void deleteMutation.mutateAsync([deleteDialog.data]).finally(() => {
-            deleteDialog.hide();
-          });
+          const target = deleteDialog.data;
+          if (!target) return;
+          void deleteMutation.mutateAsync([target]).then((response) => {
+            if (response.deletedCount === 1 && response.failed.length === 0) deleteDialog.hide();
+          }).catch(() => undefined);
         }}
-      />
+      >
+        {deleteMutation.error ? <div role="alert"><AlertMessage variant="error">{getErrorMessageOrNull(deleteMutation.error)}</AlertMessage>
+          <p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p></div> : null}
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={deleteSelectedDialog.open}
@@ -399,47 +412,67 @@ export function StickySessionsSection({ disabled = false }: StickySessionsSectio
 	            ? t("stickySessions.deleteSelectedDialog.descriptionOne")
 	            : t("stickySessions.deleteSelectedDialog.descriptionMany", { count: selectedDeleteCount })
 	        }
-	        confirmLabel={t("stickySessions.actions.deleteSessions")}
+        confirmLabel={t("stickySessions.actions.deleteSessions")}
+        pending={deleteMutation.isPending}
+        keepOpenOnConfirm
+        confirmDisabled={selectedDeleteTargets.length === 0}
         onOpenChange={deleteSelectedDialog.onOpenChange}
         onConfirm={() => {
           if (selectedDeleteTargets.length === 0) {
             return;
           }
           void deleteMutation.mutateAsync(selectedDeleteTargets).then((response) => {
-            setSelectedRowIds(response.failed.map((entry) => stickySessionRowId(entry)));
-          }).finally(() => {
-            deleteSelectedDialog.hide();
-          });
+            const failed = response.failed.map((entry) => ({ key: entry.key, kind: entry.kind }));
+            setSelectedRowIds(failed.map((entry) => stickySessionRowId(entry)));
+            if (response.deletedCount === selectedDeleteTargets.length && failed.length === 0) {
+              deleteSelectedDialog.hide();
+            } else if (failed.length > 0) {
+              deleteSelectedDialog.show(failed);
+            }
+          }).catch(() => undefined);
         }}
-      />
+      >
+        {deleteMutation.error ? <div role="alert"><AlertMessage variant="error">{getErrorMessageOrNull(deleteMutation.error)}</AlertMessage>
+          <p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p></div> : null}
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={deleteFilteredDialog.open}
 	        title={t("stickySessions.deleteFilteredDialog.title")}
-	        description={t("stickySessions.deleteFilteredDialog.description", { count: deleteFilteredDialog.data ?? 0 })}
+	        description={t("stickySessions.deleteFilteredDialog.description", { count: deleteFilteredTarget?.count ?? 0 })}
 	        confirmLabel={t("stickySessions.actions.deleteFiltered")}
+        pending={deleteFilteredMutation.isPending}
+        keepOpenOnConfirm
+        confirmDisabled={!deleteFilteredTarget}
         onOpenChange={deleteFilteredDialog.onOpenChange}
         onConfirm={() => {
-          void deleteFilteredMutation.mutateAsync().then(() => {
+          const target = deleteFilteredDialog.data;
+          if (!target) return;
+          void deleteFilteredMutation.mutateAsync(target.request).then(() => {
             setSelectedRowIds([]);
-          }).finally(() => {
             deleteFilteredDialog.hide();
-          });
+          }).catch(() => undefined);
         }}
-      />
+      >
+        {deleteFilteredMutation.error ? <div role="alert"><AlertMessage variant="error">{getErrorMessageOrNull(deleteFilteredMutation.error)}</AlertMessage>
+          <p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p></div> : null}
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={purgeDialog.open}
 	        title={t("stickySessions.purgeDialog.title")}
 	        description={t("stickySessions.purgeDialog.description")}
 	        confirmLabel={t("stickySessions.actions.purge")}
+        pending={purgeMutation.isPending}
+        keepOpenOnConfirm
         onOpenChange={purgeDialog.onOpenChange}
         onConfirm={() => {
-          void purgeMutation.mutateAsync(true).finally(() => {
-            purgeDialog.hide();
-          });
+          void purgeMutation.mutateAsync(true).then(() => purgeDialog.hide()).catch(() => undefined);
         }}
-      />
+      >
+        {purgeMutation.error ? <div role="alert"><AlertMessage variant="error">{getErrorMessageOrNull(purgeMutation.error)}</AlertMessage>
+          <p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p></div> : null}
+      </ConfirmDialog>
     </section>
   );
 }

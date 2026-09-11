@@ -39,7 +39,14 @@ export function useSettings() {
 
   const updateSettingsMutation = useMutation({
     mutationFn: (payload: SettingsUpdateRequest) => updateSettings(payload),
-    onSuccess: () => {
+    onSuccess: (savedSettings) => {
+      // The PUT response is the confirmed snapshot, including the version used
+      // by the next edit. A slow or failed follow-up GET must not hide it.
+      queryClient.setQueryData<Awaited<ReturnType<typeof getSettings>>>(["settings", "detail"], (current) =>
+        current?.version !== undefined && savedSettings.version !== undefined && current.version > savedSettings.version
+          ? current
+          : savedSettings,
+      );
       toast.success(t("settings.toasts.saved"));
       void queryClient.invalidateQueries({ queryKey: ["settings", "detail"] });
       void queryClient.invalidateQueries({ queryKey: ["settings", "upstream-proxy"] });

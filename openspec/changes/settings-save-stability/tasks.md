@@ -1,0 +1,6 @@
+- [ ] Freeze deployed parent and preserve unrelated working files.
+- [ ] Reproduce settings save/cache and proxy diagnostic failures using synthetic APIs.
+- [ ] Apply minimal frontend fixes and regression tests.
+- [ ] Validate affected tests, built screens, specifications and image identity.
+- [ ] Commit and merge the reviewed changes locally; deploy the beta derivative only.
+- [ ] Verify served assets, health and preserved operational state; record limitations.

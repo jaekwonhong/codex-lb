@@ -14,6 +14,12 @@ from app.core.auth.dependencies import (
 from app.core.clients.oauth import OAuthError
 from app.core.errors import dashboard_error
 from app.dependencies import OauthContext, get_oauth_context
+from app.modules.oauth.device_flow_guard import (
+    OAuthStartGuardBusy,
+    OAuthStartGuardReleaseError,
+    acquire_oauth_start_guard,
+    release_oauth_start_guard,
+)
 from app.modules.oauth.schemas import (
     ManualCallbackRequest,
     ManualCallbackResponse,
@@ -40,17 +46,59 @@ async def start_oauth(
     context: OauthContext = Depends(get_oauth_context),
 ) -> OauthStartResponse | JSONResponse:
     try:
-        return await context.service.start_oauth(request)
+        guard = await acquire_oauth_start_guard()
+    except OAuthStartGuardBusy:
+        return JSONResponse(
+            status_code=409,
+            content=dashboard_error(
+                "oauth_start_busy",
+                "Another managed member or OAuth start operation currently owns the shared start scope.",
+            ),
+        )
+    try:
+        result = await context.service.start_oauth(request)
     except OAuthError as exc:
+        try:
+            await release_oauth_start_guard(guard)
+        except OAuthStartGuardReleaseError:
+            return JSONResponse(
+                status_code=500,
+                content=dashboard_error(
+                    "oauth_start_guard_release_failed",
+                    "OAuth start failed and the start guard could not be released. "
+                    "Inspect stored state before retrying.",
+                ),
+            )
         return JSONResponse(
             status_code=502,
             content=dashboard_error(exc.code, exc.message),
         )
     except NotImplementedError:
+        try:
+            await release_oauth_start_guard(guard)
+        except OAuthStartGuardReleaseError:
+            return JSONResponse(
+                status_code=500,
+                content=dashboard_error(
+                    "oauth_start_guard_release_failed",
+                    "OAuth start is unavailable and the start guard could not be released.",
+                ),
+            )
         return JSONResponse(
             status_code=501,
             content=dashboard_error("not_implemented", "OAuth start is not implemented"),
         )
+    try:
+        await release_oauth_start_guard(guard)
+    except OAuthStartGuardReleaseError:
+        return JSONResponse(
+            status_code=500,
+            content=dashboard_error(
+                "oauth_start_guard_release_failed",
+                "OAuth started but the shared start guard could not be released. Do not start another OAuth flow.",
+            ),
+        )
+    return result
 
 
 @router.get(

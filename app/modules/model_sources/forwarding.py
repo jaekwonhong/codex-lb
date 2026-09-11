@@ -85,6 +85,7 @@ class SourceUsage:
     input_tokens: int
     output_tokens: int
     cached_input_tokens: int = 0
+    reasoning_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1242,10 +1243,17 @@ def _usage_from_mapping(usage: Mapping[str, JsonValue]) -> SourceUsage | None:
     if is_json_mapping(details):
         raw_cached = details.get("cached_tokens")
         cached_tokens = raw_cached if isinstance(raw_cached, int) else 0
+    reasoning_tokens: int | None = None
+    completion_details = usage.get("completion_tokens_details")
+    if is_json_mapping(completion_details):
+        raw_reasoning = completion_details.get("reasoning_tokens")
+        if isinstance(raw_reasoning, int) and not isinstance(raw_reasoning, bool) and raw_reasoning >= 0:
+            reasoning_tokens = min(raw_reasoning, completion_tokens)
     return SourceUsage(
         input_tokens=prompt_tokens,
         output_tokens=completion_tokens,
         cached_input_tokens=max(0, min(cached_tokens, prompt_tokens)),
+        reasoning_tokens=reasoning_tokens,
     )
 
 
@@ -1263,10 +1271,17 @@ def _usage_from_responses_mapping(usage: Mapping[str, JsonValue]) -> SourceUsage
     if is_json_mapping(details):
         raw_cached = details.get("cached_tokens")
         cached_tokens = raw_cached if isinstance(raw_cached, int) else 0
+    reasoning_tokens: int | None = None
+    output_details = usage.get("output_tokens_details")
+    if is_json_mapping(output_details):
+        raw_reasoning = output_details.get("reasoning_tokens")
+        if isinstance(raw_reasoning, int) and not isinstance(raw_reasoning, bool) and raw_reasoning >= 0:
+            reasoning_tokens = min(raw_reasoning, output_tokens)
     return SourceUsage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cached_input_tokens=max(0, min(cached_tokens, input_tokens)),
+        reasoning_tokens=reasoning_tokens,
     )
 
 

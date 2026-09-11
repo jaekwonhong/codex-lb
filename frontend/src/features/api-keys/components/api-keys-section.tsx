@@ -70,13 +70,16 @@ export function ApiKeysSection({
       getErrorMessageOrNull(regenerateMutation.error),
     [createMutation.error, deleteMutation.error, regenerateMutation.error, updateMutation.error],
   );
+  const deleteAvailable = !apiKeysQuery.error && deleteDialog.data !== null && keys.some((key) => key.id === deleteDialog.data?.id);
 
   const handleCreate = async (payload: ApiKeyCreateRequest) => {
+    if (busy) throw new Error(t("common.confirmation.unavailable"));
     const created = await createMutation.mutateAsync(payload);
     createdDialog.show(created.key);
   };
 
   const handleUpdate = async (payload: ApiKeyUpdateRequest) => {
+    if (busy) throw new Error(t("common.confirmation.unavailable"));
     if (!editDialog.data) {
       return;
     }
@@ -117,25 +120,26 @@ export function ApiKeysSection({
       <ApiKeyTable
         keys={keys}
         busy={busy}
-        onEdit={(apiKey) => editDialog.show(apiKey)}
-        onDelete={(apiKey) => deleteDialog.show(apiKey)}
+        onEdit={(apiKey) => { if (!busy) editDialog.show(apiKey); }}
+        onDelete={(apiKey) => { if (!busy) { deleteMutation.reset(); deleteDialog.show(apiKey); } }}
         onRegenerate={(apiKey) => {
+          if (busy) return;
           void regenerateMutation.mutateAsync(apiKey.id).then((result) => {
             createdDialog.show(result.key);
-          });
+          }).catch(() => { /* Mutation error remains visible in this section. */ });
         }}
       />
 
       <ApiKeyCreateDialog
         open={createDialog.open}
-        busy={createMutation.isPending}
+        busy={busy}
         onOpenChange={createDialog.onOpenChange}
         onSubmit={handleCreate}
       />
 
       <ApiKeyEditDialog
         open={editDialog.open}
-        busy={updateMutation.isPending}
+        busy={busy}
         apiKey={editDialog.data}
         onOpenChange={editDialog.onOpenChange}
         onSubmit={handleUpdate}
@@ -152,16 +156,27 @@ export function ApiKeysSection({
         title={t("apiKeys.deleteDialog.title")}
         description={t("apiKeys.deleteDialog.description")}
         confirmLabel={t("common.actions.delete")}
+        keepOpenOnConfirm
+        pending={deleteMutation.isPending}
+        confirmDisabled={busy || !deleteAvailable}
         onOpenChange={deleteDialog.onOpenChange}
         onConfirm={() => {
-          if (!deleteDialog.data) {
+          if (busy || !deleteAvailable || !deleteDialog.data) {
             return;
           }
-          void deleteMutation.mutateAsync(deleteDialog.data.id).finally(() => {
+          void deleteMutation.mutateAsync(deleteDialog.data.id).then(() => {
             deleteDialog.hide();
-          });
+          }).catch(() => { /* Preserve the target; mutation state owns the failure. */ });
         }}
-      />
+      >
+        {deleteDialog.data ? <div className="min-w-0 space-y-1 text-sm">
+          <p className="break-all">{deleteDialog.data.name} · {deleteDialog.data.keyPrefix}</p>
+          <code className="block break-all text-xs">{deleteDialog.data.id}</code>
+        </div> : null}
+        {!deleteAvailable || disabled ? <p role="alert" className="text-sm text-destructive">{t("common.confirmation.unavailable")}</p> : null}
+        {deleteMutation.error ? <div role="alert"><AlertMessage variant="error">{getErrorMessageOrNull(deleteMutation.error)}</AlertMessage>
+          <p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p></div> : null}
+      </ConfirmDialog>
     </section>
   );
 }

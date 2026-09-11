@@ -106,6 +106,8 @@ from app.modules.dashboard_users.identity_resolver import get_identity_resolutio
 from app.modules.firewall import api as firewall_api
 from app.modules.fleet import api as fleet_api
 from app.modules.health import api as health_api
+from app.modules.member_auth_handoff import api as member_auth_handoff_api
+from app.modules.member_switch import api as member_switch_api
 from app.modules.model_sources import api as model_sources_api
 from app.modules.oauth import api as oauth_api
 from app.modules.proxy import api as proxy_api
@@ -1025,6 +1027,7 @@ def create_app() -> FastAPI:
     add_backend_api_codex_v1_alias_middleware(app)
     add_app_version_middleware(app)
     add_exception_handlers(app)
+    app.add_exception_handler(member_switch_api.ControlConflict, member_switch_api.handle_control_conflict)
     add_trusted_proxy_headers_middleware(app)
 
     app.include_router(proxy_api.realtime_call_router)
@@ -1049,6 +1052,8 @@ def create_app() -> FastAPI:
     app.include_router(conversation_archive_api.router)
     app.include_router(runtime_api.router)
     app.include_router(oauth_api.router)
+    app.include_router(member_auth_handoff_api.router)
+    app.include_router(member_switch_api.router)
     app.include_router(dashboard_auth_api.router)
     app.include_router(dashboard_users_api.router)
     app.include_router(dashboard_roles_api.router)

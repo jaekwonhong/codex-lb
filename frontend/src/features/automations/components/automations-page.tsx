@@ -598,7 +598,7 @@ export function AutomationsPage() {
                                   void updateMutation.mutateAsync({
                                     automationId: job.id,
                                     payload: { enabled: checked },
-                                  });
+                                  }).catch(() => undefined);
                                 }}
                               />
                               <Button
@@ -873,18 +873,21 @@ export function AutomationsPage() {
       <ConfirmDialog
         open={deleteDialog.open}
 	        title={t("automations.deleteDialog.title")}
-	        description={t("automations.deleteDialog.description")}
+	        description={t("automations.deleteDialog.description", { name: deleteDialog.data?.name ?? "" })}
 	        confirmLabel={t("common.actions.delete")}
+        pending={deleteMutation.isPending}
+        keepOpenOnConfirm
+        confirmDisabled={!deleteDialog.data}
         onOpenChange={deleteDialog.onOpenChange}
         onConfirm={() => {
-          if (!deleteDialog.data) {
-            return;
-          }
-          void deleteMutation.mutateAsync(deleteDialog.data.id).finally(() => {
-            deleteDialog.hide();
-          });
+          const target = deleteDialog.data;
+          if (!target) return;
+          void deleteMutation.mutateAsync(target.id).then(() => deleteDialog.hide()).catch(() => undefined);
         }}
-      />
+      >
+        {deleteMutation.error ? <div role="alert"><AlertMessage variant="error">{getErrorMessageOrNull(deleteMutation.error)}</AlertMessage>
+          <p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p></div> : null}
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={runNowDialog.open}
@@ -896,16 +899,19 @@ export function AutomationsPage() {
 	        }
 	        confirmLabel={t("automations.runNowDialog.confirm")}
 	        cancelLabel={t("common.cancel")}
+        pending={runNowMutation.isPending}
+        keepOpenOnConfirm
+        confirmDisabled={!runNowDialog.data}
         onOpenChange={runNowDialog.onOpenChange}
         onConfirm={() => {
-          if (!runNowDialog.data) {
-            return;
-          }
-          void runNowMutation.mutateAsync(runNowDialog.data.id).finally(() => {
-            runNowDialog.hide();
-          });
+          const target = runNowDialog.data;
+          if (!target) return;
+          void runNowMutation.mutateAsync(target.id).then(() => runNowDialog.hide()).catch(() => undefined);
         }}
-      />
+      >
+        {runNowMutation.error ? <div role="alert"><AlertMessage variant="error">{getErrorMessageOrNull(runNowMutation.error)}</AlertMessage>
+          <p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p></div> : null}
+      </ConfirmDialog>
 
       <RunDetailsDialog
         open={selectedRunId !== null}

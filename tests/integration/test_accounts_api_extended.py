@@ -87,6 +87,84 @@ def _iso_utc(epoch_seconds: int) -> str:
 
 
 @pytest.mark.asyncio
+async def test_accounts_list_exposes_stored_chatgpt_user_id(async_client, db_setup):
+    account = _make_account("account-with-user-id", "member@example.com")
+    account.chatgpt_user_id = "user-F35N1VBxC5M3BC4LQHhamB8a"
+    async with SessionLocal() as session:
+        session.add(account)
+        await session.commit()
+
+    response = await async_client.get("/api/accounts")
+
+    assert response.status_code == 200
+    matching = [
+        entry
+        for entry in response.json()["accounts"]
+        if entry["accountId"] == account.id
+    ]
+    assert len(matching) == 1
+    assert matching[0]["chatgptUserId"] == "user-F35N1VBxC5M3BC4LQHhamB8a"
+
+
+@pytest.mark.asyncio
+async def test_workspace_burn_first_bulk_update_skips_preserve_and_is_idempotent(
+    async_client,
+    db_setup,
+):
+    workspace_account_id = "4865cea4-fb0b-41f3-917c-b226b2acdfb0"
+    normal = _make_account("workspace-normal", "normal@example.com")
+    already_burn = _make_account("workspace-burn", "burn@example.com")
+    preserve = _make_account("workspace-preserve", "preserve@example.com")
+    other = _make_account("other-workspace", "other@example.com")
+    for account in (normal, already_burn, preserve):
+        account.chatgpt_account_id = workspace_account_id
+    other.chatgpt_account_id = "85d8ee33-bc27-4413-b3dc-24605885d5b0"
+    normal.routing_policy = "normal"
+    already_burn.routing_policy = "burn_first"
+    preserve.routing_policy = "preserve"
+    other.routing_policy = "normal"
+    async with SessionLocal() as session:
+        session.add_all([normal, already_burn, preserve, other])
+        await session.commit()
+
+    enabled = await async_client.put(
+        f"/api/accounts/workspaces/{workspace_account_id}/burn-first",
+        json={"enabled": True},
+    )
+
+    assert enabled.status_code == 200
+    assert enabled.json() == {
+        "workspaceAccountId": workspace_account_id,
+        "enabled": True,
+        "changedCount": 1,
+        "burnFirstCount": 2,
+        "normalCount": 0,
+        "preserveCount": 1,
+    }
+    repeated = await async_client.put(
+        f"/api/accounts/workspaces/{workspace_account_id}/burn-first",
+        json={"enabled": True},
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["changedCount"] == 0
+
+    disabled = await async_client.put(
+        f"/api/accounts/workspaces/{workspace_account_id}/burn-first",
+        json={"enabled": False},
+    )
+
+    assert disabled.status_code == 200
+    assert disabled.json()["changedCount"] == 2
+    assert disabled.json()["normalCount"] == 2
+    assert disabled.json()["preserveCount"] == 1
+    async with SessionLocal() as session:
+        preserved = await session.get(Account, preserve.id)
+        untouched = await session.get(Account, other.id)
+        assert preserved is not None and preserved.routing_policy == "preserve"
+        assert untouched is not None and untouched.routing_policy == "normal"
+
+
+@pytest.mark.asyncio
 async def test_import_invalid_json_returns_400(async_client):
     files = {"auth_json": ("auth.json", "not-json", "application/json")}
     response = await async_client.post("/api/accounts/import", files=files)

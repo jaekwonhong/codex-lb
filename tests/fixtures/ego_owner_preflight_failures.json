@@ -1,0 +1,206 @@
+[
+  {
+    "operationId": "646a8947174949619862b04e4dbd4540",
+    "memberSwitchOperationId": "646a8947174949619862b04e4dbd4540",
+    "workspaceId": "cdp-1",
+    "workspaceName": "Workspace",
+    "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+    "targetDisplayName": "target",
+    "targetEmail": "target@example.com",
+    "targetUserId": "user-Target123",
+    "stage": "failed",
+    "code": "ego_owner_identity_mismatch",
+    "removedEmail": null,
+    "removedUserId": null,
+    "membershipState": "unknown",
+    "updatedAt": "2026-09-11T12:27:40.900858+00:00",
+    "trace": [
+      {
+        "sequence": 1,
+        "stage": "queued",
+        "code": "queued",
+        "at": "2026-09-11T12:27:40.876912+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 2,
+        "stage": "confirming_personal",
+        "code": "confirming_owner_personal_before_membership_change",
+        "at": "2026-09-11T12:27:40.889145+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 3,
+        "stage": "confirming_personal",
+        "code": "ego_owner_identity_mismatch",
+        "at": "2026-09-11T12:27:40.894441+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 4,
+        "stage": "failed",
+        "code": "ego_owner_identity_mismatch",
+        "at": "2026-09-11T12:27:40.900858+00:00",
+        "action": null,
+        "status": null
+      }
+    ],
+    "invitationSettlement": null
+  },
+  {
+    "operationId": "afeb4055a2764152b06ba3c8df24d126",
+    "memberSwitchOperationId": "afeb4055a2764152b06ba3c8df24d126",
+    "workspaceId": "cdp-1",
+    "workspaceName": "Workspace",
+    "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+    "targetDisplayName": "target",
+    "targetEmail": "target@example.com",
+    "targetUserId": "user-Target123",
+    "stage": "failed",
+    "code": "ego_owner_identity_unavailable",
+    "removedEmail": null,
+    "removedUserId": null,
+    "membershipState": "unknown",
+    "updatedAt": "2026-09-11T12:27:40.937253+00:00",
+    "trace": [
+      {
+        "sequence": 1,
+        "stage": "queued",
+        "code": "queued",
+        "at": "2026-09-11T12:27:40.914193+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 2,
+        "stage": "confirming_personal",
+        "code": "confirming_owner_personal_before_membership_change",
+        "at": "2026-09-11T12:27:40.926302+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 3,
+        "stage": "confirming_personal",
+        "code": "ego_owner_identity_unavailable",
+        "at": "2026-09-11T12:27:40.931332+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 4,
+        "stage": "failed",
+        "code": "ego_owner_identity_unavailable",
+        "at": "2026-09-11T12:27:40.937253+00:00",
+        "action": null,
+        "status": null
+      }
+    ],
+    "invitationSettlement": null
+  },
+  {
+    "operationId": "3b6152d64b16479f9f96f320e47e68f5",
+    "memberSwitchOperationId": "3b6152d64b16479f9f96f320e47e68f5",
+    "workspaceId": "cdp-1",
+    "workspaceName": "Workspace",
+    "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+    "targetDisplayName": "target",
+    "targetEmail": "target@example.com",
+    "targetUserId": "user-Target123",
+    "stage": "failed",
+    "code": "ego_owner_personal_outcome_unknown",
+    "removedEmail": null,
+    "removedUserId": null,
+    "membershipState": "unknown",
+    "updatedAt": "2026-09-11T12:27:40.839271+00:00",
+    "trace": [
+      {
+        "sequence": 1,
+        "stage": "queued",
+        "code": "queued",
+        "at": "2026-09-11T12:27:40.759394+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 2,
+        "stage": "confirming_personal",
+        "code": "confirming_owner_personal_before_membership_change",
+        "at": "2026-09-11T12:27:40.824557+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 3,
+        "stage": "confirming_personal",
+        "code": "ego_owner_personal_outcome_unknown",
+        "at": "2026-09-11T12:27:40.830948+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 4,
+        "stage": "failed",
+        "code": "ego_owner_personal_outcome_unknown",
+        "at": "2026-09-11T12:27:40.839271+00:00",
+        "action": null,
+        "status": null
+      }
+    ],
+    "invitationSettlement": null
+  },
+  {
+    "operationId": "699a9a8b880d4be0a70166ed1859fb48",
+    "memberSwitchOperationId": "699a9a8b880d4be0a70166ed1859fb48",
+    "workspaceId": "cdp-1",
+    "workspaceName": "Workspace",
+    "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+    "targetDisplayName": "target",
+    "targetEmail": "target@example.com",
+    "targetUserId": "user-Target123",
+    "stage": "failed",
+    "code": "ego_owner_profile_login_required",
+    "removedEmail": null,
+    "removedUserId": null,
+    "membershipState": "unknown",
+    "updatedAt": "2026-09-11T12:27:40.972811+00:00",
+    "trace": [
+      {
+        "sequence": 1,
+        "stage": "queued",
+        "code": "queued",
+        "at": "2026-09-11T12:27:40.949188+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 2,
+        "stage": "confirming_personal",
+        "code": "confirming_owner_personal_before_membership_change",
+        "at": "2026-09-11T12:27:40.961254+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 3,
+        "stage": "confirming_personal",
+        "code": "ego_owner_profile_login_required",
+        "at": "2026-09-11T12:27:40.967357+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 4,
+        "stage": "failed",
+        "code": "ego_owner_profile_login_required",
+        "at": "2026-09-11T12:27:40.972811+00:00",
+        "action": null,
+        "status": null
+      }
+    ],
+    "invitationSettlement": null
+  }
+]

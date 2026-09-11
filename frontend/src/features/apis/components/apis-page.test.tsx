@@ -17,6 +17,7 @@ const hookMocks = vi.hoisted(() => ({
 vi.mock("@/features/apis/hooks/use-apis", () => hookMocks);
 
 type MutationMock = {
+	reset: ReturnType<typeof vi.fn>;
 	isPending: boolean;
 	error: Error | null;
 	mutateAsync: ReturnType<typeof vi.fn>;
@@ -32,6 +33,7 @@ type QueryMock<T> = {
 
 function createMutationMock(): MutationMock {
 	return {
+		reset: vi.fn(),
 		isPending: false,
 		error: null,
 		mutateAsync: vi.fn(),

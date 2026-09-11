@@ -19,10 +19,15 @@ DEFAULT_SOURCE_CONTEXT_WINDOW = 128_000
 _SEARCH_TOOL_TYPES = frozenset({"web_search", "web_search_preview"})
 
 
-def source_models_to_upstream_models(sources: list[ModelSource]) -> list[UpstreamModel]:
+def source_models_to_upstream_models(
+    sources: list[ModelSource],
+    *,
+    runtime_enabled_source_ids: set[str] | None = None,
+) -> list[UpstreamModel]:
+    runtime_enabled_source_ids = runtime_enabled_source_ids or set()
     models: list[UpstreamModel] = []
     for source in sources:
-        if not source.is_enabled:
+        if not source.is_enabled and source.id not in runtime_enabled_source_ids:
             continue
         if source.kind != MODEL_SOURCE_KIND_OPENAI_COMPATIBLE:
             continue

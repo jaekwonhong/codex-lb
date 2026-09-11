@@ -22,6 +22,36 @@ function renderSettings(overrides: Partial<Parameters<typeof UpstreamProxySettin
 }
 
 describe("UpstreamProxySettings", () => {
+  it("clears a previous success while the next endpoint test is pending", async () => {
+    const user = userEvent.setup();
+    let complete!: (value: { endpointId: string; ok: boolean }) => void;
+    const waiting = new Promise<{ endpointId: string; ok: boolean }>((resolve) => { complete = resolve; });
+    const onTestEndpoint = vi.fn().mockResolvedValueOnce({ endpointId: "ep_primary", ok: true })
+      .mockReturnValueOnce(waiting);
+    renderSettings({ onTestEndpoint });
+    await user.click(screen.getByRole("button", { name: "Test" }));
+    expect(await screen.findByText(/Connection ok/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Test" }));
+    try {
+      expect(screen.queryByText(/Connection ok/)).not.toBeInTheDocument();
+    } finally { complete({ endpointId: "ep_primary", ok: false }); }
+    await waitFor(() => expect(screen.getByRole("button", { name: "Test" })).toBeEnabled());
+  });
+
+  it("replaces an earlier endpoint success with a rejected test result", async () => {
+    const user = userEvent.setup();
+    const onTestEndpoint = vi.fn().mockResolvedValueOnce({ endpointId: "ep_primary", ok: true })
+      .mockRejectedValueOnce(new Error("Diagnostic unavailable"));
+    renderSettings({ onTestEndpoint });
+    await user.click(screen.getByRole("button", { name: "Test" }));
+    expect(await screen.findByText(/Connection ok/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Test" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Test" })).toBeEnabled());
+    expect(screen.queryByText(/Connection ok/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Diagnostic unavailable/)).toBeInTheDocument();
+    expect(onTestEndpoint).toHaveBeenCalledTimes(2);
+  });
+
   it("hides creation fields until a dialog is opened and shows trigger buttons", () => {
     renderSettings();
 

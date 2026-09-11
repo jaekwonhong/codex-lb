@@ -179,7 +179,7 @@ export function DonutChart({ items, total, centerValue, title, subtitle, safeLin
         {subtitle ? <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p> : null}
       </div>
 
-      <div className="flex min-w-0 items-center gap-6">
+      <div className="flex min-w-0 flex-col items-center gap-6 sm:flex-row">
         <div className="flex shrink-0 flex-col items-center gap-2">
           <div className="relative h-[152px] w-[152px] overflow-visible">
             <PieChart width={CHART_SIZE} height={CHART_SIZE} margin={{ top: CHART_MARGIN, right: CHART_MARGIN, bottom: CHART_MARGIN, left: CHART_MARGIN }}>
@@ -261,7 +261,7 @@ export function DonutChart({ items, total, centerValue, title, subtitle, safeLin
         </div>
 
         <div
-          className="min-w-0 flex-1 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="w-full min-w-0 flex-1 overflow-y-auto sm:w-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           data-testid="donut-legend-list"
           style={{ maxHeight: `calc(${LEGEND_VISIBLE_COUNT} * ${LEGEND_ROW_HEIGHT_REM}rem + ${(LEGEND_VISIBLE_COUNT - 1) * LEGEND_ROW_GAP_REM}rem)` }}
         >

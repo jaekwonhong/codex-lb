@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 
+from app.core.config.settings import get_settings
 from app.core.openai.model_registry import get_model_registry
 from app.db.models import ModelSource
 from app.db.session import detach_session_objects, get_background_session
@@ -20,12 +21,76 @@ from app.modules.model_sources.repository import ModelSourcesRepository
 
 logger = logging.getLogger(__name__)
 
-
 def allowed_source_ids_for_api_key(api_key: ApiKeyData | None) -> set[str] | None:
     """Source ids an API key may use, or ``None`` when scoping is disabled."""
     if api_key is None or not api_key.source_assignment_scope_enabled:
         return None
     return set(api_key.assigned_source_ids)
+
+
+def runtime_enabled_source_ids_for_api_key(api_key: ApiKeyData | None) -> set[str]:
+    """Disabled source ids this process may expose to one explicitly scoped key.
+
+    The database row remains disabled, so replicas without the process-local
+    override continue to ignore it. The override is deliberately ineffective
+    for unscoped API keys: a source must be both configured in this process and
+    assigned to the presented key before it can be catalogued or selected.
+    """
+    if api_key is None or not api_key.source_assignment_scope_enabled:
+        return set()
+    configured = {
+        source_id.strip()
+        for source_id in get_settings().runtime_enabled_model_source_ids.split(",")
+        if source_id.strip()
+    }
+    if not configured:
+        return set()
+    return configured & set(api_key.assigned_source_ids)
+
+
+def source_scoped_model_requires_source(
+    model: str | None,
+    api_key: ApiKeyData | None,
+    *,
+    raw_model: str | None = None,
+) -> bool:
+    """Whether a source-scoped request must not fall through to subscriptions.
+
+    Source assignment is not an exclusive provider mode: a key can still use
+    ordinary subscription models. Fail closed only when none of the exact
+    request candidates exists in the subscription catalog. In that case a
+    failed source lookup means the model is source-only for this request, so
+    forwarding it to a subscription account would cross provider boundaries.
+    """
+    if api_key is None or not api_key.source_assignment_scope_enabled:
+        return False
+    candidates = [candidate for candidate in (raw_model, model) if candidate]
+    if not candidates:
+        return False
+    registry_models = get_model_registry().get_models_with_fallback()
+    return not any(candidate in registry_models for candidate in dict.fromkeys(candidates))
+
+
+async def _find_runtime_enabled_responses_source_for_model(
+    repository: ModelSourcesRepository,
+    model: str,
+    *,
+    source_ids: set[str],
+    require_streaming: bool,
+) -> ModelSource | None:
+    for source_id in sorted(source_ids):
+        source = await repository.get_by_id(source_id)
+        if source is None or source.is_enabled:
+            continue
+        if source.kind != "openai_compatible" or not source.supports_responses:
+            continue
+        for source_model in source.models:
+            if source_model.model != model or not source_model.is_enabled:
+                continue
+            if require_streaming and not source_model.supports_streaming:
+                continue
+            return source
+    return None
 
 
 async def select_responses_model_source(
@@ -48,6 +113,7 @@ async def select_responses_model_source(
     two lookups from drifting apart the way the transports once did.
     """
     assigned_source_ids = allowed_source_ids_for_api_key(api_key)
+    runtime_enabled_source_ids = runtime_enabled_source_ids_for_api_key(api_key)
     exact_allowed_models = set(api_key.allowed_models) if api_key and api_key.allowed_models else None
     candidates = [candidate for candidate in (raw_model, model) if candidate]
     if not candidates:
@@ -68,6 +134,13 @@ async def select_responses_model_source(
                 require_streaming=require_streaming,
                 only_disabled=only_disabled,
             )
+            if source is None and runtime_enabled_source_ids:
+                source = await _find_runtime_enabled_responses_source_for_model(
+                    repository,
+                    candidate,
+                    source_ids=runtime_enabled_source_ids,
+                    require_streaming=require_streaming,
+                )
             if source is not None:
                 break
         else:

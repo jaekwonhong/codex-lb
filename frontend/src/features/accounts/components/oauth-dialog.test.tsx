@@ -74,6 +74,25 @@ const errorState = {
 };
 
 describe("OauthDialog", () => {
+  it("disables initial sign-in while the start request is outstanding", () => {
+    render(<OauthDialog open state={{ ...idleState, status: "starting" }}
+      onOpenChange={vi.fn()} onStart={vi.fn()} onComplete={vi.fn()}
+      onManualCallback={vi.fn()} onReset={vi.fn()} />);
+    expect(screen.getByRole("button", { name: /Start sign/i })).toBeDisabled();
+  });
+
+  it.each(["initial", "refresh"])("handles a rejected %s start without an unhandled rejection", async (kind) => {
+    const onStart = vi.fn().mockRejectedValue(new Error("synthetic OAuth-start rejection"));
+    const user = userEvent.setup();
+    const props = { open: true, onOpenChange: vi.fn(), onStart, onComplete: vi.fn(),
+      onManualCallback: vi.fn(), onReset: vi.fn() };
+    const view = render(<OauthDialog {...props} state={kind === "initial" ? idleState : browserPendingState} />);
+    await user.click(screen.getByRole("button", { name: kind === "initial" ? /Start sign/i : "Refresh link" }));
+    await waitFor(() => expect(onStart).toHaveBeenCalledTimes(1));
+    view.rerender(<OauthDialog {...props} state={errorState} />);
+    expect(screen.getByText(errorState.errorMessage)).toBeInTheDocument();
+  });
+
   afterEach(() => {
     if (originalClipboard) {
       Object.defineProperty(navigator, "clipboard", originalClipboard);

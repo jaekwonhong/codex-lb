@@ -17,6 +17,11 @@ vi.mock("@/features/accounts/hooks/use-accounts", () => ({
     isFetching: false,
     error: null,
   })),
+  useLocalOAuthImportFiles: vi.fn(() => ({
+    data: { available: false, files: [] },
+    isLoading: false,
+    error: null,
+  })),
 }));
 
 vi.mock("@/features/accounts/hooks/use-oauth", () => ({
@@ -65,6 +70,10 @@ vi.mock("@/features/settings/hooks/use-settings", () => ({
   })),
 }));
 
+vi.mock("@/features/member-switch/components/member-switch-panel", () => ({
+  MemberSwitchPanel: () => <section aria-label="Member switch panel" />,
+}));
+
 const { useAccounts } = await import("@/features/accounts/hooks/use-accounts");
 const mockedUseAccounts = useAccounts as unknown as ReturnType<typeof vi.fn>;
 const { useUpstreamProxyAdmin } = await import("@/features/settings/hooks/use-settings");
@@ -92,6 +101,7 @@ function idleMutation() {
     isPending: false,
     error: null,
     mutateAsync: vi.fn(),
+    reset: vi.fn(),
   };
 }
 
@@ -109,6 +119,23 @@ function account(overrides: Partial<AccountSummary>): AccountSummary {
 }
 
 describe("AccountsPage", () => {
+  it("shows initial query failure and retries only on explicit interaction", async () => {
+    const refetch = vi.fn().mockResolvedValue(undefined);
+    mockedUseAccounts.mockReturnValue({
+      accountsQuery: { data: undefined, error: new Error("Account list unavailable"), refetch, isFetching: false },
+      importMutation: idleMutation(), localImportMutation: idleMutation(), pauseMutation: idleMutation(),
+      resumeMutation: idleMutation(), probeMutation: idleMutation(), usageResetMutation: idleMutation(),
+      deleteMutation: idleMutation(), exportAuthMutation: idleMutation(), setAliasMutation: idleMutation(),
+      limitWarmupMutation: idleMutation(), routingPolicyMutation: idleMutation(), updateMutation: idleMutation(),
+    } as unknown as ReturnType<typeof useAccounts>);
+    const user = userEvent.setup();
+    const { container } = render(<MemoryRouter><AccountsPage /></MemoryRouter>);
+    expect(screen.getByRole("alert")).toHaveTextContent("Account list unavailable");
+    expect(container.querySelector('[data-slot="skeleton"]')).toBeNull();
+    expect(refetch).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Retry account loading" }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
   beforeEach(() => {
     // The auth store starts least-privilege; these cases exercise admin actions.
     useAuthStore.setState({
@@ -231,6 +258,7 @@ describe("AccountsPage", () => {
         refetch: vi.fn(),
       },
       importMutation: idleMutation(),
+      localImportMutation: idleMutation(),
       pauseMutation: idleMutation(),
       resumeMutation: idleMutation(),
       probeMutation: idleMutation(),
@@ -273,6 +301,7 @@ describe("AccountsPage", () => {
         refetch: vi.fn(),
       },
       importMutation: idleMutation(),
+      localImportMutation: idleMutation(),
       pauseMutation: idleMutation(),
       resumeMutation: idleMutation(),
       probeMutation: idleMutation(),
@@ -319,6 +348,7 @@ describe("AccountsPage", () => {
         refetch: vi.fn(),
       },
       importMutation: idleMutation(),
+      localImportMutation: idleMutation(),
       pauseMutation: idleMutation(),
       resumeMutation: idleMutation(),
       probeMutation: idleMutation(),
@@ -372,6 +402,7 @@ describe("AccountsPage", () => {
         refetch: vi.fn(),
       },
       importMutation: idleMutation(),
+      localImportMutation: idleMutation(),
       pauseMutation: idleMutation(),
       resumeMutation: idleMutation(),
       probeMutation: idleMutation(),
@@ -379,6 +410,7 @@ describe("AccountsPage", () => {
         isPending: false,
         error: null,
         mutateAsync: resetUsage,
+        reset: vi.fn(),
       },
       deleteMutation: idleMutation(),
       exportAuthMutation: idleMutation(),
@@ -435,6 +467,7 @@ describe("AccountsPage", () => {
         refetch: vi.fn(),
       },
       importMutation: idleMutation(),
+      localImportMutation: idleMutation(),
       pauseMutation: idleMutation(),
       resumeMutation: idleMutation(),
       probeMutation: {

@@ -13,6 +13,7 @@ import type {
   StickySessionIdentifier,
   StickySessionSortBy,
   StickySessionSortDir,
+  StickySessionsDeleteFilteredRequest,
   StickySessionsDeleteFilteredResponse,
   StickySessionsDeleteResponse,
   StickySessionsListParams,
@@ -42,6 +43,16 @@ export function useStickySessions() {
     }),
     [deferredAccountQuery, deferredKeyQuery, params],
   );
+  const deleteFilteredRequest = useMemo<StickySessionsDeleteFilteredRequest>(
+    () => ({
+      staleOnly: queryParams.staleOnly,
+      accountQuery: queryParams.accountQuery,
+      keyQuery: queryParams.keyQuery,
+    }),
+    [queryParams.accountQuery, queryParams.keyQuery, queryParams.staleOnly],
+  );
+  const filtersSettling =
+    params.accountQuery !== deferredAccountQuery || params.keyQuery !== deferredKeyQuery;
 
   const { data, error, isFetching, isLoading, isPending, isSuccess, refetch } = useQuery({
     queryKey: ["sticky-sessions", "list", queryParams],
@@ -97,12 +108,7 @@ export function useStickySessions() {
   });
 
   const deleteFilteredMutation = useMutation({
-    mutationFn: () =>
-      deleteFilteredStickySessions({
-        staleOnly: queryParams.staleOnly,
-        accountQuery: queryParams.accountQuery,
-        keyQuery: queryParams.keyQuery,
-      }),
+    mutationFn: (request: StickySessionsDeleteFilteredRequest) => deleteFilteredStickySessions(request),
     onSuccess: async (response: StickySessionsDeleteFilteredResponse) => {
       if (response.deletedCount > 0) {
         toast.success(
@@ -133,6 +139,8 @@ export function useStickySessions() {
 
   return {
     params,
+    deleteFilteredRequest,
+    filtersSettling,
     setAccountQuery,
     setKeyQuery,
     setSort,

@@ -91,7 +91,7 @@ export function FirewallSection({ disabled = false }: FirewallSectionProps) {
           onChange={(event) => setIpAddress(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
-              void handleAdd();
+              void handleAdd().catch(() => undefined);
             }
           }}
           placeholder="127.0.0.1 or 2001:db8::1"
@@ -102,7 +102,7 @@ export function FirewallSection({ disabled = false }: FirewallSectionProps) {
           type="button"
           size="sm"
           className="h-8 text-xs"
-          onClick={() => void handleAdd()}
+          onClick={() => void handleAdd().catch(() => undefined)}
           disabled={busy || !ipAddress.trim()}
         >
 	          {t("firewall.actions.addIp")}
@@ -163,16 +163,19 @@ export function FirewallSection({ disabled = false }: FirewallSectionProps) {
 	        title={t("firewall.removeDialog.title")}
 	        description={t("firewall.removeDialog.description", { ip: deleteDialog.data ?? "" })}
 	        confirmLabel={t("common.actions.remove")}
+        pending={deleteMutation.isPending}
+        keepOpenOnConfirm
+        confirmDisabled={!deleteDialog.data}
         onOpenChange={deleteDialog.onOpenChange}
         onConfirm={() => {
-          if (!deleteDialog.data) {
-            return;
-          }
-          void deleteMutation.mutateAsync(deleteDialog.data).finally(() => {
-            deleteDialog.hide();
-          });
+          const target = deleteDialog.data;
+          if (!target) return;
+          void deleteMutation.mutateAsync(target).then(() => deleteDialog.hide()).catch(() => undefined);
         }}
-      />
+      >
+        {deleteMutation.error ? <div role="alert"><AlertMessage variant="error">{getErrorMessageOrNull(deleteMutation.error)}</AlertMessage>
+          <p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p></div> : null}
+      </ConfirmDialog>
     </section>
   );
 }

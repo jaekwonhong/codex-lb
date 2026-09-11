@@ -117,7 +117,12 @@ export function SettingsPage() {
     getErrorMessageOrNull(testEndpointMutation.error);
 
   const handleSave = async (payload: SettingsUpdateRequest) => {
-    await updateSettingsMutation.mutateAsync(payload);
+    try {
+      await updateSettingsMutation.mutateAsync(payload);
+    } catch {
+      // Cards use this as an event-only callback. The mutation retains the
+      // error for the page alert/toast; do not also emit an unhandled rejection.
+    }
   };
 
   return (
@@ -130,6 +135,12 @@ export function SettingsPage() {
         </h1>
         <p className="mt-1 text-sm text-muted-foreground">{t("settings.page.subtitle")}</p>
       </div>
+
+      {error ? (
+        <div role="alert">
+          <AlertMessage variant="error">{error}</AlertMessage>
+        </div>
+      ) : null}
 
       {settingsQuery.isPending && !settings && initialRetryError === null ? (
         <SettingsSkeleton />
@@ -157,7 +168,6 @@ export function SettingsPage() {
         </div>
       ) : (
         <>
-          {error ? <AlertMessage variant="error">{error}</AlertMessage> : null}
           {!canWrite ? (
             <div className="rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs font-medium text-foreground">
               {t("settings.page.readOnlyNotice")}

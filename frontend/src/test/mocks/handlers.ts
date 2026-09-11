@@ -883,6 +883,19 @@ function listFilteredAutomationRuns(url: URL) {
 }
 
 export const handlers = [
+  http.get("/api/member-switch-runs/active", () => HttpResponse.json({ run: null })),
+  http.get("/api/member-switch-runs/oauth-enrollments/active", () =>
+    HttpResponse.json({ enrollment: null })),
+  http.get("http://127.0.0.1:53418/member-switch/v1/catalog", () => {
+    return HttpResponse.json({
+      enabled: false,
+      workspaces: [],
+      schemaVersion: 1,
+      catalogFingerprint: "0".repeat(64),
+      capabilities: [],
+    });
+  }),
+
   http.get("/health", () => {
     return HttpResponse.json({ status: "ok" });
   }),

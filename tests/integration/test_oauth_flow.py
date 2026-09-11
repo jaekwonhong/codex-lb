@@ -22,9 +22,10 @@ from app.core.clients.oauth import DeviceCode, OAuthError, OAuthTokens
 from app.core.crypto import TokenEncryptor
 from app.core.upstream_proxy import UpstreamProxyRouteError
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountStatus, OAuthFlowState
+from app.db.models import Account, AccountStatus, MemberSwitchControlRecord, OAuthFlowState
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
+from app.modules.member_switch.repository import ControlConflict, MemberSwitchControlRepository
 from app.modules.oauth import api as oauth_api_module
 from app.modules.oauth.repository import OAuthFlowRepository
 from app.modules.oauth.schemas import ManualCallbackRequest
@@ -77,6 +78,97 @@ async def _drain_global_oauth_store() -> None:
         task.cancel()
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await task
+
+
+async def test_dashboard_oauth_start_is_blocked_while_managed_member_operation_is_active(async_client, monkeypatch):
+    request_device_code = AsyncMock(side_effect=AssertionError("device OAuth must not start"))
+    monkeypatch.setattr(oauth_module, "request_device_code", request_device_code)
+    async with SessionLocal() as session:
+        session.add(
+            MemberSwitchControlRecord(
+                id="managed-oauth-blocker",
+                kind="auth_enrollment",
+                active_scope="member-switch",
+                revision=0,
+                payload="{}",
+            )
+        )
+        await session.commit()
+
+    response = await async_client.post("/api/oauth/start", json={"forceMethod": "device"})
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "oauth_start_busy"
+    request_device_code.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_dashboard_oauth_start_guard_serializes_before_external_device_code(async_client, monkeypatch):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_device_code(**_):
+        entered.set()
+        await release.wait()
+        return DeviceCode(
+            verification_url="https://auth.openai.com/codex/device",
+            user_code="GUARD-CODE",
+            device_auth_id="dev_guard",
+            interval_seconds=30,
+            expires_in_seconds=300,
+        )
+
+    async def never_complete(**_):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(oauth_module, "request_device_code", fake_device_code)
+    monkeypatch.setattr(oauth_module, "exchange_device_token", never_complete)
+
+    first_task = asyncio.create_task(async_client.post("/api/oauth/start", json={"forceMethod": "device"}))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    second = await async_client.post("/api/oauth/start", json={"forceMethod": "device"})
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "oauth_start_busy"
+
+    release.set()
+    first = await first_task
+    assert first.status_code == 200
+    assert first.json()["userCode"] == "GUARD-CODE"
+
+
+@pytest.mark.asyncio
+async def test_dashboard_oauth_start_guard_blocks_managed_scope_claim_during_external_start(
+    async_client, monkeypatch
+):
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_device_code(**_):
+        entered.set()
+        await release.wait()
+        return DeviceCode(
+            verification_url="https://auth.openai.com/codex/device",
+            user_code="MANAGED-GUARD",
+            device_auth_id="dev_managed_guard",
+            interval_seconds=30,
+            expires_in_seconds=300,
+        )
+
+    async def never_complete(**_):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(oauth_module, "request_device_code", fake_device_code)
+    monkeypatch.setattr(oauth_module, "exchange_device_token", never_complete)
+    first_task = asyncio.create_task(async_client.post("/api/oauth/start", json={"forceMethod": "device"}))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    controls = MemberSwitchControlRepository(SessionLocal)
+    with pytest.raises(ControlConflict, match="flow_busy_or_id_exists"):
+        await controls.create("synthetic-managed", "auth_enrollment", "{}", own_scope=True)
+
+    release.set()
+    first = await first_task
+    assert first.status_code == 200
 
 
 @pytest.fixture(autouse=True)
@@ -720,6 +812,111 @@ async def test_targeted_reauth_rejects_other_seat_in_same_team_workspace(monkeyp
 
     repo.replace_reauthorized.assert_not_awaited()
     repo.upsert_account_slot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handoff_device_oauth_rejects_unexpected_identity_before_saving():
+    repo = AsyncMock()
+    service = oauth_module.OauthService(repo)
+
+    with pytest.raises(oauth_module.ExpectedIdentityMismatchError):
+        await service._persist_tokens(
+            OAuthTokens(
+                access_token="access",
+                refresh_token="refresh",
+                id_token=_encode_jwt(
+                    {
+                        "email": "other@example.com",
+                        "sub": "auth0|other",
+                        "https://api.openai.com/auth": {
+                            "chatgpt_account_id": "workspace-other",
+                            "chatgpt_user_id": "user-Other123",
+                        },
+                    }
+                ),
+            ),
+            expected_identity=oauth_module.ExpectedOAuthIdentity(
+                email="target@example.com",
+                chatgpt_user_id="user-Target123",
+                chatgpt_account_id="workspace-target",
+            ),
+        )
+
+    repo.upsert_account_slot.assert_not_awaited()
+    repo.replace_reauthorized.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handoff_device_oauth_saves_matching_new_identity(monkeypatch):
+    repo = AsyncMock()
+    repo.upsert_account_slot.side_effect = lambda account, **_: account
+    service = oauth_module.OauthService(repo)
+    monkeypatch.setattr(oauth_module, "get_account_selection_cache", lambda: SimpleNamespace(invalidate=lambda: None))
+    monkeypatch.setattr(oauth_module, "get_api_key_cache", lambda: SimpleNamespace(clear=lambda: None))
+    monkeypatch.setattr(oauth_module, "get_cache_invalidation_poller", lambda: None)
+    monkeypatch.setattr(oauth_module, "propagate_account_routing_change", AsyncMock())
+
+    await service._persist_tokens(
+        OAuthTokens(
+            access_token="access",
+            refresh_token="refresh",
+            id_token=_encode_jwt(
+                {
+                    "email": "target@example.com",
+                    "sub": "auth0|target",
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "workspace-target",
+                        "chatgpt_user_id": "user-Target123",
+                    },
+                }
+            ),
+        ),
+        expected_identity=oauth_module.ExpectedOAuthIdentity(
+            email="TARGET@example.com",
+            chatgpt_user_id="user-Target123",
+            chatgpt_account_id="workspace-target",
+        ),
+    )
+
+    repo.upsert_account_slot.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handoff_device_oauth_carries_expected_identity_into_poll_context(monkeypatch):
+    repo = AsyncMock()
+    service = oauth_module.OauthService(repo)
+    service._store = oauth_module.OAuthStateStore()
+
+    async def fake_device_code(**_):
+        return DeviceCode(
+            verification_url="https://auth.openai.com/codex/device",
+            user_code="ABCD-EFGH",
+            device_auth_id="device-1",
+            interval_seconds=5,
+            expires_in_seconds=600,
+        )
+
+    monkeypatch.setattr(oauth_module, "request_device_code", fake_device_code)
+    monkeypatch.setattr(oauth_module, "_oauth_route", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_ensure_device_poll_task_locked", lambda _flow: True)
+
+    started = await service.start_oauth(
+        oauth_module.OauthStartRequest(
+            force_method="device",
+            expected_email="target@example.com",
+            expected_chatgpt_user_id="user-Target123",
+            expected_chatgpt_account_id="workspace-target",
+        )
+    )
+
+    async with service._store.lock:
+        flow = service._store.get_flow_locked(started.flow_id)
+        assert flow is not None
+        assert flow.expected_identity == oauth_module.ExpectedOAuthIdentity(
+            email="target@example.com",
+            chatgpt_user_id="user-Target123",
+            chatgpt_account_id="workspace-target",
+        )
 
 
 @pytest.mark.asyncio
@@ -1557,6 +1754,39 @@ async def test_unknown_flow_error_does_not_mutate_latest_oauth_status():
     assert latest_flow is not None
     assert latest_flow.status == "pending"
     assert latest_flow.error_message is None
+
+
+@pytest.mark.asyncio
+async def test_older_terminal_flow_does_not_replace_newer_latest_flow():
+    await oauth_module._OAUTH_STORE.reset()
+
+    async with oauth_module._OAUTH_STORE.lock:
+        older = oauth_module.OAuthState(
+            flow_id="older-flow",
+            status="pending",
+            method="device",
+        )
+        newer = oauth_module.OAuthState(
+            flow_id="newer-flow",
+            status="pending",
+            method="device",
+        )
+        oauth_module._OAUTH_STORE.remember_flow_locked(older)
+        oauth_module._OAUTH_STORE.remember_flow_locked(newer)
+
+        oauth_module._OAUTH_STORE.set_flow_status_locked(
+            older,
+            status="success",
+            error_message=None,
+        )
+
+        latest_state = oauth_module._OAUTH_STORE.state
+        older_flow = oauth_module._OAUTH_STORE.get_flow_locked("older-flow")
+
+    assert latest_state.flow_id == "newer-flow"
+    assert latest_state.status == "pending"
+    assert older_flow is not None
+    assert older_flow.status == "success"
 
 
 @pytest.mark.asyncio
@@ -2714,6 +2944,61 @@ async def test_loser_device_poller_writes_no_terminal_during_winner_persist(monk
     async with SessionLocal() as session:
         record = await OAuthFlowRepository(session, encryptor).get_by_flow_id("race-terminal")
     assert record is not None and record.status == "success"
+
+
+@pytest.mark.asyncio
+async def test_device_identity_mismatch_records_error_only_after_slot_consumption(monkeypatch):
+    async def fake_oauth_route():
+        return None
+
+    async def fake_exchange_device_token(**_):
+        return OAuthTokens(access_token="access", refresh_token="refresh", id_token="id")
+
+    monkeypatch.setattr(oauth_module, "_oauth_route", fake_oauth_route)
+    monkeypatch.setattr(oauth_module, "exchange_device_token", fake_exchange_device_token)
+
+    encryptor = TokenEncryptor()
+    async with SessionLocal() as session:
+        await OAuthFlowRepository(session, encryptor).create(
+            oauth_module.OAuthFlowRecord(
+                flow_id="identity-mismatch",
+                method="device",
+                status="pending",
+                device_auth_id="dev-mismatch",
+                user_code="MISMATCH",
+                interval_seconds=0,
+                expires_at=utcnow() + timedelta(hours=1),
+            )
+        )
+
+    service = _make_replica_service(oauth_module.OAuthStateStore())
+    await service._claim_device_slot("identity-mismatch")
+    monkeypatch.setattr(
+        service,
+        "_persist_tokens",
+        AsyncMock(side_effect=oauth_module.ExpectedIdentityMismatchError()),
+    )
+
+    await service._poll_device_tokens(
+        "identity-mismatch",
+        oauth_module.DevicePollContext(
+            device_auth_id="dev-mismatch",
+            user_code="MISMATCH",
+            interval_seconds=0,
+            expires_at=time.time() + 300,
+            expected_identity=oauth_module.ExpectedOAuthIdentity(
+                email="target@example.com",
+                chatgpt_user_id="user-Target123",
+                chatgpt_account_id="workspace-target",
+            ),
+        ),
+    )
+
+    async with SessionLocal() as session:
+        record = await OAuthFlowRepository(session, encryptor).get_by_flow_id("identity-mismatch")
+    assert record is not None
+    assert record.status == "error"
+    assert record.error_message == "OAuth identity did not match the selected member and workspace."
 
 
 @pytest.mark.asyncio

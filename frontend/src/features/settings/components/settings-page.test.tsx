@@ -234,6 +234,18 @@ describe("SettingsPage", () => {
     telemetrySettingsMock.mockReset();
   });
 
+  it("consumes the event-only save rejection without losing the mutation error", async () => {
+    const error = new Error("Settings were not saved");
+    const mutation = useSettingsMock().updateSettingsMutation;
+    mutation.error = error;
+    mutation.mutateAsync.mockRejectedValue(error);
+    render(<QueryClientProvider client={new QueryClient()}><MemoryRouter><SettingsPage /></MemoryRouter></QueryClientProvider>);
+    const onSave = importSettingsMock.mock.lastCall?.[0].onSave;
+    await expect(onSave({ importWithoutOverwrite: true })).resolves.toBeUndefined();
+    expect(screen.getByRole("alert")).toHaveTextContent(error.message);
+    expect(mutation.mutateAsync).toHaveBeenCalledTimes(1);
+  });
+
   function renderSettings(initialEntry = "/settings") {
     const queryClient = new QueryClient({
       defaultOptions: { queries: { retry: false } },

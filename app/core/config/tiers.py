@@ -55,6 +55,11 @@ SETTING_TIERS: Final[dict[str, Tier]] = {
     "proxy_downstream_websocket_idle_timeout_seconds": "T3",
     # bind host of the OAuth callback listener; policy §2 T1 example
     "oauth_callback_host": "T1",
+    # per-instance import directory and companion bridge endpoint used by Ego Lite
+    "oauth_import_dir": "T1",
+    "companion_account_pool_url": "T1",
+    # rollout fence for process-local model sources intentionally disabled in DB
+    "runtime_enabled_model_source_ids": "T1",
     "auth_guardian_enabled": "T3",
     "transcription_request_budget_seconds": "T3",
     # path to a replacement quota-key registry; deployment artefact, not behaviour

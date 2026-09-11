@@ -43,6 +43,7 @@ from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteErr
 from app.core.utils.time import naive_utc_to_epoch, utcnow
 from app.db.models import Account, AccountProxyBinding, AccountStatus
 from app.db.session import get_background_session, sqlite_writer_section
+from app.modules.accounts.import_identity import fetch_companion_workspace_burn_first
 from app.modules.accounts.repository import AccountIdentityConflictError, AccountsRepository
 from app.modules.oauth.repository import (
     OAuthFlowRecord,
@@ -117,6 +118,17 @@ class ReauthSeatMismatchError(Exception):
         )
 
 
+class ExpectedIdentityMismatchError(Exception):
+    """Raised when a handoff OAuth flow returns an identity outside its preset."""
+
+
+@dataclass(frozen=True, slots=True)
+class ExpectedOAuthIdentity:
+    email: str
+    chatgpt_user_id: str
+    chatgpt_account_id: str
+
+
 @dataclass
 class OAuthState:
     flow_id: str | None = None
@@ -125,6 +137,7 @@ class OAuthState:
     error_message: str | None = None
     state_token: str | None = None
     intended_account_id: str | None = None
+    expected_identity: ExpectedOAuthIdentity | None = None
     code_verifier: str | None = None
     device_auth_id: str | None = None
     user_code: str | None = None
@@ -184,6 +197,8 @@ class OAuthStateStore:
             method=flow.method,
             error_message=flow.error_message,
             state_token=flow.state_token,
+            intended_account_id=flow.intended_account_id,
+            expected_identity=flow.expected_identity,
             code_verifier=flow.code_verifier,
             device_auth_id=flow.device_auth_id,
             user_code=flow.user_code,
@@ -193,11 +208,16 @@ class OAuthStateStore:
             poll_task=flow.poll_task,
         )
 
+    def sync_latest_flow_if_current_locked(self, flow: OAuthState) -> None:
+        """Refresh the latest-flow snapshot without reviving an older flow."""
+        if self._state.flow_id == flow.flow_id:
+            self.set_latest_flow_locked(flow)
+
     def set_flow_status_locked(self, flow: OAuthState, *, status: str, error_message: str | None) -> None:
         flow.status = status
         flow.error_message = error_message
         flow.finished_at = time.time() if status in _TERMINAL_OAUTH_STATUSES else None
-        self.set_latest_flow_locked(flow)
+        self.sync_latest_flow_if_current_locked(flow)
         if status in _TERMINAL_OAUTH_STATUSES:
             self.prune_terminal_flows_locked()
 
@@ -378,6 +398,12 @@ class OauthService:
             async with get_background_session() as session:
                 return await OAuthFlowRepository(session, self._encryptor).consume_device_slot(flow_id)
 
+    async def current_device_flow_id(self) -> str | None:
+        """Return the current shared device-flow slot owner without mutating it."""
+
+        async with get_background_session() as session:
+            return await OAuthFlowRepository(session, self._encryptor).current_device_slot_flow_id()
+
     async def _persist_flow_status(self, flow_id: str, *, status: str, error_message: str | None) -> bool:
         """Write a durable status transition. Returns whether it was applied; a
         non-success write is rejected (``False``) by the monotonic guard when the
@@ -471,6 +497,17 @@ class OauthService:
     async def start_oauth(self, request: OauthStartRequest) -> OauthStartResponse:
         force_method = (request.force_method or "").lower()
         intended_account_id = clean_account_identity_part(request.account_id)
+        expected_identity = (
+            ExpectedOAuthIdentity(
+                email=request.expected_email,
+                chatgpt_user_id=request.expected_chatgpt_user_id,
+                chatgpt_account_id=request.expected_chatgpt_account_id,
+            )
+            if request.expected_email
+            and request.expected_chatgpt_user_id
+            and request.expected_chatgpt_account_id
+            else None
+        )
         if not force_method and not intended_account_id:
             accounts = await self._accounts_repo.list_accounts()
             if accounts:
@@ -486,9 +523,10 @@ class OauthService:
                 return OauthStartResponse(method="browser")
 
         if force_method == "device":
-            if intended_account_id:
-                return await self._start_device_flow(intended_account_id=intended_account_id)
-            return await self._start_device_flow()
+            return await self._start_device_flow(
+                intended_account_id=intended_account_id,
+                expected_identity=expected_identity,
+            )
 
         try:
             if intended_account_id:
@@ -533,7 +571,7 @@ class OauthService:
             if payload.user_code and flow is not None:
                 flow.user_code = payload.user_code
             if flow is not None:
-                self._store.set_latest_flow_locked(flow)
+                self._store.sync_latest_flow_if_current_locked(flow)
             if state.method == "device":
                 # ``/complete`` only REPORTS device status; it never starts a poll
                 # task. The originating replica is the sole device poller (started
@@ -740,7 +778,12 @@ class OauthService:
                 return ManualCallbackResponse(status="success")
             return ManualCallbackResponse(status="error", error_message=message)
 
-    async def _start_device_flow(self, *, intended_account_id: str | None = None) -> OauthStartResponse:
+    async def _start_device_flow(
+        self,
+        *,
+        intended_account_id: str | None = None,
+        expected_identity: ExpectedOAuthIdentity | None = None,
+    ) -> OauthStartResponse:
         flow_id = secrets.token_urlsafe(12)
         try:
             route = await _oauth_route()
@@ -758,6 +801,7 @@ class OauthService:
             user_code=device.user_code,
             interval_seconds=device.interval_seconds,
             intended_account_id=intended_account_id,
+            expected_identity=expected_identity,
             expires_at=expires_at,
         )
         async with self._store.lock:
@@ -906,7 +950,11 @@ class OauthService:
                     consumed = await self._consume_device_slot(flow_id)
                     if not consumed:
                         return
-                    await self._persist_tokens(tokens, intended_account_id=context.intended_account_id)
+                    await self._persist_tokens(
+                        tokens,
+                        intended_account_id=context.intended_account_id,
+                        expected_identity=context.expected_identity,
+                    )
                     await self._set_success(flow_id)
                     return
                 await _async_sleep(context.interval_seconds)
@@ -922,13 +970,19 @@ class OauthService:
         except AccountIdentityConflictError:
             if consumed or await self._consume_device_slot(flow_id):
                 await self._set_error(_ACCOUNT_IDENTITY_CONFLICT_MESSAGE, flow_id=flow_id)
+        except ExpectedIdentityMismatchError:
+            if consumed or await self._consume_device_slot(flow_id):
+                await self._set_error(
+                    "OAuth identity did not match the selected member and workspace.",
+                    flow_id=flow_id,
+                )
         finally:
             async with self._store.lock:
                 flow = self._store.get_flow_locked(flow_id)
                 current = asyncio.current_task()
                 if flow is not None and flow.poll_task is current:
                     flow.poll_task = None
-                    self._store.set_latest_flow_locked(flow)
+                    self._store.sync_latest_flow_if_current_locked(flow)
 
     def _ensure_device_poll_task_locked(self, state: OAuthState) -> bool:
         if state.poll_task and not state.poll_task.done():
@@ -943,6 +997,7 @@ class OauthService:
             interval_seconds=max(interval, 0),
             expires_at=state.expires_at,
             intended_account_id=state.intended_account_id,
+            expected_identity=state.expected_identity,
         )
         state.poll_task = asyncio.create_task(self._poll_device_tokens(state.flow_id, poll_context))
         return True
@@ -952,6 +1007,7 @@ class OauthService:
         tokens: OAuthTokens,
         *,
         intended_account_id: str | None = None,
+        expected_identity: ExpectedOAuthIdentity | None = None,
     ) -> None:
         claims = extract_id_token_claims(tokens.id_token)
         auth_claims = claims.auth or OpenAIAuthClaims()
@@ -961,11 +1017,33 @@ class OauthService:
         workspace_id = clean_account_identity_part(auth_claims.workspace_id or claims.workspace_id)
         workspace_label = clean_account_identity_part(auth_claims.workspace_label or claims.workspace_label)
         seat_type = normalize_seat_type(auth_claims.seat_type or claims.seat_type)
+        if expected_identity is not None:
+            expected_user_id = clean_account_identity_part(expected_identity.chatgpt_user_id)
+            expected_account_id = clean_account_identity_part(expected_identity.chatgpt_account_id)
+            returned_user_id = clean_account_identity_part(chatgpt_user_id)
+            returned_account_id = clean_account_identity_part(raw_account_id)
+            if (
+                email.casefold() != expected_identity.email.casefold()
+                or returned_user_id != expected_user_id
+                or returned_account_id != expected_account_id
+            ):
+                raise ExpectedIdentityMismatchError("OAuth returned an identity outside the selected handoff preset.")
         account_id = generate_unique_account_id(raw_account_id, email, workspace_id, workspace_label)
         plan_type = coerce_account_plan_type(
             auth_claims.chatgpt_plan_type or claims.chatgpt_plan_type,
             DEFAULT_PLAN,
         )
+        burn_first_enabled = (
+            await fetch_companion_workspace_burn_first(
+                get_settings().companion_account_pool_url,
+                workspace_account_id=raw_account_id,
+            )
+            if raw_account_id
+            else None
+        )
+        routing_policy_override = (
+            "burn_first" if burn_first_enabled else "normal"
+        ) if burn_first_enabled is not None else None
 
         account = Account(
             id=intended_account_id or account_id,
@@ -985,13 +1063,19 @@ class OauthService:
         )
         if self._repo_factory:
             async with self._repo_factory() as repo:
-                saved = await self._save_oauth_account(repo, account, intended_account_id=intended_account_id)
+                saved = await self._save_oauth_account(
+                    repo,
+                    account,
+                    intended_account_id=intended_account_id,
+                    routing_policy_override=routing_policy_override,
+                )
                 saved_id = saved.id
         else:
             saved = await self._save_oauth_account(
                 self._accounts_repo,
                 account,
                 intended_account_id=intended_account_id,
+                routing_policy_override=routing_policy_override,
             )
             saved_id = saved.id
 
@@ -1004,12 +1088,20 @@ class OauthService:
         account: Account,
         *,
         intended_account_id: str | None,
+        routing_policy_override: str | None,
     ) -> Account:
         if intended_account_id is None:
+            if routing_policy_override is None:
+                return await repo.upsert_account_slot(
+                    account,
+                    preserve_unknown_workspace_duplicates=False,
+                    preserve_identity_slots=True,
+                )
             return await repo.upsert_account_slot(
                 account,
                 preserve_unknown_workspace_duplicates=False,
                 preserve_identity_slots=True,
+                routing_policy_override=routing_policy_override,
             )
 
         intended = await repo.get_by_id(intended_account_id)
@@ -1062,7 +1154,14 @@ class OauthService:
         if not workspace_matches or not seat_matches:
             raise ReauthSeatMismatchError(intended.email, account.email)
 
-        saved = await repo.replace_reauthorized(intended_account_id, account)
+        if routing_policy_override is None:
+            saved = await repo.replace_reauthorized(intended_account_id, account)
+        else:
+            saved = await repo.replace_reauthorized(
+                intended_account_id,
+                account,
+                routing_policy_override=routing_policy_override,
+            )
         if saved is None:
             raise ReauthSeatMismatchError(intended.email, account.email)
         return saved
@@ -1182,6 +1281,7 @@ class DevicePollContext:
     interval_seconds: int
     expires_at: float
     intended_account_id: str | None = None
+    expected_identity: ExpectedOAuthIdentity | None = None
 
 
 def _success_html() -> str:

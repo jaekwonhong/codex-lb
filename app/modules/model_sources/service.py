@@ -52,7 +52,7 @@ class ModelSourcesService:
             kind=MODEL_SOURCE_KIND_OPENAI_COMPATIBLE,
             base_url=_normalize_base_url(payload.base_url),
             api_key_encrypted=_encrypt_optional(self._encryptor, payload.api_key),
-            is_enabled=True,
+            is_enabled=payload.is_enabled,
             health_status=MODEL_SOURCE_HEALTH_UNKNOWN,
             supports_chat_completions=payload.supports_chat_completions,
             supports_responses=payload.supports_responses,

@@ -1,0 +1,70 @@
+{
+  "generator": "EgoLiteMemberFlowTests.Emit_actual_close_receipts_for_python_contract_validation",
+  "request": {
+    "commandId": "6192f7b2-426a-4937-aa2f-6c049791c9d4",
+    "clientFlowId": "a1cb2479-1fcf-431d-892d-9a3a3a793a4e",
+    "action": "close_browser",
+    "memberSwitchOperationId": "4c02115ceda442f8ba965d476bf059fa",
+    "identity": {
+      "workspaceId": "cdp-1",
+      "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+      "presetId": "cdp-1-target",
+      "targetEmail": "target@example.com",
+      "targetUserId": "user-Target123",
+      "catalogFingerprint": "faf4dfc306327be05890a71c9302d9f876f8cb8d220181494e163f02ad344fc1"
+    },
+    "browserOperationId": "c9d5ef276a1541389f5cf5472a58a5df",
+    "verificationUrl": null,
+    "userCode": null
+  },
+  "pending": {
+    "schemaVersion": 1,
+    "commandId": "6192f7b2-426a-4937-aa2f-6c049791c9d4",
+    "clientFlowId": "a1cb2479-1fcf-431d-892d-9a3a3a793a4e",
+    "action": "close_browser",
+    "memberSwitchOperationId": "4c02115ceda442f8ba965d476bf059fa",
+    "identity": {
+      "workspaceId": "cdp-1",
+      "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+      "presetId": "cdp-1-target",
+      "targetEmail": "target@example.com",
+      "targetUserId": "user-Target123",
+      "catalogFingerprint": "faf4dfc306327be05890a71c9302d9f876f8cb8d220181494e163f02ad344fc1"
+    },
+    "requestHash": "de66f767d073132c7c9e0af16c31916b6a8669c75025c243a18d50ea0d0b13b4",
+    "state": "pending",
+    "code": "participant_outcome_unknown",
+    "recordedAt": "2026-09-09T10:50:38.293705+00:00",
+    "browserOperationId": "c9d5ef276a1541389f5cf5472a58a5df",
+    "session": null,
+    "browser": null,
+    "close": null
+  },
+  "settled": {
+    "schemaVersion": 1,
+    "commandId": "6192f7b2-426a-4937-aa2f-6c049791c9d4",
+    "clientFlowId": "a1cb2479-1fcf-431d-892d-9a3a3a793a4e",
+    "action": "close_browser",
+    "memberSwitchOperationId": "4c02115ceda442f8ba965d476bf059fa",
+    "identity": {
+      "workspaceId": "cdp-1",
+      "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+      "presetId": "cdp-1-target",
+      "targetEmail": "target@example.com",
+      "targetUserId": "user-Target123",
+      "catalogFingerprint": "faf4dfc306327be05890a71c9302d9f876f8cb8d220181494e163f02ad344fc1"
+    },
+    "requestHash": "de66f767d073132c7c9e0af16c31916b6a8669c75025c243a18d50ea0d0b13b4",
+    "state": "completed",
+    "code": "auth_target_closed",
+    "recordedAt": "2026-09-09T10:50:38.307142+00:00",
+    "browserOperationId": "c9d5ef276a1541389f5cf5472a58a5df",
+    "session": null,
+    "browser": null,
+    "close": {
+      "closed": true,
+      "code": "auth_target_closed",
+      "outcomeUnknown": false
+    }
+  }
+}

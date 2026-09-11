@@ -150,4 +150,70 @@ describe("automations page integration", () => {
 		expect(within(listbox).getByText("gpt-5.4")).toBeInTheDocument();
 		expect(within(listbox).queryByText("openai-compatible/source-model")).not.toBeInTheDocument();
 	});
+
+	it("keeps the exact run-now confirmation open when queuing fails", async () => {
+		const user = userEvent.setup({ delay: null });
+		renderWithProviders(<AutomationsPage />);
+		await user.click(await screen.findByRole("button", { name: "Add automation" }));
+		const createDialog = await screen.findByRole("dialog", { name: "Add automation" });
+		await user.type(within(createDialog).getByPlaceholderText("Automation name"), "Run failure job");
+		await user.click(within(createDialog).getByRole("button", { name: "Create automation" }));
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add automation" })).not.toBeInTheDocument());
+		const row = getJobRow("Run failure job");
+		server.use(
+			http.post("/api/automations/:automationId/run-now", () =>
+				HttpResponse.json({ error: { code: "synthetic_run_failure", message: "run failed" } }, { status: 500 }),
+			),
+		);
+
+		await user.click(within(row).getByRole("button", { name: "Run now Run failure job" }));
+		const dialog = await screen.findByRole("alertdialog", { name: "Run automation now" });
+		expect(dialog).toHaveTextContent("Run failure job");
+		await user.click(within(dialog).getByRole("button", { name: "Run now" }));
+		await waitFor(() => expect(within(screen.getByRole("alertdialog", { name: "Run automation now" })).getByText("run failed")).toBeInTheDocument());
+		expect(screen.getByRole("alertdialog", { name: "Run automation now" })).toHaveTextContent("Run failure job");
+	});
+
+	it("keeps the exact delete confirmation open when deletion fails", async () => {
+		const user = userEvent.setup({ delay: null });
+		renderWithProviders(<AutomationsPage />);
+		await user.click(await screen.findByRole("button", { name: "Add automation" }));
+		const createDialog = await screen.findByRole("dialog", { name: "Add automation" });
+		await user.type(within(createDialog).getByPlaceholderText("Automation name"), "Delete failure job");
+		await user.click(within(createDialog).getByRole("button", { name: "Create automation" }));
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add automation" })).not.toBeInTheDocument());
+		const row = getJobRow("Delete failure job");
+		server.use(
+			http.delete("/api/automations/:automationId", () =>
+				HttpResponse.json({ error: { code: "synthetic_delete_failure", message: "delete failed" } }, { status: 500 }),
+			),
+		);
+
+		await user.click(within(row).getByRole("button", { name: "Delete Delete failure job" }));
+		const dialog = await screen.findByRole("alertdialog", { name: "Delete automation job" });
+		expect(dialog).toHaveTextContent("Delete failure job");
+		await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+		await waitFor(() => expect(within(screen.getByRole("alertdialog", { name: "Delete automation job" })).getByText("delete failed")).toBeInTheDocument());
+		expect(screen.getByRole("alertdialog", { name: "Delete automation job" })).toHaveTextContent("Delete failure job");
+	});
+
+	it("handles enable-toggle rejection without an unhandled promise", async () => {
+		const user = userEvent.setup({ delay: null });
+		renderWithProviders(<AutomationsPage />);
+		await user.click(await screen.findByRole("button", { name: "Add automation" }));
+		const createDialog = await screen.findByRole("dialog", { name: "Add automation" });
+		await user.type(within(createDialog).getByPlaceholderText("Automation name"), "Toggle failure job");
+		await user.click(within(createDialog).getByRole("button", { name: "Create automation" }));
+		await waitFor(() => expect(screen.queryByRole("dialog", { name: "Add automation" })).not.toBeInTheDocument());
+		const row = getJobRow("Toggle failure job");
+		server.use(
+			http.patch("/api/automations/:automationId", () =>
+				HttpResponse.json({ error: { code: "synthetic_toggle_failure", message: "toggle failed" } }, { status: 500 }),
+			),
+		);
+
+		await user.click(within(row).getByRole("switch"));
+		await waitFor(() => expect(screen.getByText("toggle failed")).toBeInTheDocument());
+		expect(getJobRow("Toggle failure job")).toBeInTheDocument();
+	});
 });

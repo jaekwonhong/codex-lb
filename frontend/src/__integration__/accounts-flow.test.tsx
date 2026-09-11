@@ -14,6 +14,12 @@ describe("accounts flow integration", () => {
 
     expect(await screen.findByRole("heading", { name: "Accounts" })).toBeInTheDocument();
     expect((await screen.findAllByText("primary@example.com")).length).toBeGreaterThan(0);
+
+    await user.click(
+      screen.getByRole("combobox", { name: "Filter accounts by status" }),
+    );
+    await user.click(screen.getByRole("option", { name: "All statuses" }));
+
     expect(screen.getByText("secondary@example.com")).toBeInTheDocument();
 
     await user.click(screen.getByText("secondary@example.com"));
@@ -51,9 +57,10 @@ describe("accounts flow integration", () => {
     });
 
     await user.type(screen.getByPlaceholderText("Search accounts..."), "personal");
-    expect(screen.getAllByText("Personal Plus").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Personal Plus/).length).toBeGreaterThan(0);
     expect(screen.queryByText("secondary@example.com")).not.toBeInTheDocument();
 
+    await user.clear(screen.getByPlaceholderText("Search accounts..."));
     await user.click(await screen.findByRole("button", { name: "Edit alias" }));
     const aliasInputToClear = await screen.findByLabelText("Account alias");
     await user.clear(aliasInputToClear);

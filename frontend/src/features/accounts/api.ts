@@ -8,10 +8,12 @@ import {
   AccountImportResponseSchema,
   AccountLimitWarmupUpdateRequestSchema,
   AccountLimitWarmupUpdateResponseSchema,
+  LocalOAuthFilesResponseSchema,
   AccountUpdateRequestSchema,
   AccountsResponseSchema,
   AccountRoutingPolicyUpdateRequestSchema,
   AccountRoutingPolicyUpdateResponseSchema,
+  WorkspaceRoutingPolicyUpdateResponseSchema,
   AccountUsageResetConsumeRequestSchema,
   AccountUsageResetConsumeResponseSchema,
   AccountUsageResetCreditsResponseSchema,
@@ -46,6 +48,16 @@ export function importAccount(file: File) {
   formData.append("auth_json", file);
   return post(`${ACCOUNTS_BASE_PATH}/import`, AccountImportResponseSchema, {
     body: formData,
+  });
+}
+
+export function listLocalOAuthImportFiles() {
+  return get(`${ACCOUNTS_BASE_PATH}/import/local-files`, LocalOAuthFilesResponseSchema);
+}
+
+export function importLocalOAuthFile(filename: string) {
+  return post(`${ACCOUNTS_BASE_PATH}/import/local`, AccountImportResponseSchema, {
+    body: { filename },
   });
 }
 
@@ -99,6 +111,14 @@ export function updateAccountRoutingPolicy(
     `${ACCOUNTS_BASE_PATH}/${encodeURIComponent(accountId)}/routing-policy`,
     AccountRoutingPolicyUpdateResponseSchema,
     { body: payload },
+  );
+}
+
+export function applyWorkspaceBurnFirst(workspaceAccountId: string, enabled: boolean) {
+  return put(
+    `${ACCOUNTS_BASE_PATH}/workspaces/${encodeURIComponent(workspaceAccountId)}/burn-first`,
+    WorkspaceRoutingPolicyUpdateResponseSchema,
+    { body: { enabled } },
   );
 }
 

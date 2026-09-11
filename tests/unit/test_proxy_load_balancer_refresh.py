@@ -1660,6 +1660,83 @@ async def test_mark_quota_exceeded_keeps_selection_blocked_until_persisted(monke
 
 
 @pytest.mark.asyncio
+async def test_mark_quota_exceeded_notifies_rotation_only_after_status_persistence(monkeypatch) -> None:
+    account = _make_account("acc-quota-event", "quota-event@example.com")
+    accounts_repo = StubAccountsRepository([account])
+    usage_repo = StubUsageRepository(primary={}, secondary={})
+    sticky_repo = StubStickySessionsRepository()
+    observations: list[tuple[AccountStatus, int | None, datetime]] = []
+
+    async def observe(persisted: Account, observed_at: datetime) -> bool:
+        assert accounts_repo.status_updates
+        observations.append((persisted.status, persisted.blocked_at, observed_at))
+        return True
+
+    monkeypatch.setattr(load_balancer_module, "observe_quota_exceeded", observe)
+    balancer = LoadBalancer(lambda: _repo_factory(accounts_repo, usage_repo, sticky_repo))
+
+    await balancer.mark_quota_exceeded(account, {"message": "quota exceeded"})
+
+    assert len(observations) == 1
+    status, blocked_at, observed_at = observations[0]
+    assert status == AccountStatus.QUOTA_EXCEEDED
+    assert blocked_at is not None
+    assert int(observed_at.timestamp()) == blocked_at
+
+
+@pytest.mark.asyncio
+async def test_mark_quota_exceeded_skips_rotation_when_status_persistence_misses(monkeypatch) -> None:
+    account = _make_account("acc-quota-persist-miss", "quota-persist-miss@example.com")
+    accounts_repo = StubAccountsRepository([account])
+    usage_repo = StubUsageRepository(primary={}, secondary={})
+    sticky_repo = StubStickySessionsRepository()
+    observations: list[tuple[Account, datetime]] = []
+
+    async def miss_update_status(
+        account_id: str,
+        status: AccountStatus,
+        deactivation_reason: str | None = None,
+        reset_at: int | None = None,
+        blocked_at: int | None | object = _UNSET,
+    ) -> bool:
+        del account_id, status, deactivation_reason, reset_at, blocked_at
+        return False
+
+    async def observe(persisted: Account, observed_at: datetime) -> bool:
+        observations.append((persisted, observed_at))
+        return True
+
+    monkeypatch.setattr(accounts_repo, "update_status", miss_update_status)
+    monkeypatch.setattr(load_balancer_module, "observe_quota_exceeded", observe)
+    balancer = LoadBalancer(lambda: _repo_factory(accounts_repo, usage_repo, sticky_repo))
+
+    await balancer.mark_quota_exceeded(account, {"message": "quota exceeded"})
+
+    assert observations == []
+    assert account.status == AccountStatus.ACTIVE
+    assert account.blocked_at is None
+
+
+@pytest.mark.asyncio
+async def test_rotation_event_failure_does_not_undo_quota_persistence(monkeypatch) -> None:
+    account = _make_account("acc-quota-event-failure", "quota-event-failure@example.com")
+    accounts_repo = StubAccountsRepository([account])
+    usage_repo = StubUsageRepository(primary={}, secondary={})
+    sticky_repo = StubStickySessionsRepository()
+
+    async def fail_observation(_account: Account, _observed_at: datetime) -> bool:
+        raise OSError("event store unavailable")
+
+    monkeypatch.setattr(load_balancer_module, "observe_quota_exceeded", fail_observation)
+    balancer = LoadBalancer(lambda: _repo_factory(accounts_repo, usage_repo, sticky_repo))
+
+    await balancer.mark_quota_exceeded(account, {"message": "quota exceeded"})
+
+    assert account.status == AccountStatus.QUOTA_EXCEEDED
+    assert accounts_repo.status_updates[0]["status"] == AccountStatus.QUOTA_EXCEEDED
+
+
+@pytest.mark.asyncio
 async def test_record_errors_does_not_restore_terminal_status(monkeypatch) -> None:
     account = _make_account("acc-record-errors-race", "record-errors-race@example.com")
     accounts_repo = StubAccountsRepository([account])

@@ -8,8 +8,14 @@ from typing import cast
 from fastapi import Depends, FastAPI, Request, WebSocket
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config.settings import get_settings
+from app.db import session as db_session
 from app.db.session import get_background_session, get_session
 from app.modules.accounts.auth_manager import AuthManager
+from app.modules.accounts.import_identity import (
+    ImportedAccountIdentity,
+    fetch_companion_account_pool_identity,
+)
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.accounts.service import AccountsService
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -34,6 +40,17 @@ from app.modules.dashboard_users.service import DashboardUsersService
 from app.modules.firewall.repository import FirewallRepository
 from app.modules.firewall.service import FirewallRepositoryPort, FirewallService
 from app.modules.limit_warmup.repository import LimitWarmupRepository
+from app.modules.member_auth_handoff.catalog import (
+    PACKAGED_MEMBER_AUTH_HANDOFF_CATALOG,
+    MemberAuthHandoffCatalogRegistry,
+    resolve_catalog_workspace_label,
+)
+from app.modules.member_auth_handoff.durable import DurableMemberAuthHandoffService, StoredHandoffReader
+from app.modules.member_auth_handoff.repository import MemberAuthCatalogOverlayRepository
+from app.modules.member_switch.auth_enrollment import MemberAuthEnrollmentService
+from app.modules.member_switch.companion import CompanionClient
+from app.modules.member_switch.repository import MemberSwitchControlRepository
+from app.modules.member_switch.service import MemberSwitchService
 from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.model_sources.service import ModelSourcesService
 from app.modules.oauth.service import OauthService
@@ -80,6 +97,18 @@ class UsageContext:
 @dataclass(slots=True)
 class OauthContext:
     service: OauthService
+
+
+@dataclass(slots=True)
+class MemberAuthHandoffContext:
+    session: AsyncSession
+    repository: AccountsRepository
+    service: DurableMemberAuthHandoffService
+
+
+@dataclass(slots=True)
+class MemberAuthHandoffReadContext:
+    service: StoredHandoffReader
 
 
 @dataclass(slots=True)
@@ -199,12 +228,41 @@ def get_accounts_context(
     usage_repository = UsageRepository(session)
     additional_usage_repository = AdditionalUsageRepository(session)
     limit_warmup_repository = LimitWarmupRepository(session)
+    settings = get_settings()
+    catalog_registry = MemberAuthHandoffCatalogRegistry(
+        MemberAuthCatalogOverlayRepository(settings.data_dir / "member-auth-handoff-catalog.json"),
+        PACKAGED_MEMBER_AUTH_HANDOFF_CATALOG,
+    )
+
+    async def resolve_import_identity(
+        workspace_account_id: str,
+        email: str,
+    ) -> ImportedAccountIdentity | None:
+        companion_identity = await fetch_companion_account_pool_identity(
+            settings.companion_account_pool_url,
+            workspace_account_id=workspace_account_id,
+            email=email,
+        )
+        if companion_identity is not None:
+            return companion_identity
+        entry = catalog_registry.effective_catalog().find_import_identity(
+            workspace_account_id=workspace_account_id,
+            email=email,
+        )
+        if entry is None:
+            return None
+        return ImportedAccountIdentity(
+            user_id=entry.user_id,
+            workspace_label=resolve_catalog_workspace_label(entry.workspace_account_id),
+        )
+
     service = AccountsService(
         repository,
         usage_repository,
         additional_usage_repository,
         limit_warmup_repository,
         auth_manager=AuthManager(repository, refresh_repo_factory=_accounts_repo_context),
+        import_identity_resolver=resolve_import_identity,
     )
     return AccountsContext(
         session=session,
@@ -266,6 +324,58 @@ def get_oauth_context(
 ) -> OauthContext:
     accounts_repository = AccountsRepository(session)
     return OauthContext(service=OauthService(accounts_repository, repo_factory=_accounts_repo_context))
+
+
+def get_member_auth_handoff_context(
+    session: AsyncSession = Depends(get_session),
+) -> MemberAuthHandoffContext:
+    accounts_repository = AccountsRepository(session)
+    oauth_service = OauthService(accounts_repository, repo_factory=_accounts_repo_context)
+    settings = get_settings()
+    catalog_registry = MemberAuthHandoffCatalogRegistry(
+        MemberAuthCatalogOverlayRepository(settings.data_dir / "member-auth-handoff-catalog.json"),
+        PACKAGED_MEMBER_AUTH_HANDOFF_CATALOG,
+    )
+    service = DurableMemberAuthHandoffService(
+        accounts_repository,
+        oauth_service,
+        usage_repository=UsageRepository(session),
+        catalog_registry=catalog_registry,
+        controls=get_member_switch_controls(),
+    )
+    return MemberAuthHandoffContext(
+        session=session,
+        repository=accounts_repository,
+        service=service,
+    )
+
+
+def get_member_switch_controls() -> MemberSwitchControlRepository:
+    return MemberSwitchControlRepository(db_session.SessionLocal)
+
+
+def get_member_auth_handoff_read_context() -> MemberAuthHandoffReadContext:
+    return MemberAuthHandoffReadContext(StoredHandoffReader(get_member_switch_controls()))
+
+
+def get_member_switch_companion() -> CompanionClient:
+    return CompanionClient(get_settings().companion_account_pool_url)
+
+
+def get_member_switch_service(
+    auth_context: MemberAuthHandoffContext = Depends(get_member_auth_handoff_context),
+) -> MemberSwitchService:
+    return MemberSwitchService(get_member_switch_controls(), get_member_switch_companion(), auth_context.service)
+
+
+def get_member_auth_enrollment_service(
+    auth_context: MemberAuthHandoffContext = Depends(get_member_auth_handoff_context),
+) -> MemberAuthEnrollmentService:
+    return MemberAuthEnrollmentService(
+        get_member_switch_controls(),
+        get_member_switch_companion(),
+        auth_context.service,
+    )
 
 
 def get_dashboard_auth_context(

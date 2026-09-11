@@ -171,11 +171,15 @@ export function OauthDialog({
   };
 
   const handleStart = () => {
-    void onStart(selectedMethod);
+    void onStart(selectedMethod).catch(() => {
+      // The hook retains the failure in the current flow's visible state.
+    });
   };
 
   const handleRefreshBrowserLink = () => {
-    void onStart("browser");
+    void onStart("browser").catch(() => {
+      // Do not leak the handled start failure from this event boundary.
+    });
   };
 
   const handleChangeMethod = () => {
@@ -203,6 +207,7 @@ export function OauthDialog({
           <div className="space-y-2">
             <button
               type="button"
+              disabled={state.status === "starting"}
               onClick={() => setSelectedMethod("browser")}
               className={cn(
                 "w-full cursor-pointer rounded-lg border p-3 text-left transition-colors",
@@ -218,6 +223,7 @@ export function OauthDialog({
             </button>
             <button
               type="button"
+              disabled={state.status === "starting"}
               onClick={() => setSelectedMethod("device")}
               className={cn(
                 "w-full cursor-pointer rounded-lg border p-3 text-left transition-colors",
@@ -356,7 +362,9 @@ export function OauthDialog({
                 type="button"
                 className="cursor-pointer disabled:cursor-not-allowed"
                 onClick={handleStart}
+                disabled={state.status === "starting"}
               >
+                {state.status === "starting" ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : null}
                 {t("accounts.oauth.startSignIn")}
               </Button>
             </>

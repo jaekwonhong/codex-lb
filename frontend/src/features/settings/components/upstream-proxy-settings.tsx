@@ -56,9 +56,25 @@ export function UpstreamProxySettings({
       return;
     }
     setTestingEndpointId(endpointId);
+    setEndpointTestResults((current) => {
+      const next = { ...current };
+      delete next[endpointId];
+      return next;
+    });
     try {
       const result = await onTestEndpoint(endpointId);
       setEndpointTestResults((current) => ({ ...current, [endpointId]: result }));
+    } catch (error) {
+      setEndpointTestResults((current) => ({
+        ...current,
+        [endpointId]: {
+          endpointId,
+          ok: false,
+          statusCode: null,
+          elapsedMs: null,
+          error: error instanceof Error ? error.message : t("upstreamProxy.toasts.endpointTestFailed"),
+        },
+      }));
     } finally {
       setTestingEndpointId(null);
     }

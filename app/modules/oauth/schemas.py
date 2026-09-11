@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pydantic import model_validator
+
 from app.modules.shared.schemas import DashboardModel
 
 
@@ -10,6 +12,22 @@ class OauthStartRequest(DashboardModel):
     # this row before any tokens are written, so a wrong browser identity cannot
     # overwrite a different seat that shares the same Team/Business workspace.
     account_id: str | None = None
+    expected_email: str | None = None
+    expected_chatgpt_user_id: str | None = None
+    expected_chatgpt_account_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_expected_identity(self) -> "OauthStartRequest":
+        expected = (
+            self.expected_email,
+            self.expected_chatgpt_user_id,
+            self.expected_chatgpt_account_id,
+        )
+        if any(value is not None for value in expected) and not all(value for value in expected):
+            raise ValueError("Expected OAuth identity requires email, user ID, and account ID")
+        if any(expected) and (self.force_method or "").casefold() != "device":
+            raise ValueError("Expected OAuth identity is supported only for device OAuth")
+        return self
 
 
 class OauthStartResponse(DashboardModel):

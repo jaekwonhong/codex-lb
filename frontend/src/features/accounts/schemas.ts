@@ -68,6 +68,7 @@ export const AccountAdditionalQuotaSchema = z.object({
 export const AccountSummarySchema = z.object({
   accountId: z.string(),
   chatgptAccountId: z.string().nullable().optional(),
+  chatgptUserId: z.string().nullable().optional(),
   email: z.string(),
   alias: z.string().nullable().optional(),
   displayName: z.string(),
@@ -147,6 +148,16 @@ export const AccountImportResponseSchema = z.object({
   seatType: z.string().nullable().optional(),
   planType: z.string(),
   status: z.string(),
+});
+
+export const LocalOAuthFileSchema = z.object({
+  name: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+});
+
+export const LocalOAuthFilesResponseSchema = z.object({
+  available: z.boolean(),
+  files: z.array(LocalOAuthFileSchema),
 });
 
 const OpenCodeOAuthAuthSchema = z.object({
@@ -263,6 +274,15 @@ export const AccountRoutingPolicyUpdateResponseSchema = z.object({
   routingPolicy: AccountRoutingPolicySchema,
 });
 
+export const WorkspaceRoutingPolicyUpdateResponseSchema = z.object({
+  workspaceAccountId: z.uuid(),
+  enabled: z.boolean(),
+  changedCount: z.number().int().nonnegative(),
+  burnFirstCount: z.number().int().nonnegative(),
+  normalCount: z.number().int().nonnegative(),
+  preserveCount: z.number().int().nonnegative(),
+});
+
 export const AccountUpdateRequestSchema = z.object({
   securityWorkAuthorized: z.boolean().optional(),
 });
@@ -343,6 +363,9 @@ export type ConsumeRateLimitResetCreditResponse = z.infer<
   typeof ConsumeRateLimitResetCreditResponseSchema
 >;
 export type AccountRoutingPolicy = z.infer<typeof AccountRoutingPolicySchema>;
+export type WorkspaceRoutingPolicyUpdateResponse = z.infer<
+  typeof WorkspaceRoutingPolicyUpdateResponseSchema
+>;
 export type AccountAliasResponse = z.infer<typeof AccountAliasResponseSchema>;
 export type AccountLimitWarmupStatus = z.infer<
   typeof AccountLimitWarmupStatusSchema
@@ -367,6 +390,8 @@ export type AccountUsageResetConsumeResponse = z.infer<
   typeof AccountUsageResetConsumeResponseSchema
 >;
 export type AccountTrendsResponse = z.infer<typeof AccountTrendsResponseSchema>;
+export type LocalOAuthFile = z.infer<typeof LocalOAuthFileSchema>;
+export type LocalOAuthFilesResponse = z.infer<typeof LocalOAuthFilesResponseSchema>;
 export type OpenCodeAuthJson = z.infer<typeof OpenCodeAuthJsonSchema>;
 export type CodexAuthJson = z.infer<typeof CodexAuthJsonSchema>;
 export type AccountAuthExportTokens = z.infer<typeof AccountAuthExportTokensSchema>;

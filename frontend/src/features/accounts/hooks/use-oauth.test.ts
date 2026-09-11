@@ -4,6 +4,7 @@ import { createElement, type PropsWithChildren } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useOauth } from "@/features/accounts/hooks/use-oauth";
+import type { OauthStartResponse } from "@/features/accounts/schemas";
 
 const startOauthMock = vi.fn();
 const completeOauthMock = vi.fn();
@@ -74,10 +75,136 @@ function browserOauthStart(flowId: string) {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
+}
+
+function browserFlow(flowId: string): OauthStartResponse {
+  return { flowId, method: "browser", authorizationUrl: "https://auth.example/" + flowId,
+    callbackUrl: null, verificationUrl: null, userCode: null, deviceAuthId: null,
+    intervalSeconds: 600, expiresInSeconds: 900 };
+}
+
 describe("useOauth", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     getOauthStatusMock.mockResolvedValue({ status: "pending", errorMessage: null });
+  });
+
+  it("does not complete a new flow using an old status response", async () => {
+    const status = deferred<{ status: string; errorMessage: null }>();
+    startOauthMock.mockResolvedValueOnce(browserFlow("old")).mockResolvedValueOnce(browserFlow("new"));
+    getOauthStatusMock.mockReturnValueOnce(status.promise);
+    completeOauthMock.mockResolvedValue({ status: "success" });
+    const { result } = renderUseOauth();
+    await act(async () => { await result.current.start("browser"); });
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.poll(); });
+    act(() => { result.current.reset(); });
+    await act(async () => { await result.current.start("browser"); });
+    await act(async () => { status.resolve({ status: "success", errorMessage: null }); await pending; });
+    expect(completeOauthMock).not.toHaveBeenCalled();
+    expect(result.current.state.flowId).toBe("new");
+    expect(result.current.state.status).toBe("pending");
+  });
+
+  it.each(["reset", "unmount"])("does not resurrect late device start after %s", async (boundary) => {
+    const started = deferred<ReturnType<typeof browserFlow>>();
+    startOauthMock.mockReturnValueOnce(started.promise);
+    completeOauthMock.mockResolvedValue({ status: "pending" });
+    const { result, unmount } = renderUseOauth();
+    let pending!: ReturnType<typeof result.current.start>;
+    act(() => { pending = result.current.start("device"); });
+    if (boundary === "reset") act(() => { result.current.reset(); });
+    else unmount();
+    await act(async () => {
+      started.resolve({ ...browserFlow("late"), method: "device", deviceAuthId: "device",
+        userCode: "CODE", verificationUrl: "https://auth.example/device" });
+      await pending;
+    });
+    expect(completeOauthMock).not.toHaveBeenCalled();
+    if (boundary === "reset") expect(result.current.state.status).toBe("idle");
+  });
+
+  it("keeps only one status poll in flight per lifecycle", async () => {
+    const status = deferred<{ status: string; errorMessage: null }>();
+    startOauthMock.mockResolvedValue(browserFlow("same"));
+    getOauthStatusMock.mockReturnValue(status.promise);
+    const { result } = renderUseOauth();
+    await act(async () => { await result.current.start("browser"); });
+    let first!: Promise<void>, second!: Promise<void>;
+    act(() => { first = result.current.poll(); second = result.current.poll(); });
+    await act(async () => { status.resolve({ status: "pending", errorMessage: null }); await Promise.all([first, second]); });
+    expect(getOauthStatusMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("a late device-start acknowledgement error cannot undo confirmed success", async () => {
+    const acknowledgement = deferred<{ status: string }>();
+    startOauthMock.mockResolvedValue({ ...browserFlow("device-flow"), method: "device",
+      deviceAuthId: "synthetic-device", userCode: "CODE" });
+    completeOauthMock.mockReturnValueOnce(acknowledgement.promise).mockResolvedValue({ status: "success" });
+    getOauthStatusMock.mockResolvedValue({ status: "success", errorMessage: null });
+    const { result } = renderUseOauth();
+    let pending!: Promise<unknown>;
+    await act(async () => { pending = result.current.start("device").catch(() => undefined); });
+    await act(async () => { await result.current.poll(); });
+    expect(result.current.state.status).toBe("success");
+    await act(async () => { acknowledgement.reject(new Error("late acknowledgement lost")); await pending; });
+    expect(result.current.state.status).toBe("success");
+  });
+
+  it("an old poll failure cannot stop a replacement flow's timers", async () => {
+    vi.useFakeTimers();
+    try {
+      const pendingStatus = deferred<{ status: string; errorMessage: null }>();
+      startOauthMock.mockResolvedValueOnce(browserFlow("old"))
+        .mockResolvedValueOnce({ ...browserFlow("new"), intervalSeconds: 2 });
+      getOauthStatusMock.mockReturnValueOnce(pendingStatus.promise)
+        .mockResolvedValue({ status: "pending", errorMessage: null });
+      const { result } = renderUseOauth();
+      await act(async () => { await result.current.start("browser"); });
+      let pending!: Promise<void>;
+      act(() => { pending = result.current.poll(); });
+      act(() => { result.current.reset(); });
+      await act(async () => { await result.current.start("browser"); });
+      await act(async () => { pendingStatus.reject(new Error("old request failed")); await pending; });
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+      expect(getOauthStatusMock).toHaveBeenLastCalledWith("new");
+      expect(result.current.state.status).toBe("pending");
+      expect(result.current.state.expiresInSeconds).toBe(898);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("a pending status response cannot overwrite a completed manual callback", async () => {
+    const status = deferred<{ status: string; errorMessage: null }>();
+    startOauthMock.mockResolvedValue(browserFlow("same"));
+    getOauthStatusMock.mockReturnValueOnce(status.promise);
+    submitManualOauthCallbackMock.mockResolvedValue({ status: "success", errorMessage: null });
+    const { result } = renderUseOauth();
+    await act(async () => { await result.current.start("browser"); });
+    let pending!: Promise<void>;
+    act(() => { pending = result.current.poll(); });
+    await act(async () => { await result.current.manualCallback("https://callback.example"); });
+    await act(async () => { status.resolve({ status: "pending", errorMessage: null }); await pending; });
+    expect(result.current.state.status).toBe("success");
+  });
+
+  it.each(["complete", "callback"])("ignores a late %s result after a new start", async (kind) => {
+    const completed = deferred<{ status: string; errorMessage: null }>();
+    startOauthMock.mockResolvedValueOnce(browserFlow("old")).mockResolvedValueOnce(browserFlow("new"));
+    completeOauthMock.mockReturnValue(completed.promise);
+    submitManualOauthCallbackMock.mockReturnValue(completed.promise);
+    const { result } = renderUseOauth();
+    await act(async () => { await result.current.start("browser"); });
+    let pending!: Promise<unknown>;
+    act(() => { pending = kind === "complete" ? result.current.complete() : result.current.manualCallback("https://callback.example"); });
+    await act(async () => { await result.current.start("browser"); });
+    await act(async () => { completed.resolve({ status: "success", errorMessage: null }); await pending; });
+    expect(result.current.state.flowId).toBe("new");
+    expect(result.current.state.status).toBe("pending");
   });
 
   it("starts device polling immediately after device OAuth start", async () => {

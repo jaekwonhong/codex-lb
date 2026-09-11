@@ -1,0 +1,241 @@
+{
+  "catalog": {
+    "enabled": true,
+    "workspaces": [
+      {
+        "id": "cdp-1",
+        "slotId": "slot-1",
+        "workspaceName": "Workspace",
+        "ownerEmail": "owner@example.com",
+        "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+        "members": [
+          {
+            "presetId": "cdp-1-target",
+            "displayName": "target",
+            "email": "target@example.com",
+            "userId": "user-Target123"
+          },
+          {
+            "presetId": "cdp-1-current",
+            "displayName": "current",
+            "email": "current@example.com",
+            "userId": "user-Current123"
+          }
+        ]
+      }
+    ],
+    "schemaVersion": 1,
+    "catalogFingerprint": "6fbb5f509548d28c2d765217d00102ac97b12d763d5a41d088fb3fafa6a2d6c6",
+    "capabilities": [
+      "recipient_acceptance",
+      "recipient_session_readiness",
+      "post_add_device_auth",
+      "durable_client_flow",
+      "durable_participant_commands_v1",
+      "managed_member_switch_v1",
+      "ego_lite_member_browser_v1",
+      "ego_lite_owner_membership_observation_v1",
+      "ego_lite_owner_membership_mutation_v1",
+      "ego_lite_recipient_membership_lifecycle_v1"
+    ]
+  },
+  "admission": {
+    "canStart": true,
+    "code": "ready",
+    "operationId": null,
+    "clientFlowId": null
+  },
+  "preview": {
+    "ready": true,
+    "code": "already_active",
+    "previewToken": "EF8FAABAE34FAB79BDA3176ECD5C86BC4F68B51C6E6F41E2",
+    "expiresAt": "2026-09-11T00:36:10.817847+00:00",
+    "workspaceName": "Workspace",
+    "ownerEmail": "owner@example.com",
+    "targetDisplayName": "target",
+    "targetEmail": "target@example.com",
+    "removeEmail": null,
+    "catalogFingerprint": "6fbb5f509548d28c2d765217d00102ac97b12d763d5a41d088fb3fafa6a2d6c6"
+  },
+  "start": {
+    "accepted": true,
+    "code": "accepted",
+    "operationId": "f99e60fe4bbe49d4895f319a8815cff7",
+    "blockingOperationId": null,
+    "blockingWorkspaceId": null,
+    "blockingWorkspaceAccountId": null,
+    "blockingPresetId": null,
+    "blockingTargetEmail": null,
+    "blockingTargetUserId": null,
+    "blockingStage": null,
+    "blockingCode": null,
+    "recoveryAction": null
+  },
+  "operation": {
+    "operationId": "f99e60fe4bbe49d4895f319a8815cff7",
+    "memberSwitchOperationId": "f99e60fe4bbe49d4895f319a8815cff7",
+    "workspaceId": "cdp-1",
+    "workspaceName": "Workspace",
+    "workspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+    "targetDisplayName": "target",
+    "targetEmail": "target@example.com",
+    "targetUserId": "user-Target123",
+    "stage": "completed",
+    "code": "already_active",
+    "removedEmail": null,
+    "removedUserId": null,
+    "membershipState": "active",
+    "updatedAt": "2026-09-11T00:35:10.918942+00:00",
+    "trace": [
+      {
+        "sequence": 1,
+        "stage": "queued",
+        "code": "queued",
+        "at": "2026-09-11T00:35:10.819553+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 2,
+        "stage": "confirming_personal",
+        "code": "confirming_target_personal",
+        "at": "2026-09-11T00:35:10.882666+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 3,
+        "stage": "confirming_personal",
+        "code": "personal_assumed",
+        "at": "2026-09-11T00:35:10.887086+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 4,
+        "stage": "verifying_membership",
+        "code": "member_registration_settlement_waiting",
+        "at": "2026-09-11T00:35:10.895545+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 5,
+        "stage": "refreshing_recipient_workspace",
+        "code": "recipient_workspace_refreshing",
+        "at": "2026-09-11T00:35:10.900095+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 6,
+        "stage": "verifying_recipient_workspace",
+        "code": "recipient_workspace_observed",
+        "at": "2026-09-11T00:35:10.904007+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 7,
+        "stage": "closing_browser",
+        "code": "closing_owner_browser_in_personal",
+        "at": "2026-09-11T00:35:10.910421+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 8,
+        "stage": "closing_browser",
+        "code": "personal_confirmed_browser_closed",
+        "at": "2026-09-11T00:35:10.914269+00:00",
+        "action": null,
+        "status": null
+      },
+      {
+        "sequence": 9,
+        "stage": "completed",
+        "code": "already_active",
+        "at": "2026-09-11T00:35:10.918942+00:00",
+        "action": null,
+        "status": null
+      }
+    ],
+    "invitationSettlement": {
+      "invitationIssued": false,
+      "automaticObservationAttempts": 0,
+      "automaticSettlementConfirmed": false,
+      "pendingInvitationId": null,
+      "fallbackUsed": false,
+      "finalMembershipConfirmed": true,
+      "invitationAttempted": false,
+      "recipientWorkspaceRefreshAttempts": 1,
+      "recipientWorkspaceObserved": true
+    }
+  },
+  "readiness": {
+    "ready": true,
+    "code": "ready",
+    "targetEmail": "target@example.com",
+    "reauthenticated": false,
+    "trace": [],
+    "outcomeUnknown": false
+  },
+  "browser": {
+    "accepted": true,
+    "state": "user_action_required",
+    "code": "user_action_required",
+    "browserOperationId": "39f2ab30c70d465cbcd29182c78b9583",
+    "targetEmail": "target@example.com",
+    "clipboardReady": false,
+    "outcomeUnknown": false,
+    "recoveryTarget": null
+  },
+  "browserUnavailable": {
+    "accepted": true,
+    "state": "user_action_required",
+    "code": "verification_page_unavailable",
+    "browserOperationId": "d3ec3d8d7c21415eaf8e6e59359d6402",
+    "targetEmail": "target@example.com",
+    "clipboardReady": false,
+    "outcomeUnknown": false,
+    "recoveryTarget": null
+  },
+  "browserUnknown": {
+    "accepted": false,
+    "state": "outcome_unknown",
+    "code": "browser_automation_failed",
+    "browserOperationId": null,
+    "targetEmail": "target@example.com",
+    "clipboardReady": false,
+    "outcomeUnknown": true,
+    "recoveryTarget": null
+  },
+  "closed": {
+    "closed": true,
+    "code": "auth_target_closed",
+    "outcomeUnknown": false
+  },
+  "unavailableClosed": {
+    "closed": true,
+    "code": "auth_target_closed",
+    "outcomeUnknown": false
+  },
+  "finalized": {
+    "released": true,
+    "code": "flow_released"
+  },
+  "lookupFinalized": {
+    "accepted": true,
+    "code": "operation_finalized",
+    "operationId": "f99e60fe4bbe49d4895f319a8815cff7",
+    "blockingOperationId": null,
+    "blockingWorkspaceId": null,
+    "blockingWorkspaceAccountId": null,
+    "blockingPresetId": null,
+    "blockingTargetEmail": null,
+    "blockingTargetUserId": null,
+    "blockingStage": null,
+    "blockingCode": null,
+    "recoveryAction": null
+  }
+}

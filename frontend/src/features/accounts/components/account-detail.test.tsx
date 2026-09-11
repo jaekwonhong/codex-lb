@@ -13,6 +13,25 @@ function renderWithClient(ui: ReactElement) {
 }
 
 describe("AccountDetail", () => {
+  it("keeps an alias draft and shows failure without an unhandled rejection", async () => {
+    const user = userEvent.setup();
+    const onSetAlias = vi.fn().mockRejectedValue(new Error("Alias save failed"));
+    renderWithClient(<AccountDetail
+      account={createAccountSummary()} busy={false}
+      onPause={vi.fn()} onResume={vi.fn()} onProbe={vi.fn()} onResetUsage={vi.fn()}
+      onSetAlias={onSetAlias} onDelete={vi.fn()} onReauth={vi.fn()} onExportAuth={vi.fn()}
+      onResetCredit={vi.fn()} onLimitWarmupChange={vi.fn()} onRoutingPolicyChange={vi.fn()}
+      onSecurityWorkAuthorizedChange={vi.fn()}
+    />);
+    await user.click(screen.getByRole("button", { name: "Edit alias" }));
+    const input = screen.getByLabelText("Account alias");
+    await user.clear(input);
+    await user.type(input, "Keep this draft");
+    await user.click(screen.getByRole("button", { name: "Save alias" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Alias save failed");
+    expect(input).toHaveValue("Keep this draft");
+    expect(onSetAlias).toHaveBeenCalledTimes(1);
+  });
   it("lets operators change account routing policy", async () => {
     const user = userEvent.setup();
     const onRoutingPolicyChange = vi.fn();

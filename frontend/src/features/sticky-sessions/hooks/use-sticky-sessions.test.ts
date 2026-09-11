@@ -189,7 +189,14 @@ describe("useStickySessions", () => {
       result.current.setKeyQuery("thread");
     });
 
-    await result.current.deleteFilteredMutation.mutateAsync();
+    await waitFor(() => {
+      expect(result.current.deleteFilteredRequest).toEqual({
+        staleOnly: false,
+        accountQuery: "sticky-a",
+        keyQuery: "thread",
+      });
+    });
+    await result.current.deleteFilteredMutation.mutateAsync(result.current.deleteFilteredRequest);
 
     expect(filteredDeleteSpy).toHaveBeenCalledWith({
       staleOnly: false,
@@ -224,7 +231,9 @@ describe("useStickySessions", () => {
     await expect(
       result.current.deleteMutation.mutateAsync([{ key: "thread_123", kind: "prompt_cache" }]),
     ).rejects.toThrow();
-    await expect(result.current.deleteFilteredMutation.mutateAsync()).rejects.toThrow();
+    await expect(
+      result.current.deleteFilteredMutation.mutateAsync({ staleOnly: false, accountQuery: "", keyQuery: "" }),
+    ).rejects.toThrow();
     await expect(result.current.purgeMutation.mutateAsync(true)).rejects.toThrow();
 
     expect(toastSpy).toHaveBeenCalledWith("Failed to delete sticky sessions");

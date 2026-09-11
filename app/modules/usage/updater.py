@@ -32,6 +32,7 @@ from app.db.models import Account, AccountStatus, UsageHistory
 from app.db.session import get_background_session
 from app.modules.accounts.auth_manager import AccountsRepositoryPort, AuthManager, _clean_optional
 from app.modules.accounts.background_repository import BackgroundAccountsRepository
+from app.modules.member_auth_handoff.rotation_events import observe_successful_usage
 from app.modules.proxy.account_cache import get_account_selection_cache, mark_account_routing_unavailable
 from app.modules.usage.additional_quota_keys import canonicalize_additional_quota_key
 from app.modules.usage.background_repository import BackgroundAdditionalUsageRepository, BackgroundUsageRepository
@@ -792,8 +793,68 @@ class UsageUpdater:
             snapshot_windows,
         )
         usage_written = any(_usage_entry_written(entry) for entry in entries)
+        long_remaining = self._long_remaining_percent(primary, secondary, monthly)
+        if long_remaining is not None:
+            needs_confirmation = await observe_successful_usage(
+                account,
+                long_remaining,
+                datetime.now(timezone.utc),
+            )
+            if needs_confirmation:
+                await self._confirm_zero_usage(
+                    account,
+                    usage_account_id=usage_account_id,
+                    access_token=access_token,
+                )
         await self._recover_quota_status_from_usage(account, primary=primary, secondary=secondary, monthly=monthly)
         return AccountRefreshResult(usage_written=usage_written)
+
+    @staticmethod
+    def _long_remaining_percent(
+        primary: UsageWindow | None,
+        secondary: UsageWindow | None,
+        monthly: UsageWindow | None,
+    ) -> float | None:
+        selected = monthly or secondary
+        if selected is None and primary is not None:
+            minutes = _window_minutes(primary.limit_window_seconds)
+            if usage_core.is_weekly_window_minutes(minutes) or usage_core.is_monthly_window_minutes(minutes):
+                selected = primary
+        if selected is None or selected.used_percent is None:
+            return None
+        return usage_core.remaining_percent_from_used(float(selected.used_percent))
+
+    async def _confirm_zero_usage(
+        self,
+        account: Account,
+        *,
+        usage_account_id: str | None,
+        access_token: str,
+    ) -> None:
+        try:
+            route = await _resolve_upstream_route_for_account(account, operation="usage_refresh")
+            payload = await fetch_usage(
+                access_token=access_token,
+                account_id=usage_account_id,
+                route=route,
+                allow_direct_egress=route is None,
+            )
+        except (UsageFetchError, UpstreamProxyRouteError):
+            return
+        if _payload_mismatches_account_slot(account, payload) or payload.rate_limit is None:
+            return
+        windows = usage_core.normalize_rate_limit_windows(
+            payload.rate_limit.primary_window,
+            payload.rate_limit.secondary_window,
+        )
+        remaining = self._long_remaining_percent(
+            windows.primary,
+            windows.secondary,
+            windows.monthly,
+        )
+        if remaining is None:
+            return
+        await observe_successful_usage(account, remaining, datetime.now(timezone.utc))
 
     async def _deactivate_for_client_error(self, account: Account, exc: UsageFetchError) -> None:
         if not self._auth_manager:

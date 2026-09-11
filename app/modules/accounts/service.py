@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import cast
 from uuid import uuid4
@@ -42,8 +43,13 @@ from app.db.models import Account, AccountStatus, DashboardSettings
 from app.db.session import get_background_session
 from app.modules.accounts.auth_manager import AuthManager
 from app.modules.accounts.deletion import request_account_deletion_run
+from app.modules.accounts.import_identity import (
+    ImportedAccountIdentity,
+    fetch_companion_workspace_burn_first,
+    is_personal_workspace_label,
+)
 from app.modules.accounts.mappers import build_account_summaries, build_account_usage_trends
-from app.modules.accounts.repository import AccountsRepository
+from app.modules.accounts.repository import AccountsRepository, WorkspaceRoutingPolicyResult
 from app.modules.accounts.schemas import (
     AccountAdditionalQuota,
     AccountAdditionalWindow,
@@ -114,6 +120,9 @@ class AccountUsageResetConsumeUnavailableError(Exception):
     """Raised when a dashboard account cannot consume upstream reset credits."""
 
 
+ImportIdentityResolver = Callable[[str, str], Awaitable[ImportedAccountIdentity | None]]
+
+
 class AccountsService:
     def __init__(
         self,
@@ -122,6 +131,7 @@ class AccountsService:
         additional_usage_repo: AdditionalUsageRepository | AdditionalUsageRepositoryPort | None = None,
         limit_warmup_repo: LimitWarmupRepository | None = None,
         auth_manager: AuthManager | None = None,
+        import_identity_resolver: ImportIdentityResolver | None = None,
     ) -> None:
         self._repo = repo
         self._usage_repo = usage_repo
@@ -130,6 +140,7 @@ class AccountsService:
         self._usage_updater = UsageUpdater(usage_repo, repo, additional_usage_repo) if usage_repo else None
         self._encryptor = TokenEncryptor()
         self._auth_manager = auth_manager
+        self._import_identity_resolver = import_identity_resolver
 
     async def list_accounts(
         self,
@@ -501,15 +512,43 @@ class AccountsService:
         email = claims.email or DEFAULT_EMAIL
         raw_account_id = claims.account_id
         account_id = generate_unique_account_id(raw_account_id, email, claims.workspace_id, claims.workspace_label)
+        workspace_label = claims.workspace_label
+        chatgpt_user_id = claims.chatgpt_user_id
+        catalog_identity_applied = False
+        routing_policy_override: str | None = None
+        if self._import_identity_resolver is not None and raw_account_id:
+            catalog_identity = await self._import_identity_resolver(raw_account_id, email)
+            token_user_matches = (
+                chatgpt_user_id is None
+                or catalog_identity is None
+                or chatgpt_user_id == catalog_identity.user_id
+            )
+            if catalog_identity is not None and token_user_matches:
+                catalog_identity_applied = True
+                chatgpt_user_id = chatgpt_user_id or catalog_identity.user_id
+                if catalog_identity.workspace_label and is_personal_workspace_label(workspace_label):
+                    workspace_label = catalog_identity.workspace_label
+                if catalog_identity.burn_first_enabled is not None:
+                    routing_policy_override = (
+                        "burn_first" if catalog_identity.burn_first_enabled else "normal"
+                    )
+        if raw_account_id and routing_policy_override is None:
+            burn_first_enabled = await fetch_companion_workspace_burn_first(
+                get_settings().companion_account_pool_url,
+                workspace_account_id=raw_account_id,
+            )
+            if burn_first_enabled is not None:
+                routing_policy_override = "burn_first" if burn_first_enabled else "normal"
         plan_type = coerce_account_plan_type(claims.plan_type, DEFAULT_PLAN)
         last_refresh = to_utc_naive(auth.last_refresh_at) if auth.last_refresh_at else utcnow()
 
         account = Account(
             id=account_id,
             chatgpt_account_id=raw_account_id,
+            chatgpt_user_id=chatgpt_user_id,
             email=email,
             workspace_id=claims.workspace_id,
-            workspace_label=claims.workspace_label,
+            workspace_label=workspace_label,
             seat_type=claims.seat_type,
             plan_type=plan_type,
             access_token_encrypted=self._encryptor.encrypt(auth.tokens.access_token),
@@ -520,7 +559,11 @@ class AccountsService:
             deactivation_reason=None,
         )
 
-        saved = await self._repo.upsert_account_slot(account)
+        saved = await self._repo.upsert_account_slot(
+            account,
+            reconcile_existing_id=catalog_identity_applied,
+            routing_policy_override=routing_policy_override,
+        )
         import_usage_refresh_allowed = await self._import_usage_refresh_allowed(saved)
         if not import_usage_refresh_allowed:
             await self._repo.update_status(
@@ -654,6 +697,20 @@ class AccountsService:
         result = await self._repo.update_routing_policy(account_id, routing_policy)
         if result:
             get_account_selection_cache().invalidate()
+        return result
+
+    async def apply_workspace_routing_policy(
+        self,
+        workspace_account_id: str,
+        *,
+        enabled: bool,
+    ) -> WorkspaceRoutingPolicyResult:
+        result = await self._repo.apply_workspace_routing_policy(
+            workspace_account_id,
+            enabled=enabled,
+        )
+        get_account_selection_cache().invalidate()
+        await propagate_account_routing_change()
         return result
 
     async def delete_account(self, account_id: str, *, delete_history: bool = False) -> bool:

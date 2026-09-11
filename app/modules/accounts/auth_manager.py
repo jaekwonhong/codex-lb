@@ -27,6 +27,7 @@ from app.core.auth.refresh import (
     should_refresh,
 )
 from app.core.balancer import PERMANENT_FAILURE_CODES, account_status_for_permanent_failure
+from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
 from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_upstream_route
@@ -34,8 +35,13 @@ from app.core.utils.shared_future import wait_on_shared_future
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountProxyBinding, AccountStatus
 from app.db.session import get_background_session
+from app.modules.accounts.import_identity import fetch_companion_workspace_burn_first
 from app.modules.accounts.refresh_claims import RefreshClaimCoordinatorPort, get_refresh_claim_coordinator
-from app.modules.proxy.account_cache import get_account_selection_cache, mark_account_routing_unavailable
+from app.modules.proxy.account_cache import (
+    get_account_selection_cache,
+    mark_account_routing_unavailable,
+    propagate_account_routing_change,
+)
 from app.modules.proxy.work_admission import ADMISSION_WAIT_TIMEOUT_SECONDS
 
 
@@ -82,6 +88,7 @@ class AccountsRepositoryPort(Protocol):
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool: ...
 
     async def update_account_metadata(
@@ -610,6 +617,22 @@ class AuthManager:
         else:
             new_plan_type = account.plan_type
         new_email = result.email or account.email
+        burn_first_enabled = (
+            await fetch_companion_workspace_burn_first(
+                get_settings().companion_account_pool_url,
+                workspace_account_id=new_chatgpt_account_id,
+            )
+            if new_chatgpt_account_id
+            else None
+        )
+        routing_policy_override = (
+            "burn_first" if burn_first_enabled else "normal"
+        ) if burn_first_enabled is not None else None
+        routing_policy_changed = (
+            routing_policy_override is not None
+            and account.routing_policy != "preserve"
+            and account.routing_policy != routing_policy_override
+        )
         incoming_workspace_id = _clean_optional(result.workspace_id)
         current_workspace_id = _clean_optional(account.workspace_id)
         next_workspace_id = current_workspace_id
@@ -647,6 +670,22 @@ class AuthManager:
             new_seat_type = result.seat_type
 
         async def _write_tokens(expected_refresh_token_encrypted: bytes) -> bool:
+            if routing_policy_override is None:
+                return await self._repo.rotate_tokens(
+                    account.id,
+                    access_token_encrypted=new_access_token_encrypted,
+                    refresh_token_encrypted=new_refresh_token_encrypted,
+                    id_token_encrypted=new_id_token_encrypted,
+                    last_refresh=new_last_refresh,
+                    plan_type=new_plan_type,
+                    email=new_email,
+                    chatgpt_account_id=new_chatgpt_account_id,
+                    chatgpt_user_id=new_chatgpt_user_id or None,
+                    workspace_id=next_workspace_id,
+                    workspace_label=new_workspace_label,
+                    seat_type=new_seat_type,
+                    expected_refresh_token_encrypted=expected_refresh_token_encrypted,
+                )
             return await self._repo.rotate_tokens(
                 account.id,
                 access_token_encrypted=new_access_token_encrypted,
@@ -660,6 +699,7 @@ class AuthManager:
                 workspace_id=next_workspace_id,
                 workspace_label=new_workspace_label,
                 seat_type=new_seat_type,
+                routing_policy_override=routing_policy_override,
                 expected_refresh_token_encrypted=expected_refresh_token_encrypted,
             )
 
@@ -683,6 +723,11 @@ class AuthManager:
         account.workspace_id = next_workspace_id
         account.workspace_label = new_workspace_label
         account.seat_type = new_seat_type
+        if routing_policy_override is not None and account.routing_policy != "preserve":
+            account.routing_policy = routing_policy_override
+        if routing_policy_changed:
+            get_account_selection_cache().invalidate()
+            await propagate_account_routing_change()
         return account
 
     async def _persist_refreshed_tokens(

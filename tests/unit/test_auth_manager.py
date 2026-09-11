@@ -109,6 +109,7 @@ class _DummyRepo:
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool:
         self.tokens_payload = {
             "account_id": account_id,
@@ -123,6 +124,7 @@ class _DummyRepo:
             "workspace_id": workspace_id,
             "workspace_label": workspace_label,
             "seat_type": seat_type,
+            "routing_policy_override": routing_policy_override,
             "expected_refresh_token_encrypted": expected_refresh_token_encrypted,
         }
         return True
@@ -163,6 +165,55 @@ class _DummyRepo:
     ) -> bool:
         del account_id
         return (email, chatgpt_account_id, workspace_id) in self.taken_workspace_slots
+
+
+@pytest.mark.asyncio
+async def test_refresh_reapplies_explicit_workspace_burn_first(monkeypatch) -> None:
+    async def _fake_refresh(_: str, **_kwargs: object) -> TokenRefreshResult:
+        return TokenRefreshResult(
+            access_token="new-access",
+            refresh_token="new-refresh",
+            id_token="new-id",
+            account_id="4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+            plan_type="plus",
+            email=None,
+        )
+
+    async def _workspace_policy(*_args: object, **_kwargs: object) -> bool:
+        return True
+
+    async def _propagate() -> None:
+        return None
+
+    monkeypatch.setattr(auth_manager_module, "refresh_access_token", _fake_refresh)
+    monkeypatch.setattr(auth_manager_module, "fetch_companion_workspace_burn_first", _workspace_policy)
+    monkeypatch.setattr(auth_manager_module, "propagate_account_routing_change", _propagate)
+    monkeypatch.setattr(
+        auth_manager_module,
+        "get_account_selection_cache",
+        lambda: SimpleNamespace(invalidate=lambda: None),
+    )
+    encryptor = TokenEncryptor()
+    account = Account(
+        id="workspace-policy-refresh",
+        email="member@example.com",
+        chatgpt_account_id="4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+        plan_type="plus",
+        routing_policy="normal",
+        access_token_encrypted=encryptor.encrypt("access-old"),
+        refresh_token_encrypted=encryptor.encrypt("refresh-old"),
+        id_token_encrypted=encryptor.encrypt("id-old"),
+        last_refresh=utcnow(),
+        status=AccountStatus.ACTIVE,
+        deactivation_reason=None,
+    )
+    repo = _DummyRepo()
+
+    updated = await AuthManager(cast(AccountsRepositoryPort, repo)).refresh_account(account)
+
+    assert updated.routing_policy == "burn_first"
+    assert repo.tokens_payload is not None
+    assert repo.tokens_payload["routing_policy_override"] == "burn_first"
 
 
 @pytest.mark.asyncio

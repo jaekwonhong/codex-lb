@@ -136,7 +136,7 @@ export function ModelSourcesSettings({ disabled = false }: ModelSourcesSettingsP
                       void updateMutation.mutateAsync({
                         sourceId: source.id,
                         payload: { isEnabled: checked },
-                      })
+                      }).catch(() => undefined)
                     }
                   />
                   <Button
@@ -188,14 +188,21 @@ export function ModelSourcesSettings({ disabled = false }: ModelSourcesSettingsP
       <ConfirmDialog
         open={deleteDialog.open}
 	        title={t("modelSources.deleteDialog.title")}
-	        description={t("modelSources.deleteDialog.description")}
+	        description={t("modelSources.deleteDialog.description", { name: deleteDialog.data?.name ?? "" })}
 	        confirmLabel={t("common.actions.delete")}
+        pending={deleteMutation.isPending}
+        keepOpenOnConfirm
+        confirmDisabled={!deleteDialog.data}
         onOpenChange={deleteDialog.onOpenChange}
         onConfirm={() => {
-          if (!deleteDialog.data) return;
-          void deleteMutation.mutateAsync(deleteDialog.data.id).finally(() => deleteDialog.hide());
+          const target = deleteDialog.data;
+          if (!target) return;
+          void deleteMutation.mutateAsync(target.id).then(() => deleteDialog.hide()).catch(() => undefined);
         }}
-      />
+      >
+        {deleteMutation.error ? <div role="alert"><AlertMessage variant="error">{getErrorMessageOrNull(deleteMutation.error)}</AlertMessage>
+          <p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p></div> : null}
+      </ConfirmDialog>
     </section>
   );
 }

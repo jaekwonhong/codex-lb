@@ -16,6 +16,7 @@ export type ConfirmDialogProps = {
   description?: string;
   confirmLabel?: string;
   confirmDisabled?: boolean;
+  pending?: boolean;
   keepOpenOnConfirm?: boolean;
   cancelLabel?: string;
   onConfirm: () => void;
@@ -29,6 +30,7 @@ export function ConfirmDialog({
   description,
   confirmLabel = i18n.t("common.confirm"),
   confirmDisabled = false,
+  pending = false,
   keepOpenOnConfirm = false,
   cancelLabel = i18n.t("common.cancel"),
   onConfirm,
@@ -36,18 +38,20 @@ export function ConfirmDialog({
   children,
 }: ConfirmDialogProps) {
   return (
-    <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
+    <AlertDialog open={open} onOpenChange={(next) => { if (!pending) onOpenChange(next); }}>
+      <AlertDialogContent aria-busy={pending}>
         <AlertDialogHeader>
           <AlertDialogTitle>{title}</AlertDialogTitle>
           {description ? <AlertDialogDescription>{description}</AlertDialogDescription> : null}
         </AlertDialogHeader>
         {children}
+        {pending ? <p role="status" className="text-sm text-muted-foreground">{i18n.t("common.loading")}</p> : null}
         <AlertDialogFooter>
-          <AlertDialogCancel>{cancelLabel}</AlertDialogCancel>
+          <AlertDialogCancel disabled={pending}>{cancelLabel}</AlertDialogCancel>
           <AlertDialogAction
-            disabled={confirmDisabled}
+            disabled={confirmDisabled || pending}
             onClick={(event) => {
+              if (pending || confirmDisabled) { event.preventDefault(); return; }
               if (keepOpenOnConfirm) {
                 event.preventDefault();
               }
