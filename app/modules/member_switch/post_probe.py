@@ -54,4 +54,5 @@ class MemberAuthPostProbeService:
             primary_used_percent_after=result.primary_used_percent_after,
             secondary_used_percent_after=result.secondary_used_percent_after,
             account_status_after=result.account_status_after,
+            usage_refresh_succeeded=result.usage_refresh_ready_for_probe_settlement(),
         )

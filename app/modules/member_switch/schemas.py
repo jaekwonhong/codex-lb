@@ -406,6 +406,7 @@ class AuthEnrollmentPostProbe(DashboardModel):
     primary_used_percent_after: float | None = None
     secondary_used_percent_after: float | None = None
     account_status_after: str | None = None
+    usage_refresh_succeeded: bool | None = None
     error_code: str | None = None
 
 

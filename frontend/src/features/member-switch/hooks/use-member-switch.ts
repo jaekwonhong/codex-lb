@@ -72,6 +72,11 @@ export function useMemberSwitch(
   const active = useRef<RequestOwner | null>(null);
   const progress = useRef<ProgressOwner | null>(null);
   const permission = useRef(false);
+  const onAuthEnrollmentSettledRef = useRef(onAuthEnrollmentSettled);
+
+  useEffect(() => {
+    onAuthEnrollmentSettledRef.current = onAuthEnrollmentSettled;
+  }, [onAuthEnrollmentSettled]);
 
   // Reset UI state before rendering a different access lifecycle, not after paint.
   if (accessSnapshot !== readOnly) {
@@ -161,12 +166,13 @@ export function useMemberSwitch(
       primaryUsedPercentAfter: null,
       secondaryUsedPercentAfter: null,
       accountStatusAfter: null,
+      usageRefreshSucceeded: null,
       errorCode: "oauth_probe_recovery_required",
     });
     if (result.phase === "completed" && result.authState === "completed") {
-      onAuthEnrollmentSettled?.(result.authAccountId);
+      onAuthEnrollmentSettledRef.current?.(result.authAccountId);
     }
-  }, [onAuthEnrollmentSettled]);
+  }, []);
 
   const recoverTerminalPostProbe = useCallback(async (terminal: AuthEnrollmentView) => {
     const recoveredHolder: { value: AuthEnrollmentView | null } = { value: null };

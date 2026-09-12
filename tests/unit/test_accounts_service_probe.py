@@ -245,6 +245,8 @@ async def test_probe_account_uses_default_model_when_omitted(monkeypatch):
         return 200
 
     monkeypatch.setattr(service, "_send_probe_request", _fake_probe)
+    resolver = Mock(return_value="gpt-5.6-luna")
+    monkeypatch.setattr("app.modules.accounts.service.resolve_default_host_model", resolver)
 
     await service.probe_account(_ACCOUNT_ID)
 

@@ -195,6 +195,44 @@ describe("server-owned member switch", () => {
     expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
   });
 
+  it("keeps one-click OAuth alive when the parent replaces its settled callback during the request", async () => {
+    mock.autoEnrollmentDelayMs = 700;
+    mock.catalog.workspaces[0].currentMembers = [{
+      email: memberIdentity.targetEmail,
+      userId: memberIdentity.targetUserId,
+      presetId: memberIdentity.presetId,
+      authState: "absent",
+      authAccountId: null,
+    }];
+    const first = vi.fn();
+    const latest = vi.fn();
+    const hook = renderHook(
+      ({ onSettled }) => useMemberSwitch(false, onSettled),
+      { initialProps: { onSettled: first } },
+    );
+    await waitFor(() => expect(hook.result.current.checked).toBe(true));
+    await act(hook.result.current.loadCatalog);
+    let pending!: Promise<void>;
+    act(() => {
+      pending = hook.result.current.startAuthEnrollment(
+        "cdp-1", memberIdentity.presetId, memberIdentity.targetEmail, memberIdentity.targetUserId,
+      );
+    });
+    await waitFor(() => expect(hook.result.current.autoProgress?.phase).toBe("auth_prepared"), { timeout: 2_000 });
+
+    hook.rerender({ onSettled: latest });
+    await act(async () => { await pending; });
+
+    expect(hook.result.current.checked).toBe(true);
+    expect(hook.result.current.enrollment).toBeNull();
+    expect(hook.result.current.oauthProbe?.state).toBe("completed");
+    expect(first).not.toHaveBeenCalled();
+    expect(latest).toHaveBeenCalledOnce();
+    expect(latest).toHaveBeenCalledWith("auth-target");
+    expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
+    expect(mock.requests.filter((item) => item.path.endsWith("/commands"))).toHaveLength(0);
+  });
+
   it("keeps OAuth success when the post-registration Force Probe fails", async () => {
     mock.probeErrorCode = "account_probe_refresh_failed";
     mock.catalog.workspaces[0].currentMembers = [{

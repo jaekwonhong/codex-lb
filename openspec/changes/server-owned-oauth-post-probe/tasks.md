@@ -6,3 +6,6 @@
 - [x] Invalidate account/dashboard read caches after terminal enrollment so refreshed quota is displayed immediately.
 - [x] Add regressions for quota refresh, response retry/idempotency, probe failure, manual recovery, and absence of frontend probe POST.
 - [x] Run strict OpenSpec validation, backend/frontend tests, typecheck, lint, build, and independent review.
+- [x] Prevent parent callback identity changes from aborting the owning one-click OAuth request and add a rerender regression.
+- [x] Backport the upstream current-host resolver for default account Probe model selection and test Luna/fallback behavior.
+- [x] Persist whether Usage refresh succeeded and render non-2xx Probe + successful Usage as a partial-success diagnostic rather than a connection failure.

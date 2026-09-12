@@ -160,7 +160,7 @@ describe("manual member-switch request ownership", () => {
   it.each(["stored_refresh", "reconcile"])("OAuth-only recovered finish discards the catalog without live reads (%s)", async (recovery) => {
     const initial = makeAuthEnrollmentView({revision:6,phase:"auth_confirmed",authState:"completed",allowedActions:["finish"]});
     const completed = makeAuthEnrollmentView({revision:10,phase:"completed",authState:"completed",authAccountId:"auth-target",
-      postProbe:{state:"completed",accountId:"auth-target",probeStatusCode:200,primaryUsedPercentAfter:10,secondaryUsedPercentAfter:null,accountStatusAfter:"active",errorCode:null},
+      postProbe:{state:"completed",accountId:"auth-target",probeStatusCode:200,primaryUsedPercentAfter:10,secondaryUsedPercentAfter:null,accountStatusAfter:"active",usageRefreshSucceeded:true,errorCode:null},
       lastCode:"auth_enrollment_finalized",allowedActions:[]});
     const pending = makeAuthEnrollmentView({revision:8,phase:"outcome_unknown",pendingAction:"finish",allowedActions:["reconcile"]});
     vi.spyOn(client,"getActiveRun").mockResolvedValue({run:null});

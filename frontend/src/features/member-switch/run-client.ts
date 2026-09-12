@@ -57,6 +57,7 @@ export const AuthEnrollmentPostProbeSchema = z.object({
   primaryUsedPercentAfter: z.number().nullable().default(null),
   secondaryUsedPercentAfter: z.number().nullable().default(null),
   accountStatusAfter: z.string().nullable().default(null),
+  usageRefreshSucceeded: z.boolean().nullable().default(null),
   errorCode: z.string().nullable().default(null),
 });
 export const AuthEnrollmentViewSchema = z.object({

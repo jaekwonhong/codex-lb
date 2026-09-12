@@ -139,6 +139,28 @@ describe("manual server-owned panel", () => {
     expect(screen.getByText(/1차 사용량 100%/)).toBeInTheDocument();
   });
 
+  it("does not call a rejected Probe request a connection failure when token usage refresh succeeded", async () => {
+    mock.probeStatusCode = 400;
+    mock.probePrimaryUsedPercentAfter = 0;
+    mock.probeUsageRefreshSucceeded = true;
+    mock.catalog.workspaces[0].currentMembers = [{
+      email: memberIdentity.targetEmail,
+      userId: memberIdentity.targetUserId,
+      presetId: memberIdentity.presetId,
+      authState: "absent",
+      authAccountId: null,
+    }];
+    const user = userEvent.setup(); render(<MemberSwitchPanel readOnly={false} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "목록 불러오기" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
+    await user.click(await screen.findByRole("button", { name: "OAuth 등록" }));
+
+    expect(await screen.findByText(/강제 Probe 요청 HTTP 400 · OAuth 토큰·Usage 조회 정상/)).toBeInTheDocument();
+    expect(screen.getByText(/1차 사용량 0%/)).toBeInTheDocument();
+    expect(screen.queryByText(/강제 Probe 연결 확인 실패/)).not.toBeInTheDocument();
+    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
+  });
+
   it("shows persisted OAuth phase progress while the one-click request is still running", async () => {
     mock.autoEnrollmentDelayMs = 700;
     mock.catalog.workspaces[0].currentMembers = [{

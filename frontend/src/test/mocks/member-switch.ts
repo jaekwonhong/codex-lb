@@ -51,14 +51,15 @@ export function installMemberSwitchMocks() {
     probeErrorCode: null as string | null,
     probeStatusCode: 200,
     probePrimaryUsedPercentAfter: null as number | null,
+    probeUsageRefreshSucceeded: true,
   };
   const failure = (code: string, status = 409) => HttpResponse.json({ error: { code, message: code } }, { status });
   const postProbe = () => state.probeErrorCode
     ? { state: "failed" as const, accountId: "auth-target", probeStatusCode: null, primaryUsedPercentAfter: null,
-        secondaryUsedPercentAfter: null, accountStatusAfter: null, errorCode: state.probeErrorCode }
+        secondaryUsedPercentAfter: null, accountStatusAfter: null, usageRefreshSucceeded: null, errorCode: state.probeErrorCode }
     : { state: "completed" as const, accountId: "auth-target", probeStatusCode: state.probeStatusCode,
         primaryUsedPercentAfter: state.probePrimaryUsedPercentAfter, secondaryUsedPercentAfter: null,
-        accountStatusAfter: "active", errorCode: null };
+        accountStatusAfter: "active", usageRefreshSucceeded: state.probeUsageRefreshSucceeded, errorCode: null };
   async function respond(request: Request) {
     const path = new URL(request.url).pathname;
     const requestText = request.method === "POST" ? await request.text() : "";

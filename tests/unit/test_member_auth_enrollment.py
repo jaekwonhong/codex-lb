@@ -296,6 +296,7 @@ class EnrollmentPostProbe:
             probe_status_code=429,
             primary_used_percent_after=100.0,
             account_status_after="active",
+            usage_refresh_succeeded=True,
         )
 
     async def probe(self, account_id: str) -> AuthEnrollmentPostProbe:
@@ -1076,6 +1077,7 @@ async def test_auth_enrollment_auto_route_returns_server_post_probe(enrollment_p
             "primaryUsedPercentAfter": 100.0,
             "secondaryUsedPercentAfter": None,
             "accountStatusAfter": "active",
+            "usageRefreshSucceeded": True,
             "errorCode": None,
         }
         assert post_probe.calls == ["auth-target"]

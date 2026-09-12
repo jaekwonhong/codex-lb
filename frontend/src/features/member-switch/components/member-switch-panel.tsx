@@ -185,6 +185,9 @@ export function MemberSwitchPanel({
   const probeQuotaLabel = probeQuota == null ? "" : ` · 1차 사용량 ${probeQuota}%`;
   const probeQuotaLimited = probeHttpStatus === 429 || (probeQuota != null && probeQuota >= 100);
   const probeHealthy = probeSucceeded && !probeQuotaLimited;
+  const probeUsageRefreshSucceeded = runtime.oauthProbe?.usageRefreshSucceeded === true;
+  const probeRequestFailedButUsageValid = !probeSucceeded && probeUsageRefreshSucceeded
+    && runtime.oauthProbe?.accountStatusAfter === "active";
   return <section aria-labelledby="member-switch-title" className="rounded-xl border bg-card p-4 sm:p-5">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h2 id="member-switch-title" className="text-sm font-semibold">멤버 관리 · 전환 / OAuth 등록</h2>
@@ -215,6 +218,8 @@ export function MemberSwitchPanel({
         ? `강제 Probe 완료 · quota 제한 확인 · HTTP ${probeHttpStatus ?? "미확인"} · 계정 상태 ${runtime.oauthProbe.accountStatusAfter ?? "미확인"}${probeQuotaLabel}`
         : probeHealthy
           ? `강제 Probe 완료 · 연결 정상 · 토큰 사용 가능 · HTTP ${probeHttpStatus} · 계정 상태 ${runtime.oauthProbe.accountStatusAfter ?? "미확인"}${probeQuotaLabel}`
+          : probeRequestFailedButUsageValid
+            ? `강제 Probe 요청 HTTP ${probeHttpStatus ?? "미확인"} · OAuth 토큰·Usage 조회 정상 · 계정 상태 ${runtime.oauthProbe.accountStatusAfter ?? "미확인"}${probeQuotaLabel}`
           : `OAuth 등록은 완료됨 · 강제 Probe 연결 확인 실패 · HTTP ${probeHttpStatus ?? "미확인"} · 계정 상태 ${runtime.oauthProbe.accountStatusAfter ?? "미확인"}${probeQuotaLabel}`}
     </AlertMessage> : runtime.oauthProbe?.errorCode ? <AlertMessage className="mt-4" variant="warning">
       {runtime.oauthProbe.errorCode === "account_probe_refresh_failed"
