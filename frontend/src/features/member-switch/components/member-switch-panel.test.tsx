@@ -62,13 +62,11 @@ describe("manual server-owned panel", () => {
     const cancel = await screen.findByRole("button", { name: "취소" }); cancel.focus(); await user.keyboard("{Enter}");
     expect(mock.requests.filter((item) => item.path.endsWith("/commands"))).toEqual([]);
   });
-  it("loads actual workspace membership through the owner Ego Lite path", async () => {
+  it("loads actual workspace membership without the removed guidance copy", async () => {
     const user = userEvent.setup(); render(<MemberSwitchPanel readOnly={false} />);
-    expect(screen.getByText(/각 워크스페이스 소유주 ID의 Ego Lite 프로필\/Space/)).toBeInTheDocument();
-    expect(screen.getByText(/소유주 멤버 삭제·초대·초대취소와 그 전후 개인 계정 확인도 동일한 소유주 Ego Lite Space/)).toBeInTheDocument();
-    expect(screen.getByText(/기존 owner CDP를 대체 경로로 사용하지 않습니다/)).toBeInTheDocument();
-    expect(screen.getByText(/수신자의 Personal 확인, 워크스페이스 존재·부재 확인, 초대 수락도 해당 ID의 Ego Lite/)).toBeInTheDocument();
-    expect(screen.getByText(/managed 멤버 전환 중에는 recipient CDP로 fallback하지 않습니다/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "멤버 관리 · 전환 / OAuth 등록" })).toBeInTheDocument();
+    expect(screen.queryByText(/멤버 교체는 대상 확인/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/각 워크스페이스 소유주 ID의 Ego Lite 프로필\/Space/)).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByRole("button", { name: "목록 불러오기" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
     expect(await screen.findByText("소유주: owner@example.com")).toBeInTheDocument();

@@ -191,16 +191,7 @@ export function MemberSwitchPanel({
     && runtime.oauthProbe?.accountStatusAfter === "active";
   return <section aria-labelledby="member-switch-title" className="rounded-xl border bg-card p-4 sm:p-5">
     <div className="flex flex-wrap items-start justify-between gap-3">
-      <div><h2 id="member-switch-title" className="text-sm font-semibold">멤버 관리 · 전환 / OAuth 등록</h2>
-        <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
-          멤버 교체는 대상 확인 → 교체 → 인증 전환 → 종료 확인 순서로 직접 승인합니다.
-          소유주 또는 이미 현재 멤버인 계정은 「OAuth 등록」 한 번으로 장치코드 발급 → Ego Lite 자동 인증 → 서버 인증 확인·반영 → 완료 정리까지 진행합니다. 멤버십은 변경하지 않습니다.
-          서버 기록 새로고침은 저장 상태만 읽고, 목록 불러오기·새로고침은 각 워크스페이스 소유주 ID의 Ego Lite 프로필/Space에서 실제 멤버를 확인합니다.
-          소유주 멤버 삭제·초대·초대취소와 그 전후 개인 계정 확인도 동일한 소유주 Ego Lite Space에서 수행하며, 기존 owner CDP를 대체 경로로 사용하지 않습니다.
-          수신자의 Personal 확인, 워크스페이스 존재·부재 확인, 초대 수락도 해당 ID의 Ego Lite 프로필/Space에서 수행하며 managed 멤버 전환 중에는 recipient CDP로 fallback하지 않습니다.
-          확인된 이메일의 사용자 ID가 바뀐 경우 관리 중인 동일 계정의 ID만 갱신합니다.
-          자동 순환·자동 복구는 실행하지 않습니다.
-        </p></div>
+      <div><h2 id="member-switch-title" className="text-sm font-semibold">멤버 관리 · 전환 / OAuth 등록</h2></div>
       <div className="flex flex-wrap gap-2">
         <Button size="sm" variant="outline" disabled={readOnly || (busy !== null && busy !== "restore")} onClick={() => void runtime.refresh()}>서버 기록 새로고침</Button>
         <Button size="sm" variant="outline" disabled={catalogRefreshDisabled} onClick={() => void runtime.loadCatalog()}>
