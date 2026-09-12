@@ -22,8 +22,8 @@ export function makeAuthEnrollmentView(overrides: Partial<AuthEnrollmentView> = 
     id: "3ab0ff43-1970-4e20-988e-acbba08b50b2", revision: 0, identity: memberIdentity,
     phase: "prepared", lastCode: "oauth_enrollment_ready", updatedAt: "2026-09-07T00:00:00Z",
     pendingAction: null, allowedActions: ["prepare_auth", "cancel"], handoffId: null, authState: null,
-    flowId: null, verificationUrl: null, userCode: null, expiresInSeconds: null, ...overrides,
-    browserProfileId: null, browserTaskSpaceId: null, browserOwnership: null,
+    authAccountId: null, flowId: null, verificationUrl: null, userCode: null, expiresInSeconds: null,
+    browserProfileId: null, browserTaskSpaceId: null, browserOwnership: null, ...overrides,
   };
 }
 
@@ -44,7 +44,10 @@ export function installMemberSwitchMocks() {
     enrollment: null as AuthEnrollmentView | null,
     loseResponseFor: null as RunAction | "create" | null,
     autoEnrollmentResult: "completed" as "completed" | "manual",
+    autoEnrollmentDelayMs: 0,
     loseAutoEnrollmentResponse: false,
+    probeErrorCode: null as string | null,
+    probeStatusCode: 200,
   };
   const failure = (code: string, status = 409) => HttpResponse.json({ error: { code, message: code } }, { status });
   async function respond(request: Request) {
@@ -57,9 +60,17 @@ export function installMemberSwitchMocks() {
     if (path === "/api/member-switch-runs/active") return HttpResponse.json({ run: state.run?.phase === "completed" ? null : state.run });
     if (path === "/api/member-switch-runs/oauth-enrollments/auto" && request.method === "POST") {
       const enrollmentId = (body as { enrollmentId: string }).enrollmentId;
+      if (state.autoEnrollmentDelayMs > 0) {
+        state.enrollment = makeAuthEnrollmentView({
+          id: enrollmentId, revision: 2, phase: "auth_prepared", lastCode: "device_code_issued",
+          authState: "device_code_issued", allowedActions: ["open_auth_browser"], handoffId: "handoff-enroll-1",
+          flowId: "flow-enroll-1", verificationUrl: "https://auth.example/device", userCode: "ABCD-EFGH", expiresInSeconds: 900,
+        });
+        await new Promise((resolve) => setTimeout(resolve, state.autoEnrollmentDelayMs));
+      }
       state.enrollment = state.autoEnrollmentResult === "completed"
         ? makeAuthEnrollmentView({ id: enrollmentId, revision: 8, phase: "completed", lastCode: "auth_enrollment_finalized",
-            authState: "completed", allowedActions: [], handoffId: "handoff-enroll-1", flowId: "flow-enroll-1",
+            authState: "completed", authAccountId: "auth-target", allowedActions: [], handoffId: "handoff-enroll-1", flowId: "flow-enroll-1",
             verificationUrl: "https://auth.example/device", userCode: "ABCD-EFGH", expiresInSeconds: 900,
             browserProfileId: "CodexLB-account-target", browserTaskSpaceId: 17, browserOwnership: "agentDelegatedToUser" })
         : makeAuthEnrollmentView({ id: enrollmentId, revision: 4, phase: "auth_browser_opened",
@@ -82,7 +93,7 @@ export function installMemberSwitchMocks() {
     if (request.method === "POST" && /\/oauth-enrollments\/[^/]+\/auto$/.test(path)) {
       if (!state.enrollment) return failure("auth_enrollment_not_found", 404);
       state.enrollment = makeAuthEnrollmentView({ ...state.enrollment, revision: state.enrollment.revision + 8,
-        phase: "completed", lastCode: "auth_enrollment_finalized", authState: "completed", allowedActions: [] });
+        phase: "completed", lastCode: "auth_enrollment_finalized", authState: "completed", authAccountId: "auth-target", allowedActions: [] });
       state.catalog.workspaces[0].currentMembers = [{ email: state.enrollment.identity.targetEmail,
         userId: state.enrollment.identity.targetUserId, presetId: state.enrollment.identity.presetId,
         authState: "active", authAccountId: "auth-target" }];
@@ -151,6 +162,18 @@ export function installMemberSwitchMocks() {
     return HttpResponse.json(state.run);
   }
   server.use(http.all("/api/member-switch-runs", ({ request }) => respond(request)),
-    http.all("/api/member-switch-runs/*", ({ request }) => respond(request)));
+    http.all("/api/member-switch-runs/*", ({ request }) => respond(request)),
+    http.post("/api/accounts/:accountId/probe", async ({ request, params }) => {
+      const path = new URL(request.url).pathname;
+      const requestText = await request.text();
+      state.requests.push({ method: request.method, path, body: requestText ? JSON.parse(requestText) : null });
+      if (state.probeErrorCode) return failure(state.probeErrorCode);
+      return HttpResponse.json({
+        status: "probed", accountId: String(params.accountId), probeStatusCode: state.probeStatusCode,
+        primaryUsedPercentBefore: null, primaryUsedPercentAfter: null,
+        secondaryUsedPercentBefore: null, secondaryUsedPercentAfter: null,
+        accountStatusBefore: "active", accountStatusAfter: "active",
+      });
+    }));
   return state;
 }

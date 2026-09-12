@@ -55,7 +55,7 @@ export const AuthEnrollmentViewSchema = z.object({
   phase: z.enum(["prepared", "auth_prepared", "auth_browser_opened", "auth_confirmed", "completed", "needs_attention", "outcome_unknown"]),
   lastCode: z.string(), updatedAt: z.iso.datetime({ offset: true }), pendingAction: z.string().nullable(),
   allowedActions: z.array(AuthEnrollmentActionSchema), handoffId: z.string().nullable(), authState: z.string().nullable(),
-  flowId: z.string().nullable(), verificationUrl: z.string().nullable(), userCode: z.string().nullable(),
+  authAccountId: z.string().nullable().default(null), flowId: z.string().nullable(), verificationUrl: z.string().nullable(), userCode: z.string().nullable(),
   expiresInSeconds: z.number().int().nullable(),
   browserProfileId: z.string().nullable(), browserTaskSpaceId: z.number().int().nullable(),
   browserOwnership: z.string().nullable(),

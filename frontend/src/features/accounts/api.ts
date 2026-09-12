@@ -148,12 +148,12 @@ export function consumeAccountUsageResetCredit(
   );
 }
 
-export function probeAccount(accountId: string, payload?: unknown) {
+export function probeAccount(accountId: string, payload?: unknown, signal?: AbortSignal) {
   const validated = payload === undefined ? undefined : AccountProbeRequestSchema.parse(payload);
   return post(
     `${ACCOUNTS_BASE_PATH}/${encodeURIComponent(accountId)}/probe`,
     AccountProbeResponseSchema,
-    validated ? { body: validated } : undefined,
+    validated ? { body: validated, signal } : { signal },
   );
 }
 

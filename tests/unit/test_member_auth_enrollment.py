@@ -23,7 +23,7 @@ from app.modules.member_auth_handoff.schemas import (
 from app.modules.member_switch.admission import require_new_work_admission
 from app.modules.member_switch.api import handle_control_conflict, router
 from app.modules.member_switch.auth_enrollment import MemberAuthEnrollmentService
-from app.modules.member_switch.repository import ControlConflict, MemberSwitchControlRepository
+from app.modules.member_switch.repository import ControlConflict, MemberSwitchControlRepository, command_fingerprint
 from app.modules.member_switch.schemas import (
     AuthEnrollmentCommandRequest,
     AuthEnrollmentCreateRequest,
@@ -183,16 +183,24 @@ class EnrollmentAuth:
         self.prepare_calls = 0
         self.lose_prepare_once = False
         self.lose_advance_once = False
+        self.bound_catalog = False
+        self.require_bound_catalog = False
+        self.raise_observation = False
 
     def bind_catalog(self, catalog: Catalog) -> None:
         if catalog.catalog_fingerprint != FINGERPRINT:
             raise ControlConflict("auth_catalog_fingerprint_mismatch")
+        self.bound_catalog = True
 
     def validate_identity(self, identity, removed_email=None) -> None:
         if identity.catalog_fingerprint != FINGERPRINT or removed_email is not None:
             raise ControlConflict("auth_catalog_identity_mismatch")
 
     async def observe_workspace_auth(self, *, workspace_id: str, workspace_account_id: str):
+        if self.raise_observation:
+            raise RuntimeError("synthetic_auth_observation_failure")
+        if self.require_bound_catalog and not self.bound_catalog:
+            raise ControlConflict("auth_catalog_not_bound")
         return WorkspaceAuthObservationResponse(
             available=True,
             code="ok",
@@ -308,6 +316,13 @@ async def command(service, view, action):
     )
 
 
+async def advance_to_auth_confirmed(service: MemberAuthEnrollmentService):
+    view = await service.create(create_request())
+    view = await command(service, view, "prepare_auth")
+    view = await command(service, view, "open_auth_browser")
+    return await command(service, view, "advance_auth")
+
+
 async def test_current_member_oauth_only_flow_never_requests_membership_mutation(enrollment_context):
     service, controls, companion, auth = enrollment_context
     view = await service.create(create_request())
@@ -334,8 +349,67 @@ async def test_current_member_oauth_only_flow_never_requests_membership_mutation
     assert view.phase == "auth_confirmed" and view.auth_state == "completed"
     view = await command(service, view, "finish")
     assert view.phase == "completed"
+    assert view.auth_account_id == "auth-target"
     assert await controls.active() is None
     assert all("start" not in call and "participant" not in call for call in companion.calls)
+
+
+async def test_auto_resume_rebinds_catalog_before_resolving_auth_account(enrollment_context):
+    service, controls, _, auth = enrollment_context
+    view = await advance_to_auth_confirmed(service)
+    assert view.phase == "auth_confirmed" and view.auth_state == "completed"
+    auth.require_bound_catalog = True
+    auth.bound_catalog = False  # Simulate a fresh request/service binding.
+
+    completed = await service.auto_complete(view.id)
+
+    assert completed.phase == "completed"
+    assert completed.auth_account_id == "auth-target"
+    assert auth.bound_catalog is True
+    assert await controls.active() is None
+
+
+async def test_auth_account_resolution_failure_does_not_block_successful_closeout(enrollment_context):
+    service, controls, _, auth = enrollment_context
+    view = await advance_to_auth_confirmed(service)
+    auth.raise_observation = True
+
+    completed = await service.auto_complete(view.id)
+
+    assert completed.phase == "completed" and completed.auth_state == "completed"
+    assert completed.auth_account_id is None
+    assert await controls.active() is None
+
+
+async def test_reconcile_lost_finish_persists_exact_auth_account(enrollment_context):
+    service, controls, _, auth = enrollment_context
+    view = await advance_to_auth_confirmed(service)
+    auth.require_bound_catalog = True
+    auth.bound_catalog = False
+    record = await controls.get(view.id)
+    assert record is not None
+    finish = AuthEnrollmentCommandRequest(
+        command_id=uuid4(), expected_revision=view.revision, action="finish"
+    )
+    claimed, execute = await controls.claim(
+        record,
+        str(finish.command_id),
+        "finish",
+        command_fingerprint("finish", finish.model_dump_json()),
+        expected_revision=view.revision,
+    )
+    assert execute is True and claimed.pending_action == "finish"
+
+    completed = await service.command(
+        view.id,
+        AuthEnrollmentCommandRequest(
+            command_id=uuid4(), expected_revision=claimed.revision, action="reconcile"
+        ),
+    )
+
+    assert completed.phase == "completed" and completed.auth_state == "completed"
+    assert completed.auth_account_id == "auth-target"
+    assert await controls.active() is None
 
 
 async def test_one_click_auto_enrollment_reaches_terminal_and_releases_scope(enrollment_context):
@@ -665,6 +739,9 @@ async def test_auth_enrollment_auto_routes_complete_and_resume(enrollment_contex
         assert completed.status_code == 200, completed.text
         body = completed.json()
         assert body["phase"] == "completed" and body["authState"] == "completed"
+        assert body["authAccountId"] == "auth-target"
+        stored = await service.get(body["id"])
+        assert stored is not None and stored.auth_account_id == "auth-target"
         assert await controls.active() is None
         assert companion.calls.count("open_ego_browser") == 1
         assert auth.advance_calls == 1

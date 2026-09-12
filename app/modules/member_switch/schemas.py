@@ -411,6 +411,7 @@ class AuthEnrollmentState(DashboardModel):
     updated_at: datetime
     handoff_id: str | None = None
     auth_state: str | None = None
+    auth_account_id: str | None = None
     flow_id: str | None = None
     verification_url: str | None = None
     user_code: str | None = None
@@ -431,6 +432,7 @@ class AuthEnrollmentView(DashboardModel):
     allowed_actions: list[AuthEnrollmentAction]
     handoff_id: str | None = None
     auth_state: str | None = None
+    auth_account_id: str | None = None
     flow_id: str | None = None
     verification_url: str | None = None
     user_code: str | None = None

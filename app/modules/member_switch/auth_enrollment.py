@@ -141,6 +141,7 @@ class MemberAuthEnrollmentService:
             allowed_actions=[] if legacy or orphan else enrollment_allowed_actions(state, record.pending_action),
             handoff_id=state.handoff_id,
             auth_state=state.auth_state,
+            auth_account_id=state.auth_account_id,
             flow_id=state.flow_id,
             verification_url=state.verification_url,
             user_code=state.user_code,
@@ -300,6 +301,59 @@ class MemberAuthEnrollmentService:
         )
         record = await self.controls.create(enrollment_id, "auth_enrollment", state.model_dump_json(), own_scope=True)
         return self._view(record)
+
+    async def _resolve_auth_account_id(self, state: AuthEnrollmentState) -> str | None:
+        """Best-effort exact account lookup after OAuth has already succeeded.
+
+        This diagnostic identity must never become a second success gate. Rebind the
+        handoff service to the authoritative enrollment catalog on every request so a
+        resumed process does not depend on in-memory binding from the original request.
+        """
+        try:
+            catalog = await self.companion.catalog()
+            if not catalog.enabled or catalog.catalog_fingerprint != state.identity.catalog_fingerprint:
+                return None
+            workspace = next((item for item in catalog.workspaces if item.id == state.identity.workspace_id), None)
+            target = (
+                next((item for item in workspace.members if item.preset_id == state.identity.preset_id), None)
+                if workspace
+                else None
+            )
+            if (
+                workspace is None
+                or target is None
+                or workspace.workspace_account_id != state.identity.workspace_account_id
+                or target.email.casefold() != state.identity.target_email
+                or target.user_id != state.identity.target_user_id
+            ):
+                return None
+            self.auth.bind_catalog(catalog)
+            observation = await self.auth.observe_workspace_auth(
+                workspace_id=state.identity.workspace_id,
+                workspace_account_id=state.identity.workspace_account_id,
+            )
+        except Exception:
+            # OAuth success is already durable at auth_confirmed. Optional post-success
+            # account resolution must not retain the global control on an observation error.
+            return None
+        if (
+            not observation.available
+            or observation.identity_ambiguous
+            or observation.catalog_fingerprint != state.identity.catalog_fingerprint
+        ):
+            return None
+        matches = [
+            member
+            for member in observation.members
+            if member.preset_id == state.identity.preset_id
+            and member.email.casefold() == state.identity.target_email
+            and member.user_id == state.identity.target_user_id
+            and member.state == "active"
+            and member.auth_account_id is not None
+        ]
+        if len(matches) != 1:
+            return None
+        return matches[0].auth_account_id
 
     async def create_and_auto_complete(self, request: AuthEnrollmentCreateRequest) -> AuthEnrollmentView:
         """Create or resume one current-member OAuth enrollment through safe terminal completion.
@@ -599,6 +653,10 @@ class MemberAuthEnrollmentService:
         elif request.action == "finish":
             if state.auth_state not in {"completed", "failed"}:
                 raise ControlConflict("auth_enrollment_not_terminal")
+            if state.auth_state == "completed" and state.auth_account_id is None:
+                auth_account_id = await self._resolve_auth_account_id(state)
+                if auth_account_id is not None:
+                    state = state.model_copy(update={"auth_account_id": auth_account_id})
             state = state.model_copy(update={"phase": "completed", "last_code": "auth_enrollment_finalized"})
         elif request.action == "cancel":
             state = state.model_copy(update={"phase": "completed", "last_code": "auth_enrollment_cancelled"})
@@ -624,6 +682,10 @@ class MemberAuthEnrollmentService:
         elif action == "finish":
             if state.auth_state not in {"completed", "failed"}:
                 raise ControlConflict("auth_enrollment_not_terminal")
+            if state.auth_state == "completed" and state.auth_account_id is None:
+                auth_account_id = await self._resolve_auth_account_id(state)
+                if auth_account_id is not None:
+                    state = state.model_copy(update={"auth_account_id": auth_account_id})
             state = state.model_copy(update={"phase": "completed", "last_code": "auth_enrollment_finalized"})
         elif action == "cancel":
             state = state.model_copy(update={"phase": "completed", "last_code": "auth_enrollment_cancelled"})

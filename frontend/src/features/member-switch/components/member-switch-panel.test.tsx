@@ -93,6 +93,7 @@ describe("manual server-owned panel", () => {
     await user.click(screen.getByRole("button", { name: "OAuth 등록" }));
 
     expect(await screen.findByText("OAuth 등록됨")).toBeInTheDocument();
+    expect(await screen.findByText(/강제 Probe 완료 · 연결 정상 · 토큰 사용 가능 · HTTP 200/)).toBeInTheDocument();
     expect(screen.queryByText(/현재 멤버 OAuth 등록 ·/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "장치 코드 발급" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Ego Lite 인증 브라우저 열기" })).not.toBeInTheDocument();
@@ -101,6 +102,45 @@ describe("manual server-owned panel", () => {
     expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
     expect(mock.requests.filter((item) => item.path.endsWith("/commands"))).toHaveLength(0);
   });
+  it("shows persisted OAuth phase progress while the one-click request is still running", async () => {
+    mock.autoEnrollmentDelayMs = 700;
+    mock.catalog.workspaces[0].currentMembers = [{
+      email: memberIdentity.targetEmail,
+      userId: memberIdentity.targetUserId,
+      presetId: memberIdentity.presetId,
+      authState: "absent",
+      authAccountId: null,
+    }];
+    const user = userEvent.setup(); render(<MemberSwitchPanel readOnly={false} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "목록 불러오기" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
+    await user.click(await screen.findByRole("button", { name: "OAuth 등록" }));
+
+    expect(await screen.findByText("장치 코드 발급 완료 · Ego Lite 인증 시작 중", {}, { timeout: 2_000 })).toBeInTheDocument();
+    expect(mock.requests.filter((item) => item.method === "GET" && /\/oauth-enrollments\/[^/]+$/.test(item.path)).length).toBeGreaterThan(0);
+    expect(mock.requests.filter((item) => item.path.endsWith("/commands"))).toHaveLength(0);
+    expect(await screen.findByText(/강제 Probe 완료 · 연결 정상 · 토큰 사용 가능 · HTTP 200/, {}, { timeout: 2_000 })).toBeInTheDocument();
+  });
+
+  it("reports Force Probe token failure separately after OAuth registration succeeds", async () => {
+    mock.probeErrorCode = "account_probe_refresh_failed";
+    mock.catalog.workspaces[0].currentMembers = [{
+      email: memberIdentity.targetEmail,
+      userId: memberIdentity.targetUserId,
+      presetId: memberIdentity.presetId,
+      authState: "absent",
+      authAccountId: null,
+    }];
+    const user = userEvent.setup(); render(<MemberSwitchPanel readOnly={false} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "목록 불러오기" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
+    await user.click(await screen.findByRole("button", { name: "OAuth 등록" }));
+
+    expect(await screen.findByText("OAuth 등록됨")).toBeInTheDocument();
+    expect(await screen.findByText("OAuth 등록은 완료됐습니다. 강제 Probe에서 토큰 갱신에 실패했습니다.")).toBeInTheDocument();
+    expect(screen.queryByText(/OAuth 등록 실패/)).not.toBeInTheDocument();
+  });
+
   it("shows only recovery controls when one-click OAuth stops for manual authentication", async () => {
     mock.autoEnrollmentResult = "manual";
     mock.catalog.workspaces[0].currentMembers = [{
