@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from datetime import datetime, timezone
 from typing import Protocol
@@ -30,6 +31,7 @@ from app.modules.member_switch.schemas import (
     AuthEnrollmentAction,
     AuthEnrollmentCommandRequest,
     AuthEnrollmentCreateRequest,
+    AuthEnrollmentPostProbe,
     AuthEnrollmentState,
     AuthEnrollmentView,
     Catalog,
@@ -74,9 +76,19 @@ def enrollment_allowed_actions(state: AuthEnrollmentState, pending_action: str |
     return []
 
 
+logger = logging.getLogger(__name__)
+
+
+class AuthEnrollmentPostProbePort(Protocol):
+    async def probe(self, account_id: str) -> AuthEnrollmentPostProbe: ...
+
+
 _AUTO_OAUTH_DEADLINE_SECONDS = 180.0
 _AUTO_OAUTH_POLL_SECONDS = 2.0
 _AUTO_OAUTH_MAX_ADVANCE_ATTEMPTS = 30
+_POST_PROBE_STALE_SECONDS = 90.0
+_POST_PROBE_WAIT_SECONDS = 90.0
+_POST_PROBE_POLL_SECONDS = 0.1
 _AUTO_BROWSER_CONTINUE_CODES = frozenset({
     "authorization_complete",
     "ego_device_auth_code_submitted",
@@ -98,10 +110,12 @@ class MemberAuthEnrollmentService:
         controls: MemberSwitchControlRepository,
         companion: CompanionPort,
         auth: AuthEnrollmentPort,
+        post_probe: AuthEnrollmentPostProbePort | None = None,
     ) -> None:
         self.controls = controls
         self.companion = companion
         self.auth = auth
+        self.post_probe = post_probe
 
     @staticmethod
     def _decode(record: ControlRecord) -> AuthEnrollmentState:
@@ -142,6 +156,7 @@ class MemberAuthEnrollmentService:
             handoff_id=state.handoff_id,
             auth_state=state.auth_state,
             auth_account_id=state.auth_account_id,
+            post_probe=state.post_probe,
             flow_id=state.flow_id,
             verification_url=state.verification_url,
             user_code=state.user_code,
@@ -355,6 +370,232 @@ class MemberAuthEnrollmentService:
             return None
         return matches[0].auth_account_id
 
+    @staticmethod
+    def _post_probe_claim_stale(state: AuthEnrollmentState, now: datetime) -> bool:
+        """A started Probe is never re-executed; stale ownership becomes outcome-unknown."""
+        if state.post_probe_claim_id is None:
+            return False
+        claimed_at = state.post_probe_claimed_at
+        if claimed_at is None:
+            return True
+        if claimed_at.tzinfo is None:
+            claimed_at = claimed_at.replace(tzinfo=timezone.utc)
+        return (now - claimed_at).total_seconds() >= _POST_PROBE_STALE_SECONDS
+
+    async def _settle_stale_post_probe_claim(
+        self,
+        record: ControlRecord,
+        state: AuthEnrollmentState,
+    ) -> AuthEnrollmentView | None:
+        """Persist uncertainty for the exact abandoned attempt without replaying Force Probe."""
+        current = await self.controls.get(record.id)
+        if current is None:
+            return None
+        current_state = self._decode(current)
+        if current_state.post_probe is not None:
+            return self._view(current)
+        expected_at = state.post_probe_claimed_at
+        current_at = current_state.post_probe_claimed_at
+        if expected_at is not None and expected_at.tzinfo is None:
+            expected_at = expected_at.replace(tzinfo=timezone.utc)
+        if current_at is not None and current_at.tzinfo is None:
+            current_at = current_at.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        if (
+            current_state.post_probe_claim_id != state.post_probe_claim_id
+            or current_at != expected_at
+            or not self._post_probe_claim_stale(current_state, now)
+        ):
+            return None
+        diagnostic = AuthEnrollmentPostProbe(
+            state="failed",
+            account_id=current_state.auth_account_id,
+            error_code="oauth_probe_outcome_unknown",
+        )
+        settled = current_state.model_copy(
+            update={
+                "post_probe": diagnostic,
+                "post_probe_claim_id": None,
+                "post_probe_claimed_at": None,
+                "updated_at": now,
+            }
+        )
+        try:
+            saved = await self.controls.save(current, settled.model_dump_json(), complete=True)
+        except ControlConflict:
+            return None
+        return self._view(saved)
+
+    async def _claim_post_probe(
+        self,
+        enrollment_id: str,
+    ) -> tuple[AuthEnrollmentView | None, str | None, datetime | None]:
+        """CAS-claim Force Probe once; an existing claim is observed, never taken over."""
+        deadline = time.monotonic() + _POST_PROBE_WAIT_SECONDS
+        while True:
+            record = await self.controls.get(enrollment_id)
+            if record is None:
+                return None, None, None
+            state = self._decode(record)
+            view = self._view(record)
+            if state.post_probe is not None or state.phase != "completed" or state.auth_state != "completed":
+                return view, None, None
+
+            now = datetime.now(timezone.utc)
+            if state.post_probe_claim_id is not None:
+                if self._post_probe_claim_stale(state, now):
+                    settled = await self._settle_stale_post_probe_claim(record, state)
+                    if settled is not None:
+                        return settled, None, None
+                    if time.monotonic() >= deadline:
+                        current = await self.controls.get(enrollment_id)
+                        return (self._view(current), None, None) if current is not None else (None, None, None)
+                    await asyncio.sleep(_POST_PROBE_POLL_SECONDS)
+                    continue
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        "Timed out waiting for post-registration Force Probe owner enrollment_id=%s",
+                        enrollment_id,
+                    )
+                    settled = await self._settle_stale_post_probe_claim(record, state)
+                    if settled is not None:
+                        return settled, None, None
+                    current = await self.controls.get(enrollment_id)
+                    return (self._view(current), None, None) if current is not None else (None, None, None)
+                await asyncio.sleep(_POST_PROBE_POLL_SECONDS)
+                continue
+
+            claim_id = str(uuid4())
+            claimed_state = state.model_copy(
+                update={
+                    "post_probe_claim_id": claim_id,
+                    "post_probe_claimed_at": now,
+                    "updated_at": now,
+                }
+            )
+            try:
+                saved = await self.controls.save(record, claimed_state.model_dump_json(), complete=True)
+            except ControlConflict:
+                if time.monotonic() >= deadline:
+                    current = await self.controls.get(enrollment_id)
+                    return (self._view(current), None, None) if current is not None else (None, None, None)
+                await asyncio.sleep(_POST_PROBE_POLL_SECONDS)
+                continue
+            return self._view(saved), claim_id, now
+
+    async def _persist_post_probe(
+        self,
+        enrollment_id: str,
+        claim_id: str,
+        claimed_at: datetime,
+        diagnostic: AuthEnrollmentPostProbe,
+    ) -> AuthEnrollmentView | None:
+        for _ in range(4):
+            record = await self.controls.get(enrollment_id)
+            if record is None:
+                return None
+            state = self._decode(record)
+            if state.post_probe is not None:
+                return self._view(record)
+            stored_claimed_at = state.post_probe_claimed_at
+            expected_claimed_at = claimed_at
+            if stored_claimed_at is not None and stored_claimed_at.tzinfo is None:
+                stored_claimed_at = stored_claimed_at.replace(tzinfo=timezone.utc)
+            if expected_claimed_at.tzinfo is None:
+                expected_claimed_at = expected_claimed_at.replace(tzinfo=timezone.utc)
+            if state.post_probe_claim_id != claim_id or stored_claimed_at != expected_claimed_at:
+                # Another request may have conservatively settled this attempt as outcome-unknown.
+                return self._view(record)
+            now = datetime.now(timezone.utc)
+            state = state.model_copy(
+                update={
+                    "post_probe": diagnostic,
+                    "post_probe_claim_id": None,
+                    "post_probe_claimed_at": None,
+                    "updated_at": now,
+                }
+            )
+            try:
+                saved = await self.controls.save(record, state.model_dump_json(), complete=True)
+            except ControlConflict:
+                continue
+            return self._view(saved)
+        # Probe may already have executed. Keep the durable claim so no later request
+        # can replay it; a stale observer will settle it as outcome-unknown.
+        return await self.get(enrollment_id)
+
+    async def _wait_for_post_probe_result(
+        self,
+        enrollment_id: str,
+    ) -> AuthEnrollmentView | None:
+        """Wait only for the original attempt to publish; never execute another Probe."""
+        deadline = time.monotonic() + _POST_PROBE_WAIT_SECONDS
+        while True:
+            record = await self.controls.get(enrollment_id)
+            if record is None:
+                return None
+            state = self._decode(record)
+            view = self._view(record)
+            if view.post_probe is not None or state.phase != "completed" or state.auth_state != "completed":
+                return view
+            if self._post_probe_claim_stale(state, datetime.now(timezone.utc)):
+                settled = await self._settle_stale_post_probe_claim(record, state)
+                if settled is not None:
+                    return settled
+            if time.monotonic() >= deadline:
+                return view
+            await asyncio.sleep(_POST_PROBE_POLL_SECONDS)
+
+    async def _post_probe_if_needed(self, view: AuthEnrollmentView) -> AuthEnrollmentView:
+        if view.phase != "completed" or view.auth_state != "completed" or view.post_probe is not None:
+            return view
+
+        claimed_view, claim_id, claimed_at = await self._claim_post_probe(view.id)
+        if claimed_view is None:
+            logger.warning("Post-registration Force Probe record disappeared enrollment_id=%s", view.id)
+            return view
+        if claimed_view.post_probe is not None or claim_id is None or claimed_at is None:
+            return claimed_view
+
+        if claimed_view.auth_account_id is None:
+            diagnostic = AuthEnrollmentPostProbe(
+                state="failed",
+                error_code="oauth_probe_account_unresolved",
+            )
+        elif self.post_probe is None:
+            diagnostic = AuthEnrollmentPostProbe(
+                state="failed",
+                account_id=claimed_view.auth_account_id,
+                error_code="oauth_probe_adapter_unavailable",
+            )
+        else:
+            try:
+                diagnostic = await self.post_probe.probe(claimed_view.auth_account_id)
+            except Exception:
+                logger.exception("Post-registration Force Probe adapter failed enrollment_id=%s", view.id)
+                diagnostic = AuthEnrollmentPostProbe(
+                    state="failed",
+                    account_id=claimed_view.auth_account_id,
+                    error_code="account_probe_failed",
+                )
+
+        try:
+            persisted = await self._persist_post_probe(view.id, claim_id, claimed_at, diagnostic)
+        except Exception:
+            logger.exception("Unable to persist post-registration Force Probe enrollment_id=%s", view.id)
+            current = await self.get(view.id)
+            return current or view
+        if persisted is None:
+            logger.warning("Post-registration Force Probe record disappeared after probe enrollment_id=%s", view.id)
+            return view
+        if persisted.post_probe is not None:
+            return persisted
+
+        # This request already executed Probe once. Never execute it again; only
+        # wait for durable settlement or return the retained attempt for recovery.
+        waited = await self._wait_for_post_probe_result(view.id)
+        return waited or persisted
+
     async def create_and_auto_complete(self, request: AuthEnrollmentCreateRequest) -> AuthEnrollmentView:
         """Create or resume one current-member OAuth enrollment through safe terminal completion.
 
@@ -375,7 +616,7 @@ class MemberAuthEnrollmentService:
             state = self._decode(record)
             view = self._view(record)
             if state.phase == "completed":
-                return view
+                return await self._post_probe_if_needed(view)
             if state.phase == "needs_attention":
                 return view
 
@@ -386,13 +627,14 @@ class MemberAuthEnrollmentService:
                         AuthEnrollmentCommandRequest(
                             command_id=uuid4(), expected_revision=record.revision, action="reconcile"
                         ),
+                        run_post_probe=False,
                     )
                 except ControlConflict:
                     # A retained unknown effect is not permission to replay it. Leave the exact
                     # durable record visible for explicit recovery when observation cannot settle it.
                     return self._view((await self.controls.get(enrollment_id)) or record)
                 if view.phase == "completed":
-                    return view
+                    return await self._post_probe_if_needed(view)
                 continue
 
             if state.phase == "prepared":
@@ -428,6 +670,7 @@ class MemberAuthEnrollmentService:
                     AuthEnrollmentCommandRequest(
                         command_id=uuid4(), expected_revision=view.revision, action=action
                     ),
+                    run_post_probe=False,
                 )
             except ControlConflict:
                 current = await self.controls.get(enrollment_id)
@@ -567,7 +810,13 @@ class MemberAuthEnrollmentService:
             }
         )
 
-    async def command(self, enrollment_id: str, request: AuthEnrollmentCommandRequest) -> AuthEnrollmentView:
+    async def command(
+        self,
+        enrollment_id: str,
+        request: AuthEnrollmentCommandRequest,
+        *,
+        run_post_probe: bool = True,
+    ) -> AuthEnrollmentView:
         record = await self.controls.get(enrollment_id)
         if record is None:
             raise ControlConflict("auth_enrollment_not_found")
@@ -578,13 +827,15 @@ class MemberAuthEnrollmentService:
             raise ControlConflict("orphan_auth_enrollment_retained")
         fingerprint = command_fingerprint(request.action, request.model_dump_json())
         if await self.controls.command_recorded(record.id, str(request.command_id), fingerprint):
-            return self._view(record)
+            view = self._view(record)
+            return await self._post_probe_if_needed(view) if run_post_probe else view
         if request.expected_revision != record.revision:
             raise ControlConflict("revision_conflict")
         if request.action not in enrollment_allowed_actions(state, record.pending_action):
             raise ControlConflict("transition_not_allowed")
         if request.action == "reconcile":
-            return await self._reconcile(record, state)
+            view = await self._reconcile(record, state)
+            return await self._post_probe_if_needed(view) if run_post_probe else view
 
         if request.action == "prepare_auth":
             await require_new_work_admission(self.controls, owning_run_id=enrollment_id)
@@ -618,7 +869,8 @@ class MemberAuthEnrollmentService:
             expected_revision=request.expected_revision,
         )
         if not execute:
-            return self._view(record)
+            view = self._view(record)
+            return await self._post_probe_if_needed(view) if run_post_probe else view
 
         if request.action == "prepare_auth":
             auth = await self.auth.prepare(
@@ -660,7 +912,8 @@ class MemberAuthEnrollmentService:
             state = state.model_copy(update={"phase": "completed", "last_code": "auth_enrollment_finalized"})
         elif request.action == "cancel":
             state = state.model_copy(update={"phase": "completed", "last_code": "auth_enrollment_cancelled"})
-        return await self._save(record, state, release=state.phase == "completed")
+        saved = await self._save(record, state, release=state.phase == "completed")
+        return await self._post_probe_if_needed(saved) if run_post_probe else saved
 
     async def _reconcile(self, record: ControlRecord, state: AuthEnrollmentState) -> AuthEnrollmentView:
         action = record.pending_action

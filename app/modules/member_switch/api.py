@@ -12,6 +12,7 @@ from app.core.auth.dependencies import (
 )
 from app.core.errors import dashboard_error
 from app.dependencies import (
+    get_member_auth_enrollment_command_service,
     get_member_auth_enrollment_service,
     get_member_switch_companion,
     get_member_switch_controls,
@@ -92,7 +93,7 @@ async def active_auth_enrollment(
 @router.post("/oauth-enrollments/auto", response_model=AuthEnrollmentView)
 async def auto_auth_enrollment(
     request: AuthEnrollmentCreateRequest,
-    service: MemberAuthEnrollmentService = Depends(get_member_auth_enrollment_service),
+    service: MemberAuthEnrollmentService = Depends(get_member_auth_enrollment_command_service),
 ) -> AuthEnrollmentView:
     return await service.create_and_auto_complete(request)
 
@@ -100,7 +101,7 @@ async def auto_auth_enrollment(
 @router.post("/oauth-enrollments/{enrollment_id}/auto", response_model=AuthEnrollmentView)
 async def resume_auto_auth_enrollment(
     enrollment_id: UUID,
-    service: MemberAuthEnrollmentService = Depends(get_member_auth_enrollment_service),
+    service: MemberAuthEnrollmentService = Depends(get_member_auth_enrollment_command_service),
 ) -> AuthEnrollmentView:
     return await service.auto_complete(str(enrollment_id), allow_manual_resume=True)
 
@@ -128,7 +129,7 @@ async def create_auth_enrollment(
 async def auth_enrollment_command(
     enrollment_id: UUID,
     request: AuthEnrollmentCommandRequest,
-    service: MemberAuthEnrollmentService = Depends(get_member_auth_enrollment_service),
+    service: MemberAuthEnrollmentService = Depends(get_member_auth_enrollment_command_service),
 ) -> AuthEnrollmentView:
     return await service.command(str(enrollment_id), request)
 

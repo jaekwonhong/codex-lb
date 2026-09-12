@@ -8,6 +8,7 @@ import { useAuthStore } from "@/features/auth/hooks/use-auth";
 import { useAccountQuotaDisplayStore } from "@/hooks/use-account-quota-display";
 import { ADMIN_PERMISSIONS, createUpstreamProxyAdmin } from "@/test/mocks/factories";
 import type { AccountSummary } from "@/features/accounts/schemas";
+import { queryClient } from "@/lib/query-client";
 
 vi.mock("@/features/accounts/hooks/use-accounts", () => ({
   useAccounts: vi.fn(),
@@ -71,7 +72,11 @@ vi.mock("@/features/settings/hooks/use-settings", () => ({
 }));
 
 vi.mock("@/features/member-switch/components/member-switch-panel", () => ({
-  MemberSwitchPanel: () => <section aria-label="Member switch panel" />,
+  MemberSwitchPanel: ({ onAuthEnrollmentSettled }: { onAuthEnrollmentSettled?: (accountId: string | null) => void }) => (
+    <section aria-label="Member switch panel">
+      <button type="button" onClick={() => onAuthEnrollmentSettled?.("auth-target")}>Simulate OAuth settled</button>
+    </section>
+  ),
 }));
 
 const { useAccounts } = await import("@/features/accounts/hooks/use-accounts");
@@ -136,6 +141,26 @@ describe("AccountsPage", () => {
     await user.click(screen.getByRole("button", { name: "Retry account loading" }));
     expect(refetch).toHaveBeenCalledTimes(1);
   });
+  it("invalidates account and dashboard reads when member OAuth settles", async () => {
+    const invalidate = vi.spyOn(queryClient, "invalidateQueries").mockResolvedValue(undefined);
+    mockedUseAccounts.mockReturnValue({
+      accountsQuery: { data: [], error: null, refetch: vi.fn(), isFetching: false },
+      importMutation: idleMutation(), localImportMutation: idleMutation(), pauseMutation: idleMutation(),
+      resumeMutation: idleMutation(), probeMutation: idleMutation(), usageResetMutation: idleMutation(),
+      deleteMutation: idleMutation(), exportAuthMutation: idleMutation(), setAliasMutation: idleMutation(),
+      limitWarmupMutation: idleMutation(), routingPolicyMutation: idleMutation(), updateMutation: idleMutation(),
+    } as unknown as ReturnType<typeof useAccounts>);
+    const user = userEvent.setup();
+    render(<MemoryRouter><AccountsPage /></MemoryRouter>);
+
+    await user.click(screen.getByRole("button", { name: "Simulate OAuth settled" }));
+
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["accounts", "list"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["accounts", "trends", "auth-target"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["dashboard", "overview"] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["dashboard", "projections"] });
+  });
+
   beforeEach(() => {
     // The auth store starts least-privilege; these cases exercise admin actions.
     useAuthStore.setState({

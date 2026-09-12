@@ -50,17 +50,28 @@ export function membershipObservationConfirmed(workspace: RunCatalog["workspaces
 export const AuthEnrollmentActionSchema = z.enum([
   "prepare_auth", "open_auth_browser", "advance_auth", "finish", "cancel", "reconcile",
 ]);
+export const AuthEnrollmentPostProbeSchema = z.object({
+  state: z.enum(["completed", "failed"]),
+  accountId: z.string().nullable().default(null),
+  probeStatusCode: z.number().int().nullable().default(null),
+  primaryUsedPercentAfter: z.number().nullable().default(null),
+  secondaryUsedPercentAfter: z.number().nullable().default(null),
+  accountStatusAfter: z.string().nullable().default(null),
+  errorCode: z.string().nullable().default(null),
+});
 export const AuthEnrollmentViewSchema = z.object({
   id: z.uuid(), revision: z.number().int().nonnegative(), identity: IdentitySchema,
   phase: z.enum(["prepared", "auth_prepared", "auth_browser_opened", "auth_confirmed", "completed", "needs_attention", "outcome_unknown"]),
   lastCode: z.string(), updatedAt: z.iso.datetime({ offset: true }), pendingAction: z.string().nullable(),
   allowedActions: z.array(AuthEnrollmentActionSchema), handoffId: z.string().nullable(), authState: z.string().nullable(),
-  authAccountId: z.string().nullable().default(null), flowId: z.string().nullable(), verificationUrl: z.string().nullable(), userCode: z.string().nullable(),
+  authAccountId: z.string().nullable().default(null), postProbe: AuthEnrollmentPostProbeSchema.nullable().default(null),
+  flowId: z.string().nullable(), verificationUrl: z.string().nullable(), userCode: z.string().nullable(),
   expiresInSeconds: z.number().int().nullable(),
   browserProfileId: z.string().nullable(), browserTaskSpaceId: z.number().int().nullable(),
   browserOwnership: z.string().nullable(),
 });
 export type AuthEnrollmentAction = z.infer<typeof AuthEnrollmentActionSchema>;
+export type AuthEnrollmentPostProbe = z.infer<typeof AuthEnrollmentPostProbeSchema>;
 export type AuthEnrollmentView = z.infer<typeof AuthEnrollmentViewSchema>;
 
 export function getActiveRun(signal?: AbortSignal) {

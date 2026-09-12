@@ -1,5 +1,5 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useMemberSwitch } from "./use-member-switch";
 import { installMemberSwitchMocks, makeAuthEnrollmentView, makeRunView, memberIdentity } from "@/test/mocks/member-switch";
 import { readAuthEnrollmentLocator, readRunLocator } from "@/features/member-switch/active-flow";
@@ -7,8 +7,8 @@ import { readAuthEnrollmentLocator, readRunLocator } from "@/features/member-swi
 describe("server-owned member switch", () => {
   let mock: ReturnType<typeof installMemberSwitchMocks>;
   beforeEach(() => { localStorage.clear(); sessionStorage.clear(); mock = installMemberSwitchMocks(); });
-  async function mount() {
-    const hook = renderHook(() => useMemberSwitch(false));
+  async function mount(onAuthEnrollmentSettled?: (accountId: string | null) => void) {
+    const hook = renderHook(() => useMemberSwitch(false, onAuthEnrollmentSettled));
     await waitFor(() => expect(hook.result.current.checked).toBe(true));
     return hook;
   }
@@ -113,6 +113,7 @@ describe("server-owned member switch", () => {
     await act(hook.result.current.refresh); expect(hook.result.current.flow?.revision).toBe(10);
   });
   it("completes OAuth enrollment from one click and dismisses the completed record", async () => {
+    const onAuthEnrollmentSettled = vi.fn();
     mock.catalog.workspaces[0].currentMembers = [{
       email: memberIdentity.targetEmail,
       userId: memberIdentity.targetUserId,
@@ -120,7 +121,7 @@ describe("server-owned member switch", () => {
       authState: "absent",
       authAccountId: null,
     }];
-    const hook = await mount();
+    const hook = await mount(onAuthEnrollmentSettled);
     await act(hook.result.current.loadCatalog);
     await act(() => hook.result.current.startAuthEnrollment(
       "cdp-1", memberIdentity.presetId, memberIdentity.targetEmail, memberIdentity.targetUserId,
@@ -130,11 +131,40 @@ describe("server-owned member switch", () => {
     expect(hook.result.current.flow).toBeNull();
     expect(hook.result.current.catalog?.workspaces[0].currentMembers[0]?.authState).toBe("active");
     expect(hook.result.current.catalog?.workspaces[0].currentMembers[0]?.authAccountId).toBe("auth-target");
-    expect(hook.result.current.oauthProbe?.result?.probeStatusCode).toBe(200);
-    expect(hook.result.current.oauthProbe?.result?.accountId).toBe("auth-target");
+    expect(hook.result.current.oauthProbe?.probeStatusCode).toBe(200);
+    expect(hook.result.current.oauthProbe?.accountId).toBe("auth-target");
+    expect(hook.result.current.oauthProbe?.state).toBe("completed");
+    expect(onAuthEnrollmentSettled).toHaveBeenCalledTimes(1);
+    expect(onAuthEnrollmentSettled).toHaveBeenCalledWith("auth-target");
     expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
-    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(1);
+    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
     expect(mock.requests.filter((item) => item.path.includes("/oauth-enrollments/") && item.path.endsWith("/commands"))).toHaveLength(0);
+  });
+
+  it("auto-recovers a terminal OAuth response whose server post-probe is still pending", async () => {
+    mock.omitInitialPostProbeOnce = true;
+    mock.catalog.workspaces[0].currentMembers = [{
+      email: memberIdentity.targetEmail,
+      userId: memberIdentity.targetUserId,
+      presetId: memberIdentity.presetId,
+      authState: "absent",
+      authAccountId: null,
+    }];
+    const hook = await mount();
+    await act(hook.result.current.loadCatalog);
+
+    await act(() => hook.result.current.startAuthEnrollment(
+      "cdp-1", memberIdentity.presetId, memberIdentity.targetEmail, memberIdentity.targetUserId,
+    ));
+
+    expect(hook.result.current.checked).toBe(true);
+    expect(hook.result.current.enrollment).toBeNull();
+    expect(hook.result.current.oauthProbe?.state).toBe("completed");
+    expect(hook.result.current.oauthProbe?.accountId).toBe("auth-target");
+    expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
+    expect(mock.requests.filter((item) => /\/oauth-enrollments\/[^/]+\/auto$/.test(item.path))).toHaveLength(1);
+    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
+    expect(readAuthEnrollmentLocator()).toBeNull();
   });
 
   it("observes persisted OAuth progress without replaying enrollment effects", async () => {
@@ -162,7 +192,7 @@ describe("server-owned member switch", () => {
     await act(async () => { await pending; });
     expect(hook.result.current.autoProgress).toBeNull();
     expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
-    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(1);
+    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
   });
 
   it("keeps OAuth success when the post-registration Force Probe fails", async () => {
@@ -184,7 +214,7 @@ describe("server-owned member switch", () => {
     expect(hook.result.current.catalog?.workspaces[0].currentMembers[0]?.authState).toBe("active");
     expect(hook.result.current.error).toBeNull();
     expect(hook.result.current.oauthProbe?.errorCode).toBe("account_probe_refresh_failed");
-    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(1);
+    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
   });
 
   it("recovers a lost successful one-click reply without replaying enrollment", async () => {
@@ -204,14 +234,22 @@ describe("server-owned member switch", () => {
     expect(hook.result.current.checked).toBe(false);
     expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
 
+    // Simulate a process stop after terminal OAuth closeout but before the server
+    // persisted its post-probe diagnostic. Refresh may read the terminal row, but
+    // only the server-owned auto endpoint may perform the missing Probe effect.
+    mock.enrollment = mock.enrollment ? { ...mock.enrollment, postProbe: null } : null;
     mock.loseAutoEnrollmentResponse = false;
     await act(hook.result.current.refresh);
 
     expect(hook.result.current.enrollment).toBeNull();
     expect(hook.result.current.catalog).toBeNull();
-    expect(hook.result.current.oauthProbe?.result?.accountId).toBe("auth-target");
+    expect(hook.result.current.oauthProbe?.accountId).toBe("auth-target");
+    expect(hook.result.current.oauthProbe?.state).toBe("completed");
     expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
-    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(1);
+    expect(mock.requests.filter((item) => /\/oauth-enrollments\/[^/]+\/auto$/.test(item.path))).toHaveLength(1);
+    expect(mock.requests.filter((item) => item.path.includes("/oauth-enrollments/") && item.path.endsWith("/commands"))).toHaveLength(0);
+    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
+    expect(readAuthEnrollmentLocator()).toBeNull();
   });
 
   it("rejects a reentrant OAuth start without replacing the owning locator or progress", async () => {
@@ -243,7 +281,7 @@ describe("server-owned member switch", () => {
     expect(readAuthEnrollmentLocator()).toBe(mock.enrollment?.id);
     mock.loseAutoEnrollmentResponse = false;
     await act(hook.result.current.refresh);
-    expect(hook.result.current.oauthProbe?.result?.accountId).toBe("auth-target");
+    expect(hook.result.current.oauthProbe?.accountId).toBe("auth-target");
   });
 
   it("keeps the stored enrollment visible when one-click automation requires manual auth", async () => {
@@ -278,8 +316,8 @@ describe("server-owned member switch", () => {
     await act(() => hook.result.current.enrollmentCommand("finish"));
 
     expect(hook.result.current.enrollment).toBeNull();
-    expect(hook.result.current.oauthProbe?.result?.accountId).toBe("auth-target");
-    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(1);
+    expect(hook.result.current.oauthProbe?.accountId).toBe("auth-target");
+    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
   });
 
   it("resumes a stored prepared enrollment with one automatic recovery request", async () => {
@@ -292,6 +330,28 @@ describe("server-owned member switch", () => {
     expect(hook.result.current.enrollment).toBeNull();
     expect(mock.requests.filter((item) => item.method === "POST" && /\/oauth-enrollments\/[^/]+\/auto$/.test(item.path))).toHaveLength(1);
     expect(mock.requests.filter((item) => item.path.endsWith("/commands"))).toHaveLength(0);
+  });
+
+  it("does not immediately repeat auto-resume when its terminal post-probe is still pending", async () => {
+    mock.enrollment = makeAuthEnrollmentView({ phase: "prepared", allowedActions: ["prepare_auth", "cancel"] });
+    mock.omitResumePostProbeOnce = true;
+    const hook = await mount();
+    expect(hook.result.current.enrollment?.phase).toBe("prepared");
+
+    await act(hook.result.current.resumeAuthEnrollment);
+
+    expect(hook.result.current.checked).toBe(false);
+    expect(hook.result.current.enrollment?.phase).toBe("completed");
+    expect(hook.result.current.oauthProbe?.errorCode).toBe("oauth_probe_recovery_required");
+    expect(mock.requests.filter((item) => item.method === "POST" && /\/oauth-enrollments\/[^/]+\/auto$/.test(item.path))).toHaveLength(1);
+    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
+
+    await act(hook.result.current.refresh);
+
+    expect(hook.result.current.checked).toBe(true);
+    expect(hook.result.current.enrollment).toBeNull();
+    expect(hook.result.current.oauthProbe?.state).toBe("completed");
+    expect(mock.requests.filter((item) => item.method === "POST" && /\/oauth-enrollments\/[^/]+\/auto$/.test(item.path))).toHaveLength(2);
   });
 
   it("blocks catalog browser work after an unresolved create response", async () => {

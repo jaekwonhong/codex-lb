@@ -49,6 +49,7 @@ from app.modules.member_auth_handoff.durable import DurableMemberAuthHandoffServ
 from app.modules.member_auth_handoff.repository import MemberAuthCatalogOverlayRepository
 from app.modules.member_switch.auth_enrollment import MemberAuthEnrollmentService
 from app.modules.member_switch.companion import CompanionClient
+from app.modules.member_switch.post_probe import MemberAuthPostProbeService
 from app.modules.member_switch.repository import MemberSwitchControlRepository
 from app.modules.member_switch.service import MemberSwitchService
 from app.modules.model_sources.repository import ModelSourcesRepository
@@ -375,6 +376,23 @@ def get_member_auth_enrollment_service(
         get_member_switch_controls(),
         get_member_switch_companion(),
         auth_context.service,
+    )
+
+
+def get_member_auth_enrollment_command_service(
+    request: Request,
+    auth_context: MemberAuthHandoffContext = Depends(get_member_auth_handoff_context),
+    accounts_context: AccountsContext = Depends(get_accounts_context),
+) -> MemberAuthEnrollmentService:
+    return MemberAuthEnrollmentService(
+        get_member_switch_controls(),
+        get_member_switch_companion(),
+        auth_context.service,
+        MemberAuthPostProbeService(
+            accounts_context.service,
+            get_proxy_service_for_app(request.app),
+            actor_ip=request.client.host if request.client else None,
+        ),
     )
 
 

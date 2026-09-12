@@ -157,13 +157,21 @@ function oauthAutoProgressLabel(progress: AuthEnrollmentView | null): string {
       : "Ego Lite 인증 진행 중";
   }
   if (progress.phase === "auth_confirmed") return "OAuth 등록 확인됨 · 작업 정리 중";
-  if (progress.phase === "completed") return "OAuth 등록 완료";
+  if (progress.phase === "completed") {
+    return progress.postProbe ? "OAuth 등록 완료 · 강제 Probe 확인 완료" : "OAuth 등록 완료 · 서버 강제 Probe 확인 중";
+  }
   if (progress.phase === "needs_attention") return "OAuth 별도 확인 필요";
   return "OAuth 실행 결과 확인 중";
 }
 
-export function MemberSwitchPanel({ readOnly }: { readOnly: boolean }) {
-  const runtime = useMemberSwitch(readOnly);
+export function MemberSwitchPanel({
+  readOnly,
+  onAuthEnrollmentSettled,
+}: {
+  readOnly: boolean;
+  onAuthEnrollmentSettled?: (accountId: string | null) => void;
+}) {
+  const runtime = useMemberSwitch(readOnly, onAuthEnrollmentSettled);
   const { flow, enrollment, catalog, error, busy, checked, legacy } = runtime;
   const [confirmation, setConfirmation] = useState<{ action: RunAction; id: string; revision: number } | null>(null);
   const [authConfirmation, setAuthConfirmation] = useState<{ action: AuthEnrollmentAction; id: string; revision: number } | null>(null);
@@ -171,8 +179,12 @@ export function MemberSwitchPanel({ readOnly }: { readOnly: boolean }) {
   const catalogRefreshDisabled = disabled || !checked || Boolean(flow && flow.phase !== "completed") || Boolean(enrollment && enrollment.phase !== "completed");
   const confirmedFlow = confirmation && flow?.id === confirmation.id && flow.revision === confirmation.revision;
   const confirmedEnrollment = authConfirmation && enrollment?.id === authConfirmation.id && enrollment.revision === authConfirmation.revision;
-  const probeHttpStatus = runtime.oauthProbe?.result?.probeStatusCode ?? null;
+  const probeHttpStatus = runtime.oauthProbe?.probeStatusCode ?? null;
   const probeSucceeded = probeHttpStatus !== null && probeHttpStatus >= 200 && probeHttpStatus < 300;
+  const probeQuota = runtime.oauthProbe?.primaryUsedPercentAfter;
+  const probeQuotaLabel = probeQuota == null ? "" : ` · 1차 사용량 ${probeQuota}%`;
+  const probeQuotaLimited = probeHttpStatus === 429 || (probeQuota != null && probeQuota >= 100);
+  const probeHealthy = probeSucceeded && !probeQuotaLimited;
   return <section aria-labelledby="member-switch-title" className="rounded-xl border bg-card p-4 sm:p-5">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div><h2 id="member-switch-title" className="text-sm font-semibold">멤버 관리 · 전환 / OAuth 등록</h2>
@@ -196,22 +208,30 @@ export function MemberSwitchPanel({ readOnly }: { readOnly: boolean }) {
     {busy ? <p role="status" className="mt-4 flex items-center gap-2 text-sm"><Spinner size="sm" />
       {busy === "oauth_enrollment_auto"
         ? oauthAutoProgressLabel(runtime.autoProgress)
-        : busy === "oauth_probe"
-          ? "OAuth 등록 완료 · 강제 Probe로 연결·토큰 확인 중"
-          : `${ACTIONS[busy as RunAction]?.label ?? AUTH_ACTIONS[busy.replace(/^oauth_/, "") as AuthEnrollmentAction]?.label ?? "서버 조회"} · 응답 대기 중`}
+        : `${ACTIONS[busy as RunAction]?.label ?? AUTH_ACTIONS[busy.replace(/^oauth_/, "") as AuthEnrollmentAction]?.label ?? "서버 조회"} · 응답 대기 중`}
     </p> : null}
-    {runtime.oauthProbe?.result ? <AlertMessage className="mt-4" variant={probeSucceeded ? "success" : "warning"}>
-      {probeSucceeded
-        ? `강제 Probe 완료 · 연결 정상 · 토큰 사용 가능 · HTTP ${probeHttpStatus} · 계정 상태 ${runtime.oauthProbe.result.accountStatusAfter}`
-        : `OAuth 등록은 완료됨 · 강제 Probe 연결 확인 실패 · HTTP ${probeHttpStatus ?? "미확인"} · 계정 상태 ${runtime.oauthProbe.result.accountStatusAfter}`}
+    {runtime.oauthProbe?.state === "completed" ? <AlertMessage className="mt-4" variant={probeHealthy ? "success" : "warning"}>
+      {probeQuotaLimited
+        ? `강제 Probe 완료 · quota 제한 확인 · HTTP ${probeHttpStatus ?? "미확인"} · 계정 상태 ${runtime.oauthProbe.accountStatusAfter ?? "미확인"}${probeQuotaLabel}`
+        : probeHealthy
+          ? `강제 Probe 완료 · 연결 정상 · 토큰 사용 가능 · HTTP ${probeHttpStatus} · 계정 상태 ${runtime.oauthProbe.accountStatusAfter ?? "미확인"}${probeQuotaLabel}`
+          : `OAuth 등록은 완료됨 · 강제 Probe 연결 확인 실패 · HTTP ${probeHttpStatus ?? "미확인"} · 계정 상태 ${runtime.oauthProbe.accountStatusAfter ?? "미확인"}${probeQuotaLabel}`}
     </AlertMessage> : runtime.oauthProbe?.errorCode ? <AlertMessage className="mt-4" variant="warning">
       {runtime.oauthProbe.errorCode === "account_probe_refresh_failed"
         ? "OAuth 등록은 완료됐습니다. 강제 Probe에서 토큰 갱신에 실패했습니다."
         : runtime.oauthProbe.errorCode === "oauth_probe_account_unresolved"
           ? "OAuth 등록은 완료됐지만 강제 Probe 대상 auth 계정을 하나로 확인하지 못했습니다."
-          : runtime.oauthProbe.errorCode === "oauth_probe_timeout"
-            ? "OAuth 등록은 완료됐습니다. 강제 Probe 응답 시간이 초과되어 연결 상태를 확정하지 못했습니다."
-            : "OAuth 등록은 완료됐지만 강제 Probe 연결·토큰 확인을 완료하지 못했습니다."}
+          : runtime.oauthProbe.errorCode === "account_not_probable"
+            ? "OAuth 등록은 완료됐지만 현재 계정 상태에서는 강제 Probe를 실행할 수 없습니다."
+            : runtime.oauthProbe.errorCode === "account_not_found"
+              ? "OAuth 등록은 완료됐지만 강제 Probe 대상 계정을 다시 찾지 못했습니다."
+              : runtime.oauthProbe.errorCode === "oauth_probe_adapter_unavailable"
+                ? "OAuth 등록은 완료됐지만 서버 강제 Probe 서비스를 사용할 수 없어 자동 중복 Probe를 실행하지 않았습니다. 필요하면 계정 화면에서 강제 Probe를 실행하세요."
+              : runtime.oauthProbe.errorCode === "oauth_probe_outcome_unknown"
+                ? "OAuth 등록은 완료됐지만 서버 강제 Probe 결과를 확정하지 못해 자동 중복 Probe를 실행하지 않았습니다. 필요하면 계정 화면에서 강제 Probe를 실행하세요."
+              : runtime.oauthProbe.errorCode === "oauth_probe_recovery_required"
+                ? "OAuth 등록은 완료됐지만 서버 강제 Probe 결과가 아직 저장되지 않았습니다. 서버 기록 새로고침으로 복구할 수 있습니다."
+                : "OAuth 등록은 완료됐지만 강제 Probe 연결·토큰 확인을 완료하지 못했습니다."}
       <code className="mt-1 block break-all text-xs">{runtime.oauthProbe.errorCode}</code>
     </AlertMessage> : null}
     {legacy ? <AlertMessage className="mt-4" variant="warning">이전 버전의 작업 기록이 있습니다. 새 교체를 시작하기 전 별도 복구 검토가 필요합니다. 기존 기록은 삭제하지 않았습니다.</AlertMessage> : null}

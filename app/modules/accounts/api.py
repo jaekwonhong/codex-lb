@@ -27,6 +27,7 @@ from app.core.multipart_fields import required_upload
 from app.core.upstream_proxy import UpstreamProxyRouteError
 from app.dependencies import AccountsContext, get_accounts_context, get_proxy_service_for_app
 from app.modules.accounts.local_import import LocalOAuthImportError, list_local_oauth_files, read_local_oauth_file
+from app.modules.accounts.probe import run_account_force_probe
 from app.modules.accounts.repository import AccountIdentityConflictError
 from app.modules.accounts.schemas import (
     AccountAliasRequest,
@@ -342,7 +343,13 @@ async def probe_account(
 ) -> AccountProbeResponse:
     requested_model = body.model if body is not None else None
     try:
-        result = await context.service.probe_account(account_id, model=requested_model)
+        result = await run_account_force_probe(
+            service=context.service,
+            settlement=get_proxy_service_for_app(request.app),
+            account_id=account_id,
+            model=requested_model,
+            actor_ip=request.client.host if request.client else None,
+        )
     except AccountNotProbableError as exc:
         raise DashboardConflictError(str(exc), code="account_not_probable") from exc
     except RefreshError as exc:

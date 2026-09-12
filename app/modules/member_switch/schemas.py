@@ -399,6 +399,16 @@ class AuthEnrollmentCommandRequest(DashboardModel):
     action: AuthEnrollmentAction
 
 
+class AuthEnrollmentPostProbe(DashboardModel):
+    state: Literal["completed", "failed"]
+    account_id: str | None = None
+    probe_status_code: int | None = None
+    primary_used_percent_after: float | None = None
+    secondary_used_percent_after: float | None = None
+    account_status_after: str | None = None
+    error_code: str | None = None
+
+
 class AuthEnrollmentState(DashboardModel):
     model_config = ConfigDict(extra="forbid")
     control_protocol: str | None = None
@@ -412,6 +422,9 @@ class AuthEnrollmentState(DashboardModel):
     handoff_id: str | None = None
     auth_state: str | None = None
     auth_account_id: str | None = None
+    post_probe: AuthEnrollmentPostProbe | None = None
+    post_probe_claim_id: str | None = None
+    post_probe_claimed_at: datetime | None = None
     flow_id: str | None = None
     verification_url: str | None = None
     user_code: str | None = None
@@ -433,6 +446,7 @@ class AuthEnrollmentView(DashboardModel):
     handoff_id: str | None = None
     auth_state: str | None = None
     auth_account_id: str | None = None
+    post_probe: AuthEnrollmentPostProbe | None = None
     flow_id: str | None = None
     verification_url: str | None = None
     user_code: str | None = None

@@ -1,0 +1,8 @@
+- [x] Add optional durable post-probe diagnostic to auth enrollment state/view.
+- [x] Extract the existing account Force Probe orchestration so manual and OAuth-triggered probes share credential refresh, usage refresh, settlement, and audit semantics.
+- [x] Run post-probe server-side before successful auto-enrollment responses return, and on successful explicit terminal recovery.
+- [x] Persist probe result/failure without converting OAuth success into failure; skip already persisted terminal diagnostics on retry.
+- [x] Remove browser-owned probe POST and render the server diagnostic instead.
+- [x] Invalidate account/dashboard read caches after terminal enrollment so refreshed quota is displayed immediately.
+- [x] Add regressions for quota refresh, response retry/idempotency, probe failure, manual recovery, and absence of frontend probe POST.
+- [x] Run strict OpenSpec validation, backend/frontend tests, typecheck, lint, build, and independent review.

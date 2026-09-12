@@ -22,7 +22,7 @@ export function makeAuthEnrollmentView(overrides: Partial<AuthEnrollmentView> = 
     id: "3ab0ff43-1970-4e20-988e-acbba08b50b2", revision: 0, identity: memberIdentity,
     phase: "prepared", lastCode: "oauth_enrollment_ready", updatedAt: "2026-09-07T00:00:00Z",
     pendingAction: null, allowedActions: ["prepare_auth", "cancel"], handoffId: null, authState: null,
-    authAccountId: null, flowId: null, verificationUrl: null, userCode: null, expiresInSeconds: null,
+    authAccountId: null, postProbe: null, flowId: null, verificationUrl: null, userCode: null, expiresInSeconds: null,
     browserProfileId: null, browserTaskSpaceId: null, browserOwnership: null, ...overrides,
   };
 }
@@ -46,10 +46,19 @@ export function installMemberSwitchMocks() {
     autoEnrollmentResult: "completed" as "completed" | "manual",
     autoEnrollmentDelayMs: 0,
     loseAutoEnrollmentResponse: false,
+    omitInitialPostProbeOnce: false,
+    omitResumePostProbeOnce: false,
     probeErrorCode: null as string | null,
     probeStatusCode: 200,
+    probePrimaryUsedPercentAfter: null as number | null,
   };
   const failure = (code: string, status = 409) => HttpResponse.json({ error: { code, message: code } }, { status });
+  const postProbe = () => state.probeErrorCode
+    ? { state: "failed" as const, accountId: "auth-target", probeStatusCode: null, primaryUsedPercentAfter: null,
+        secondaryUsedPercentAfter: null, accountStatusAfter: null, errorCode: state.probeErrorCode }
+    : { state: "completed" as const, accountId: "auth-target", probeStatusCode: state.probeStatusCode,
+        primaryUsedPercentAfter: state.probePrimaryUsedPercentAfter, secondaryUsedPercentAfter: null,
+        accountStatusAfter: "active", errorCode: null };
   async function respond(request: Request) {
     const path = new URL(request.url).pathname;
     const requestText = request.method === "POST" ? await request.text() : "";
@@ -68,9 +77,11 @@ export function installMemberSwitchMocks() {
         });
         await new Promise((resolve) => setTimeout(resolve, state.autoEnrollmentDelayMs));
       }
+      const initialPostProbe = state.omitInitialPostProbeOnce ? null : postProbe();
+      state.omitInitialPostProbeOnce = false;
       state.enrollment = state.autoEnrollmentResult === "completed"
         ? makeAuthEnrollmentView({ id: enrollmentId, revision: 8, phase: "completed", lastCode: "auth_enrollment_finalized",
-            authState: "completed", authAccountId: "auth-target", allowedActions: [], handoffId: "handoff-enroll-1", flowId: "flow-enroll-1",
+            authState: "completed", authAccountId: "auth-target", postProbe: initialPostProbe, allowedActions: [], handoffId: "handoff-enroll-1", flowId: "flow-enroll-1",
             verificationUrl: "https://auth.example/device", userCode: "ABCD-EFGH", expiresInSeconds: 900,
             browserProfileId: "CodexLB-account-target", browserTaskSpaceId: 17, browserOwnership: "agentDelegatedToUser" })
         : makeAuthEnrollmentView({ id: enrollmentId, revision: 4, phase: "auth_browser_opened",
@@ -92,8 +103,10 @@ export function installMemberSwitchMocks() {
     }
     if (request.method === "POST" && /\/oauth-enrollments\/[^/]+\/auto$/.test(path)) {
       if (!state.enrollment) return failure("auth_enrollment_not_found", 404);
+      const resumedPostProbe = state.omitResumePostProbeOnce ? null : postProbe();
+      state.omitResumePostProbeOnce = false;
       state.enrollment = makeAuthEnrollmentView({ ...state.enrollment, revision: state.enrollment.revision + 8,
-        phase: "completed", lastCode: "auth_enrollment_finalized", authState: "completed", authAccountId: "auth-target", allowedActions: [] });
+        phase: "completed", lastCode: "auth_enrollment_finalized", authState: "completed", authAccountId: "auth-target", postProbe: resumedPostProbe, allowedActions: [] });
       state.catalog.workspaces[0].currentMembers = [{ email: state.enrollment.identity.targetEmail,
         userId: state.enrollment.identity.targetUserId, presetId: state.enrollment.identity.presetId,
         authState: "active", authAccountId: "auth-target" }];
@@ -116,7 +129,8 @@ export function installMemberSwitchMocks() {
       if (action === "advance_auth") Object.assign(next, { phase: "auth_confirmed", lastCode: "completed",
         authState: "completed", allowedActions: ["finish"] });
       if (action === "finish" || action === "cancel") Object.assign(next, { phase: "completed",
-        lastCode: action === "finish" ? "auth_enrollment_finalized" : "auth_enrollment_cancelled", allowedActions: [] });
+        lastCode: action === "finish" ? "auth_enrollment_finalized" : "auth_enrollment_cancelled",
+        ...(action === "finish" ? { authAccountId: "auth-target", postProbe: postProbe() } : {}), allowedActions: [] });
       state.enrollment = next;
       if (action === "finish") {
         state.catalog.workspaces[0].currentMembers = [{ email: memberIdentity.targetEmail,
@@ -161,19 +175,9 @@ export function installMemberSwitchMocks() {
     }
     return HttpResponse.json(state.run);
   }
-  server.use(http.all("/api/member-switch-runs", ({ request }) => respond(request)),
+  server.use(
+    http.all("/api/member-switch-runs", ({ request }) => respond(request)),
     http.all("/api/member-switch-runs/*", ({ request }) => respond(request)),
-    http.post("/api/accounts/:accountId/probe", async ({ request, params }) => {
-      const path = new URL(request.url).pathname;
-      const requestText = await request.text();
-      state.requests.push({ method: request.method, path, body: requestText ? JSON.parse(requestText) : null });
-      if (state.probeErrorCode) return failure(state.probeErrorCode);
-      return HttpResponse.json({
-        status: "probed", accountId: String(params.accountId), probeStatusCode: state.probeStatusCode,
-        primaryUsedPercentBefore: null, primaryUsedPercentAfter: null,
-        secondaryUsedPercentBefore: null, secondaryUsedPercentAfter: null,
-        accountStatusBefore: "active", accountStatusAfter: "active",
-      });
-    }));
+  );
   return state;
 }

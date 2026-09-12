@@ -101,7 +101,44 @@ describe("manual server-owned panel", () => {
     expect(screen.queryByRole("button", { name: "완료 기록 닫기" })).not.toBeInTheDocument();
     expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
     expect(mock.requests.filter((item) => item.path.endsWith("/commands"))).toHaveLength(0);
+    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
   });
+  it("shows quota exhaustion returned by the server-owned post-registration Probe", async () => {
+    mock.probeStatusCode = 429;
+    mock.probePrimaryUsedPercentAfter = 100;
+    mock.catalog.workspaces[0].currentMembers = [{
+      email: memberIdentity.targetEmail,
+      userId: memberIdentity.targetUserId,
+      presetId: memberIdentity.presetId,
+      authState: "absent",
+      authAccountId: null,
+    }];
+    const user = userEvent.setup(); render(<MemberSwitchPanel readOnly={false} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "목록 불러오기" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
+    await user.click(await screen.findByRole("button", { name: "OAuth 등록" }));
+
+    expect(await screen.findByText(/강제 Probe 완료 · quota 제한 확인 · HTTP 429/)).toBeInTheDocument();
+    expect(screen.getByText(/1차 사용량 100%/)).toBeInTheDocument();
+    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
+  });
+
+  it("prioritizes refreshed 100% quota over a 2xx Probe status", async () => {
+    mock.probeStatusCode = 200;
+    mock.probePrimaryUsedPercentAfter = 100;
+    mock.catalog.workspaces[0].currentMembers = [{
+      email: memberIdentity.targetEmail, userId: memberIdentity.targetUserId, presetId: memberIdentity.presetId,
+      authState: "absent", authAccountId: null,
+    }];
+    const user = userEvent.setup(); render(<MemberSwitchPanel readOnly={false} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "목록 불러오기" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
+    await user.click(await screen.findByRole("button", { name: "OAuth 등록" }));
+
+    expect(await screen.findByText(/강제 Probe 완료 · quota 제한 확인 · HTTP 200/)).toBeInTheDocument();
+    expect(screen.getByText(/1차 사용량 100%/)).toBeInTheDocument();
+  });
+
   it("shows persisted OAuth phase progress while the one-click request is still running", async () => {
     mock.autoEnrollmentDelayMs = 700;
     mock.catalog.workspaces[0].currentMembers = [{
