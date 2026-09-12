@@ -234,6 +234,7 @@ async def run_unbound_selection_path(
                         allow_usage_draining_burn_first=(
                             required_account_id is None and not require_unambiguous_account
                         ),
+                        now=selection_now,
                     )
 
                 # Fresh admissions prefer accounts upstream is not currently

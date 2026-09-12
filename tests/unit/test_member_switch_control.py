@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db.models import Account, MemberSwitchCommandReceipt, MemberSwitchControlRecord
 from app.modules.member_auth_handoff.schemas import MemberAuthHandoffResponse
-from app.modules.member_switch.admission import local_admission
 from app.modules.member_switch.participants import participant_fingerprint
 from app.modules.member_switch.repository import ControlConflict, MemberSwitchControlRepository
 from app.modules.member_switch.schemas import (
@@ -33,7 +32,6 @@ from app.modules.member_switch.schemas import (
     Workspace,
 )
 from app.modules.member_switch.service import MemberSwitchService
-from app.modules.oauth.device_flow_guard import OAUTH_START_GUARD_KIND
 
 pytestmark = pytest.mark.unit
 WORKSPACE_ID = "4865cea4-fb0b-41f3-917c-b226b2acdfb0"
@@ -444,26 +442,6 @@ async def test_failed_operation_with_membership_effect_evidence_cannot_be_finali
         await command(service, run, "finish")
     assert await controls.get(run.id) == before
     assert "finalize" not in companion.calls
-
-
-async def test_oauth_start_guard_is_a_known_blocker_not_a_member_switch_run(context):
-    service, controls, companion, _, _ = context
-    guard = await controls.create("oauth-start:test", OAUTH_START_GUARD_KIND, "{}", own_scope=True)
-
-    assert await service.active() is None
-    before = list(companion.calls)
-    with pytest.raises(ControlConflict, match="oauth_start_guard_retained"):
-        await service.refresh_catalog()
-    assert companion.calls == before
-    admission = await local_admission(controls)
-    assert admission.can_create is False
-    assert [(item.kind, item.code) for item in admission.blockers] == [
-        (OAUTH_START_GUARD_KIND, "oauth_start_guard_retained")
-    ]
-
-    guard = await controls.save(guard, "{}", complete=True, release=True)
-    assert guard.active_scope is None
-    assert (await local_admission(controls)).can_create is True
 
 
 async def test_existing_device_oauth_blocks_member_switch_auth_before_claim(context):

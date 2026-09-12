@@ -1011,6 +1011,15 @@ async def test_force_refresh_usage_recovers_rate_limited_monthly_only_account() 
     assert account.reset_at is None
 
 
+def test_long_remaining_percent_accepts_monthly_primary_window_after_usage_helper_removal() -> None:
+    primary = usage_updater_module.UsageWindow(
+        used_percent=37.5,
+        limit_window_seconds=43_200 * 60,
+    )
+
+    assert UsageUpdater._long_remaining_percent(primary, None, None) == 62.5
+
+
 @pytest.mark.asyncio
 async def test_force_refresh_usage_keeps_rate_limited_account_without_primary_or_monthly_quota() -> None:
     accounts_repo = StubAccountsRepository()

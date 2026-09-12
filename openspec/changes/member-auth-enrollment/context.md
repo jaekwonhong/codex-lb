@@ -4,11 +4,10 @@ This workflow reuses the existing durable auth-handoff and OAuth device-code imp
 but with an explicit `preserve_other_auth` contract and a distinct durable parent record.
 It does not call Companion membership mutation or participant/browser mutation APIs.
 
-The workflow also fences the shared single-active device-code slot. Ordinary dashboard OAuth
-acquires the same durable global start scope as managed member work before making its external
-OAuth start request. The unique shared scope makes the ordinary-start/managed-start race atomic
-across the stable and beta lanes. After ordinary device OAuth returns, the durable device slot
-continues to block managed issuance until that older flow completes or expires.
+The workflow uses the official shared single-active device-code slot as cross-lane authority.
+Managed issuance refuses a slot that is already owned and rechecks the exact managed flow before
+advancing OAuth state. An ordinary OAuth start on another lane may supersede the slot under the
+official latest-start-wins contract; a superseded managed flow fails closed before auth is applied.
 
 OAuth-only enrollment does not auto-reissue an expired device code. A new enrollment is required
 after the failed record is explicitly finalized, which forces fresh membership, catalog, and auth

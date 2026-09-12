@@ -610,6 +610,11 @@ def _is_ignored_schema_drift(connection: Connection, diff: object) -> bool:
     if not isinstance(diff, tuple) or not diff:
         return False
 
+    if diff[0] == "add_table" and len(diff) >= 2:
+        table_name = getattr(diff[1], "name", None)
+        if table_name in _LOCAL_EXTENSION_TABLES:
+            return True
+
     if diff[0] == "remove_column" and len(diff) >= 4:
         column = diff[3]
         column_name = getattr(column, "name", None)

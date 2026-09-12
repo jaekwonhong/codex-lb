@@ -818,7 +818,7 @@ class UsageUpdater:
         selected = monthly or secondary
         if selected is None and primary is not None:
             minutes = _window_minutes(primary.limit_window_seconds)
-            if usage_core.is_weekly_window_minutes(minutes) or usage_core.is_monthly_window_minutes(minutes):
+            if usage_core.is_weekly_window_minutes(minutes) or minutes == usage_core.default_window_minutes("monthly"):
                 selected = primary
         if selected is None or selected.used_percent is None:
             return None

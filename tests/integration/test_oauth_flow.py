@@ -22,10 +22,9 @@ from app.core.clients.oauth import DeviceCode, OAuthError, OAuthTokens
 from app.core.crypto import TokenEncryptor
 from app.core.upstream_proxy import UpstreamProxyRouteError
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountStatus, MemberSwitchControlRecord, OAuthFlowState
+from app.db.models import Account, AccountStatus, OAuthFlowState
 from app.db.session import SessionLocal
 from app.modules.accounts.repository import AccountsRepository
-from app.modules.member_switch.repository import ControlConflict, MemberSwitchControlRepository
 from app.modules.oauth import api as oauth_api_module
 from app.modules.oauth.repository import OAuthFlowRepository
 from app.modules.oauth.schemas import ManualCallbackRequest
@@ -78,97 +77,6 @@ async def _drain_global_oauth_store() -> None:
         task.cancel()
         with contextlib.suppress(Exception, asyncio.CancelledError):
             await task
-
-
-async def test_dashboard_oauth_start_is_blocked_while_managed_member_operation_is_active(async_client, monkeypatch):
-    request_device_code = AsyncMock(side_effect=AssertionError("device OAuth must not start"))
-    monkeypatch.setattr(oauth_module, "request_device_code", request_device_code)
-    async with SessionLocal() as session:
-        session.add(
-            MemberSwitchControlRecord(
-                id="managed-oauth-blocker",
-                kind="auth_enrollment",
-                active_scope="member-switch",
-                revision=0,
-                payload="{}",
-            )
-        )
-        await session.commit()
-
-    response = await async_client.post("/api/oauth/start", json={"forceMethod": "device"})
-
-    assert response.status_code == 409
-    assert response.json()["error"]["code"] == "oauth_start_busy"
-    request_device_code.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_dashboard_oauth_start_guard_serializes_before_external_device_code(async_client, monkeypatch):
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def fake_device_code(**_):
-        entered.set()
-        await release.wait()
-        return DeviceCode(
-            verification_url="https://auth.openai.com/codex/device",
-            user_code="GUARD-CODE",
-            device_auth_id="dev_guard",
-            interval_seconds=30,
-            expires_in_seconds=300,
-        )
-
-    async def never_complete(**_):
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(oauth_module, "request_device_code", fake_device_code)
-    monkeypatch.setattr(oauth_module, "exchange_device_token", never_complete)
-
-    first_task = asyncio.create_task(async_client.post("/api/oauth/start", json={"forceMethod": "device"}))
-    await asyncio.wait_for(entered.wait(), timeout=1)
-    second = await async_client.post("/api/oauth/start", json={"forceMethod": "device"})
-    assert second.status_code == 409
-    assert second.json()["error"]["code"] == "oauth_start_busy"
-
-    release.set()
-    first = await first_task
-    assert first.status_code == 200
-    assert first.json()["userCode"] == "GUARD-CODE"
-
-
-@pytest.mark.asyncio
-async def test_dashboard_oauth_start_guard_blocks_managed_scope_claim_during_external_start(
-    async_client, monkeypatch
-):
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def fake_device_code(**_):
-        entered.set()
-        await release.wait()
-        return DeviceCode(
-            verification_url="https://auth.openai.com/codex/device",
-            user_code="MANAGED-GUARD",
-            device_auth_id="dev_managed_guard",
-            interval_seconds=30,
-            expires_in_seconds=300,
-        )
-
-    async def never_complete(**_):
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(oauth_module, "request_device_code", fake_device_code)
-    monkeypatch.setattr(oauth_module, "exchange_device_token", never_complete)
-    first_task = asyncio.create_task(async_client.post("/api/oauth/start", json={"forceMethod": "device"}))
-    await asyncio.wait_for(entered.wait(), timeout=1)
-
-    controls = MemberSwitchControlRepository(SessionLocal)
-    with pytest.raises(ControlConflict, match="flow_busy_or_id_exists"):
-        await controls.create("synthetic-managed", "auth_enrollment", "{}", own_scope=True)
-
-    release.set()
-    first = await first_task
-    assert first.status_code == 200
 
 
 @pytest.fixture(autouse=True)

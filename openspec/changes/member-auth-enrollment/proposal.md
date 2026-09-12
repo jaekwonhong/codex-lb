@@ -15,8 +15,8 @@ device-code OAuth without first attempting a membership replacement.
   membership/auth as part of this workflow.
 - Require explicit device-code issuance, auth observation/application, and final release.
 - Keep ambiguous, unmanaged, already-active, or quarantined identities fail-closed.
-- Serialize ordinary dashboard OAuth start and managed member operations with one shared durable
-  start scope before any external OAuth device-code request.
+- Use the official shared device-flow slot as the cross-lane OAuth authority; reject a pre-existing
+  slot before managed issuance and reject managed advance if another lane supersedes that flow.
 - Treat multiple exact managed OAuth identities in one workspace as distinct valid identities;
   only unknown, partial, or duplicate identity collisions are ambiguous.
 - Do not automatically reissue an expired OAuth-only device code. The operator must close the

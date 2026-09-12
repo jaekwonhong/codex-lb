@@ -17,7 +17,6 @@ from app.modules.member_switch.schemas import (
     LocalAdmission,
     RunState,
 )
-from app.modules.oauth.device_flow_guard import OAUTH_START_GUARD_KIND
 
 
 def _is_own_enrollment_child(
@@ -141,9 +140,6 @@ async def local_admission(
                         if state.control_protocol != AUTH_ENROLLMENT_PROTOCOL
                         else "auth_enrollment_retained"
                     )
-        elif record.kind == OAUTH_START_GUARD_KIND:
-            if record.active_scope is not None:
-                code = "oauth_start_guard_retained"
         else:
             code = "unknown_control_record"
         if code:

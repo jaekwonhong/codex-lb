@@ -42,10 +42,10 @@ remove, invite, replace, quarantine, or delete another member or auth identity.
 The workflow SHALL persist command intent before OAuth effects and SHALL not automatically replay
 an unknown command after response loss or process interruption.
 
-The managed workflow and ordinary dashboard OAuth starts SHALL NOT supersede each other's
-single-active device-code slot. Both start paths SHALL atomically acquire the same durable global
-start scope before external OAuth-start I/O, and a pre-existing device flow SHALL block managed
-device-code issuance after the ordinary start scope has been released.
+The managed workflow SHALL use the official shared single-active device-code slot as cross-lane
+authority. A pre-existing device flow SHALL block managed issuance. Before managed OAuth state is
+observed or applied, the slot SHALL still name the exact managed flow; supersession by an ordinary
+OAuth start on another lane SHALL fail closed.
 
 #### Scenario: Device-code flow is pending
 - **WHEN** a device code has been issued
@@ -62,14 +62,10 @@ device-code issuance after the ordinary start scope has been released.
 - **THEN** the managed OAuth command is rejected before command intent is claimed
 - **AND** the existing device flow is not superseded
 
-#### Scenario: Managed member operation is active
-- **WHEN** an operator attempts to start ordinary dashboard OAuth while a managed member operation owns the global scope
-- **THEN** the ordinary OAuth start is rejected before a new OAuth flow is created
-
-#### Scenario: Ordinary OAuth start is waiting on the external provider
-- **WHEN** ordinary dashboard OAuth owns the shared start scope but has not yet received a device code
-- **THEN** a managed member or OAuth enrollment cannot acquire the global scope
-- **AND** no second external OAuth-start request is authorized by the managed path
+#### Scenario: Another lane supersedes the managed device flow
+- **WHEN** ordinary OAuth on another lane becomes the current shared device flow after managed issuance
+- **THEN** the next managed advance is rejected before OAuth observation or application
+- **AND** the managed workflow does not infer success from its stale device code
 
 #### Scenario: OAuth-only device code expires
 - **WHEN** an OAuth-only enrollment observes that its device code has expired

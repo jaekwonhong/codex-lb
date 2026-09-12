@@ -713,7 +713,7 @@ class MemberAuthHandoffService:
         primary_usage = await self._usage.latest_entry_for_account(account_id, window="primary")
         if primary_usage is not None and (
             usage_core.is_weekly_window_minutes(primary_usage.window_minutes)
-            or usage_core.is_monthly_window_minutes(primary_usage.window_minutes)
+            or primary_usage.window_minutes == usage_core.default_window_minutes("monthly")
             or primary_usage.window_minutes == _OPENAI_AVERAGE_MONTH_WINDOW_MINUTES
         ):
             return primary_usage

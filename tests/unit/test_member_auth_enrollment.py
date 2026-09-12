@@ -173,7 +173,7 @@ class EnrollmentAuth:
         self.state = "absent"
         self.prepare_requests = []
         self.snapshot: MemberAuthHandoffResponse | None = None
-        self.device_busy = False
+        self.device_flow_id: str | None = None
 
     def bind_catalog(self, catalog: Catalog) -> None:
         if catalog.catalog_fingerprint != FINGERPRINT:
@@ -224,6 +224,7 @@ class EnrollmentAuth:
             expires_in_seconds=900,
             last_command_id=parent.command_id,
         )
+        self.device_flow_id = "flow-enrollment"
         return self.snapshot
 
     async def advance(self, handoff_id, *, managed_run_id=None):
@@ -240,7 +241,7 @@ class EnrollmentAuth:
         return None
 
     async def ensure_device_oauth_available(self, expected_flow_id: str | None = None) -> None:
-        if self.device_busy and expected_flow_id != "flow-enrollment":
+        if self.device_flow_id is not None and self.device_flow_id != expected_flow_id:
             raise ControlConflict("device_oauth_busy")
 
     async def reconcile_for_operation(self, operation_id, *, managed_run_id=None):
@@ -361,7 +362,7 @@ async def test_existing_device_oauth_blocks_enrollment_before_command_claim(enro
     view = await service.create(create_request())
     before = await controls.get(view.id)
     assert before is not None and before.pending_action is None
-    auth.device_busy = True
+    auth.device_flow_id = "ordinary-oauth-flow"
 
     with pytest.raises(ControlConflict, match="device_oauth_busy"):
         await command(service, view, "prepare_auth")
@@ -369,6 +370,24 @@ async def test_existing_device_oauth_blocks_enrollment_before_command_claim(enro
     after = await controls.get(view.id)
     assert after == before
     assert auth.prepare_requests == []
+
+
+async def test_advance_fails_closed_when_shared_device_slot_is_superseded(enrollment_context):
+    service, controls, _, auth = enrollment_context
+    view = await service.create(create_request())
+    view = await command(service, view, "prepare_auth")
+    view = await command(service, view, "open_auth_browser")
+    before = await controls.get(view.id)
+    assert before is not None and before.pending_action is None
+
+    # An ordinary OAuth start on another lane may supersede the official shared
+    # device-flow slot. The managed flow must stop before reading/applying auth.
+    auth.device_flow_id = "ordinary-oauth-flow"
+    with pytest.raises(ControlConflict, match="device_oauth_busy"):
+        await command(service, view, "advance_auth")
+
+    assert await controls.get(view.id) == before
+    assert auth.snapshot is not None and auth.snapshot.state == "device_code_issued"
 
 
 async def test_missing_ego_profile_blocks_before_device_code_start(enrollment_context):

@@ -380,6 +380,7 @@ def test_fresh_selection_allows_usage_draining_burn_first_with_healthy_fallback(
         routing_strategy="usage_weighted",
         budget_threshold_pct=95.0,
         allow_usage_draining_burn_first=True,
+        now=time.time(),
     )
 
     assert result.account is not None
@@ -421,6 +422,7 @@ def test_usage_draining_fallback_probe_avoids_discarded_relative_availability_ch
         routing_strategy="relative_availability",
         budget_threshold_pct=95.0,
         allow_usage_draining_burn_first=True,
+        now=time.time(),
     )
 
     assert result.account is not None
@@ -478,6 +480,7 @@ def test_healthy_burn_first_fallback_winner_is_returned_without_redraw(monkeypat
         routing_strategy="relative_availability",
         budget_threshold_pct=95.0,
         allow_usage_draining_burn_first=True,
+        now=time.time(),
     )
 
     assert result.account is not None
@@ -522,6 +525,7 @@ def test_no_usage_draining_candidate_skips_relative_availability_fallback_probe(
         routing_strategy="relative_availability",
         budget_threshold_pct=95.0,
         allow_usage_draining_burn_first=True,
+        now=time.time(),
     )
 
     assert result.account is not None
@@ -555,6 +559,7 @@ def test_opportunistic_fresh_selection_preserves_fallback_context_for_usage_drai
         budget_threshold_pct=95.0,
         traffic_class=TRAFFIC_CLASS_OPPORTUNISTIC,
         allow_usage_draining_burn_first=True,
+        now=time.time(),
     )
 
     assert result.account is not None
@@ -580,6 +585,7 @@ def test_opportunistic_single_usage_draining_burn_first_keeps_emergency_floor_po
         budget_threshold_pct=95.0,
         traffic_class=TRAFFIC_CLASS_OPPORTUNISTIC,
         allow_usage_draining_burn_first=True,
+        now=time.time(),
     )
 
     assert result.account is not None
@@ -782,6 +788,7 @@ def test_fresh_selection_excludes_error_draining_burn_first():
         routing_strategy="usage_weighted",
         budget_threshold_pct=95.0,
         allow_usage_draining_burn_first=True,
+        now=time.time(),
     )
 
     assert result.account is not None
@@ -805,6 +812,7 @@ def test_fresh_selection_requires_healthy_fallback_to_drain_burn_first():
         routing_strategy="usage_weighted",
         budget_threshold_pct=95.0,
         allow_usage_draining_burn_first=True,
+        now=time.time(),
     )
 
     assert result.account is None
@@ -834,6 +842,7 @@ def test_fresh_selection_excludes_fully_exhausted_burn_first():
         routing_strategy="usage_weighted",
         budget_threshold_pct=95.0,
         allow_usage_draining_burn_first=True,
+        now=time.time(),
     )
 
     assert result.account is not None
@@ -864,6 +873,7 @@ def test_usage_draining_burn_first_exception_does_not_override_single_account_st
         routing_strategy="single_account",
         budget_threshold_pct=95.0,
         allow_usage_draining_burn_first=True,
+        now=time.time(),
     )
 
     assert result.account is not None
@@ -934,6 +944,7 @@ def test_due_probe_precedes_usage_draining_burn_first_exception():
         routing_strategy="usage_weighted",
         budget_threshold_pct=95.0,
         allow_usage_draining_burn_first=True,
+        now=time.time(),
     )
 
     assert result.account is not None

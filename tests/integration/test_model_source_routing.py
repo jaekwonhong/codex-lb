@@ -1998,6 +1998,7 @@ async def test_source_stream_setup_cancellation_logs_visible_error_even_if_relea
             "api_key": None,
             "model": "stream-setup-cancel",
             "status": "cancelled",
+            "reasoning_effort": None,
             "error_code": "client_disconnected",
             "error_message": "client disconnected during source stream setup",
         }
@@ -2081,6 +2082,7 @@ async def test_source_request_setup_cancellation_logs_disconnect_even_if_release
             "api_key": None,
             "model": "request-setup-cancel-release-fail",
             "status": "cancelled",
+            "reasoning_effort": None,
             "error_code": "client_disconnected",
             "error_message": "client disconnected during source request setup",
         }

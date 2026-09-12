@@ -37,7 +37,6 @@ const RECOVERY_HINTS: Record<string, string> = {
   member_auth_quarantined: "선택한 멤버의 auth가 기존 handoff 격리 상태입니다. 새 OAuth를 덮어쓰지 말고 기존 작업 기록을 먼저 확인하세요.",
   auth_enrollment_retained: "완료되지 않은 OAuth-only 작업이 남아 있습니다. 서버 기록 새로고침으로 해당 작업을 복원한 뒤 이어서 처리하세요.",
   device_code_expired_requires_new_enrollment: "장치 코드가 만료되었습니다. 이 작업을 종료한 뒤 목록을 다시 확인하고 OAuth 등록을 새로 시작하세요. 만료된 코드는 자동 재발급하지 않습니다.",
-  oauth_start_guard_retained: "다른 OAuth 시작 작업의 실행권이 남아 있습니다. 새 OAuth를 시작하지 말고 기존 OAuth 상태와 저장된 실행 기록을 먼저 확인하세요.",
   ego_browser_unavailable: "Mac에서 Ego Lite 실행 도구를 찾을 수 없습니다. 기본 브라우저로 대체하지 않았습니다.",
   ego_profile_not_found: "이 멤버에 할당된 Ego Lite 프로필이 아직 없습니다. 프로필을 준비한 뒤 같은 장치 코드가 유효하면 다시 시도하세요.",
   ego_profile_login_required: "이 ID의 Ego Lite 프로필에 ChatGPT 로그인이 필요합니다. 열린 Ego Lite 창에서 표시된 ID로 로그인한 뒤 「Ego Lite 로그인 확인」을 다시 실행하세요. 확인 시 해당 Task Space의 제어권을 잠시 회수해 로그인 ID를 검증합니다.",

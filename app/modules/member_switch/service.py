@@ -38,7 +38,6 @@ from app.modules.member_switch.schemas import (
     RunView,
     StartRequest,
 )
-from app.modules.oauth.device_flow_guard import OAUTH_START_GUARD_KIND
 
 
 class AuthHandoffPort(Protocol):
@@ -120,8 +119,6 @@ class MemberSwitchService:
 
     async def refresh_catalog(self) -> Catalog:
         active = await self.controls.active()
-        if active is not None and active.kind == OAUTH_START_GUARD_KIND:
-            raise ControlConflict("oauth_start_guard_retained")
         if active is not None:
             raise ControlConflict("member_switch_catalog_refresh_requires_idle")
         admission = await self.companion.admission()

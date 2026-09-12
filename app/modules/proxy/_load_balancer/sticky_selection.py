@@ -1925,6 +1925,7 @@ async def _select_with_stickiness(
         fallback_candidates = overload_reroute_pool
         chosen = overload_reroute
     else:
+        selection_now = clock.time()
         if overload_backoff_runtime is not None:
             fallback_candidates = filter_overload_backoff_candidates(states, overload_backoff_runtime, now=clock.time())
         chosen = _choose_from(fallback_candidates)
