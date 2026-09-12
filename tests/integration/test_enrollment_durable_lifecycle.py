@@ -141,7 +141,7 @@ async def test_own_durable_child_can_advance_without_admitting_other_work(integr
     result = response.json()
     assert (
         result["phase"]
-        == {"pending": "auth_prepared", "success": "auth_confirmed", "error": "needs_attention"}[outcome]
+        == {"pending": "auth_browser_opened", "success": "auth_confirmed", "error": "needs_attention"}[outcome]
     )
     assert integration.oauth.observations == ["synthetic-oauth"]
     duplicate = await enrollment_command(integration, view, "advance_auth", command_id)

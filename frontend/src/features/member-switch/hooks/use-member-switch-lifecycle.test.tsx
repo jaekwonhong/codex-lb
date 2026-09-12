@@ -177,7 +177,7 @@ describe("manual member-switch request ownership", () => {
     activeEnrollment.mockResolvedValue({enrollment:recovery==="reconcile"?pending:null});
     await act(hook.result.current.refresh);
     if(recovery==="reconcile") await act(() => hook.result.current.enrollmentCommand("reconcile"));
-    expect(hook.result.current.enrollment?.phase).toBe("completed");
+    expect(hook.result.current.enrollment).toBeNull();
     expect(hook.result.current.catalog).toBeNull();
     expect(catalog).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(recovery==="reconcile"?2:1);

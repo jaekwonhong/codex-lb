@@ -8,8 +8,8 @@ import {
   writeRunLocator,
 } from "@/features/member-switch/active-flow";
 import {
-  createAuthEnrollment, createRun, getActiveAuthEnrollment, getActiveRun, getAuthEnrollment, getRun,
-  membershipObservationConfirmed, refreshRunCatalog, sendAuthEnrollmentCommand, sendRunCommand,
+  autoCompleteAuthEnrollment, createRun, getActiveAuthEnrollment, getActiveRun, getAuthEnrollment, getRun,
+  membershipObservationConfirmed, refreshRunCatalog, resumeAutoAuthEnrollment, sendAuthEnrollmentCommand, sendRunCommand,
   type AuthEnrollmentAction, type AuthEnrollmentView, type RunAction, type RunCatalog, type RunView,
 } from "@/features/member-switch/run-client";
 
@@ -116,13 +116,16 @@ export function useMemberSwitch(readOnly: boolean) {
     return readStoredState(signal);
   }, ({ run: restored, enrollment: restoredEnrollment, runLocator, enrollmentLocator }) => {
     setFlow(restored);
-    setEnrollment(restoredEnrollment);
+    const completedEnrollment = restoredEnrollment?.phase === "completed";
+    setEnrollment(completedEnrollment ? null : restoredEnrollment);
     // A recovered terminal response may follow a lost finish reply. Stored-state
     // reads cannot make an older browser observation current again.
-    if (restored?.phase === "completed" || restoredEnrollment?.phase === "completed") setCatalog(null);
+    if (restored?.phase === "completed" || completedEnrollment) setCatalog(null);
     if (restored) writeRunLocator(restored.id);
     else if (readRunLocator() === runLocator) writeRunLocator(null);
-    if (restoredEnrollment) writeAuthEnrollmentLocator(restoredEnrollment.id);
+    if (completedEnrollment) {
+      if (readAuthEnrollmentLocator() === restoredEnrollment.id) writeAuthEnrollmentLocator(null);
+    } else if (restoredEnrollment) writeAuthEnrollmentLocator(restoredEnrollment.id);
     else if (readAuthEnrollmentLocator() === enrollmentLocator) writeAuthEnrollmentLocator(null);
     setLegacy(hasLegacyMemberFlow());
     setChecked(true);
@@ -177,7 +180,7 @@ export function useMemberSwitch(readOnly: boolean) {
     const current = workspace.currentMembers.find(member => member.presetId === presetId
       && member.email.toLowerCase() === memberEmail.toLowerCase() && member.userId === memberUserId);
     if (!current || !["absent", "inactive"].includes(current.authState)) return Promise.resolve();
-    return run("oauth_enrollment_create", async (signal) => {
+    return run("oauth_enrollment_auto", async (signal) => {
       if (flow?.phase === "completed") {
         if (readRunLocator() === flow.id) writeRunLocator(null);
         setFlow(null);
@@ -185,13 +188,58 @@ export function useMemberSwitch(readOnly: boolean) {
       const enrollmentId = crypto.randomUUID();
       writeAuthEnrollmentLocator(enrollmentId);
       setChecked(false);
-      const created = await createAuthEnrollment({
+      const result = await autoCompleteAuthEnrollment({
         enrollmentId, workspaceId, presetId, memberEmail, memberUserId,
         catalogFingerprint: catalog.catalogFingerprint,
       }, signal);
-      if (created.id !== enrollmentId) throw new ApiError({ status: 0, code: "auth_enrollment_identity_mismatch", message: "Enrollment identity mismatch" });
-      return created;
-    }, (result) => { setEnrollment(result); setChecked(true); });
+      if (result.id !== enrollmentId) throw new ApiError({ status: 0, code: "auth_enrollment_identity_mismatch", message: "Enrollment identity mismatch" });
+      return result;
+    }, (result) => {
+      setChecked(true);
+      if (result.phase === "completed" && result.authState === "completed") {
+        if (readAuthEnrollmentLocator() === result.id) writeAuthEnrollmentLocator(null);
+        setEnrollment(null);
+        setCatalog((current) => current ? {
+          ...current,
+          workspaces: current.workspaces.map((workspace) => workspace.id === result.identity.workspaceId ? {
+            ...workspace,
+            currentMembers: workspace.currentMembers.map((member) =>
+              member.email.toLowerCase() === result.identity.targetEmail && member.userId === result.identity.targetUserId
+                ? { ...member, authState: "active" as const }
+                : member),
+          } : workspace),
+        } : current);
+      } else {
+        setEnrollment(result);
+      }
+    });
+  };
+  const resumeAuthEnrollment = async () => {
+    if (!checked || !enrollment || enrollment.phase === "completed" || enrollment.pendingAction) return Promise.resolve();
+    await run("oauth_enrollment_auto", async (signal) => {
+      setChecked(false);
+      const result = await resumeAutoAuthEnrollment(enrollment.id, signal);
+      if (result.id !== enrollment.id) throw new ApiError({ status: 0, code: "auth_enrollment_identity_mismatch", message: "Enrollment identity mismatch" });
+      return result;
+    }, (result) => {
+      setChecked(true);
+      if (result.phase === "completed" && result.authState === "completed") {
+        if (readAuthEnrollmentLocator() === result.id) writeAuthEnrollmentLocator(null);
+        setEnrollment(null);
+        setCatalog((current) => current ? {
+          ...current,
+          workspaces: current.workspaces.map((workspace) => workspace.id === result.identity.workspaceId ? {
+            ...workspace,
+            currentMembers: workspace.currentMembers.map((member) =>
+              member.email.toLowerCase() === result.identity.targetEmail && member.userId === result.identity.targetUserId
+                ? { ...member, authState: "active" as const }
+                : member),
+          } : workspace),
+        } : current);
+      } else {
+        setEnrollment(result);
+      }
+    });
   };
   const enrollmentCommand = async (action: AuthEnrollmentAction) => {
     if (!checked || !enrollment || !enrollment.allowedActions.includes(action)) return Promise.resolve();
@@ -202,8 +250,13 @@ export function useMemberSwitch(readOnly: boolean) {
       if (result.id !== enrollment.id) throw new ApiError({ status: 0, code: "auth_enrollment_identity_mismatch", message: "Enrollment identity mismatch" });
       return result;
     }, (result) => {
-      setEnrollment(result);
+      const terminal = result.phase === "completed";
+      setEnrollment(terminal ? null : result);
       setChecked(true);
+      if (terminal) {
+        if (readAuthEnrollmentLocator() === result.id) writeAuthEnrollmentLocator(null);
+        if (!(action === "finish" && result.authState === "completed")) setCatalog(null);
+      }
       if (action === "reconcile" && result.phase === "completed") setCatalog(null);
       if (action === "advance_auth" && result.phase === "auth_confirmed" && result.authState === "completed") {
         setCatalog((current) => current ? {
@@ -266,13 +319,8 @@ export function useMemberSwitch(readOnly: boolean) {
       setFlow(null);
     }
   };
-  const dismissFinishedEnrollment = () => {
-    if (!active.current && permission.current && checked && enrollment?.phase === "completed") {
-      if (readAuthEnrollmentLocator() === enrollment.id) writeAuthEnrollmentLocator(null);
-      setEnrollment(null);
-    }
-  };
+
   return { flow: readOnly ? null : flow, enrollment: readOnly ? null : enrollment, catalog: readOnly ? null : catalog,
     error, busy, checked, legacy, refresh, loadCatalog, preview, command, dismissFinished,
-    startAuthEnrollment, enrollmentCommand, dismissFinishedEnrollment };
+    startAuthEnrollment, resumeAuthEnrollment, enrollmentCommand };
 }

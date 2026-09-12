@@ -23,6 +23,7 @@ from app.modules.member_switch.repository import (
 )
 from app.modules.member_switch.schemas import (
     CONTROL_PROTOCOL,
+    EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY,
     OWNER_MEMBERSHIP_MUTATION_CAPABILITY,
     OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY,
     RECIPIENT_MEMBERSHIP_LIFECYCLE_CAPABILITY,
@@ -259,6 +260,7 @@ class MemberSwitchService:
             "recipient_session_readiness",
             "post_add_device_auth",
             "ego_lite_member_browser_v1",
+            EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY,
             OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY,
             OWNER_MEMBERSHIP_MUTATION_CAPABILITY,
             RECIPIENT_MEMBERSHIP_LIFECYCLE_CAPABILITY,
@@ -370,6 +372,7 @@ class MemberSwitchService:
                 or current_catalog.catalog_fingerprint != state.identity.catalog_fingerprint
                 or not {
                     CONTROL_PROTOCOL,
+                    EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY,
                     OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY,
                     OWNER_MEMBERSHIP_MUTATION_CAPABILITY,
                     RECIPIENT_MEMBERSHIP_LIFECYCLE_CAPABILITY,
@@ -386,9 +389,15 @@ class MemberSwitchService:
         elif request.action == "prepare_auth":
             # A new request has a new auth service. Bind the same trusted authority
             # again before claiming intent or changing any account/OAuth state.
-            self.auth.bind_catalog(await self.companion.catalog())
+            current_catalog = await self.companion.catalog()
+            if EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY not in current_catalog.capabilities:
+                raise ControlConflict("companion_protocol_upgrade_required")
+            self.auth.bind_catalog(current_catalog)
             self.auth.validate_identity(state.identity, state.operation.removed_email if state.operation else None)
             await self.auth.ensure_device_oauth_available()
+        elif request.action == "open_browser":
+            if EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY not in (await self.companion.catalog()).capabilities:
+                raise ControlConflict("companion_protocol_upgrade_required")
         record, execute = await self.controls.claim(
             record,
             str(request.command_id),

@@ -94,10 +94,14 @@ export function getAuthEnrollment(id: string, signal?: AbortSignal) {
   return get(`${ROOT}/oauth-enrollments/${encodeURIComponent(id)}`, AuthEnrollmentViewSchema, { signal, cache: "no-store" });
 }
 
-export function createAuthEnrollment(body: {
+export function autoCompleteAuthEnrollment(body: {
   enrollmentId: string; workspaceId: string; presetId: string; memberEmail: string; memberUserId: string; catalogFingerprint: string;
 }, signal?: AbortSignal) {
-  return post(`${ROOT}/oauth-enrollments`, AuthEnrollmentViewSchema, { body, signal });
+  return post(`${ROOT}/oauth-enrollments/auto`, AuthEnrollmentViewSchema, { body, signal });
+}
+
+export function resumeAutoAuthEnrollment(enrollmentId: string, signal?: AbortSignal) {
+  return post(`${ROOT}/oauth-enrollments/${encodeURIComponent(enrollmentId)}/auto`, AuthEnrollmentViewSchema, { signal });
 }
 
 export function sendAuthEnrollmentCommand(enrollment: AuthEnrollmentView, action: AuthEnrollmentAction, signal?: AbortSignal) {

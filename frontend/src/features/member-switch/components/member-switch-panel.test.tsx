@@ -77,7 +77,7 @@ describe("manual server-owned panel", () => {
     expect(screen.getByRole("button", { name: /Target member/ })).toBeInTheDocument();
     expect(mock.requests.filter((item) => item.path.endsWith("/catalog/refresh"))).toHaveLength(1);
   });
-  it("offers device-code OAuth registration only for the exact current managed member without auth", async () => {
+  it("completes current-member OAuth registration from one click on the normal path", async () => {
     mock.catalog.workspaces[0].currentMembers = [{
       email: memberIdentity.targetEmail,
       userId: memberIdentity.targetUserId,
@@ -89,28 +89,37 @@ describe("manual server-owned panel", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "목록 불러오기" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
     expect(await screen.findByText("OAuth 미등록")).toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: "OAuth 등록" }));
-    expect(await screen.findByText(/현재 멤버 OAuth 등록 · OAuth 등록 대상 확인/)).toBeInTheDocument();
-    expect(screen.getByText(/워크스페이스 멤버를 제거·초대·교체하지 않으며/)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "장치 코드 발급" }));
-    expect(await screen.findByRole("alertdialog")).toHaveTextContent(/다른 멤버의 auth는 격리하거나 삭제하지 않습니다/);
-    await user.click(screen.getByRole("button", { name: "이 단계 실행" }));
-    expect(await screen.findByText("ABCD-EFGH")).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "인증 페이지 열기" })).not.toBeInTheDocument();
-    expect(screen.getByText(/인증 URL은 직접 열지 않습니다/)).toBeInTheDocument();
+    expect(await screen.findByText("OAuth 등록됨")).toBeInTheDocument();
+    expect(screen.queryByText(/현재 멤버 OAuth 등록 ·/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "장치 코드 발급" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Ego Lite 인증 브라우저 열기" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "인증 확인·반영" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "완료 기록 닫기" })).not.toBeInTheDocument();
+    expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
+    expect(mock.requests.filter((item) => item.path.endsWith("/commands"))).toHaveLength(0);
+  });
+  it("shows only recovery controls when one-click OAuth stops for manual authentication", async () => {
+    mock.autoEnrollmentResult = "manual";
+    mock.catalog.workspaces[0].currentMembers = [{
+      email: memberIdentity.targetEmail,
+      userId: memberIdentity.targetUserId,
+      presetId: memberIdentity.presetId,
+      authState: "absent",
+      authAccountId: null,
+    }];
+    const user = userEvent.setup(); render(<MemberSwitchPanel readOnly={false} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "목록 불러오기" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
+    await user.click(await screen.findByRole("button", { name: "OAuth 등록" }));
 
-    await user.click(screen.getByRole("button", { name: "Ego Lite 인증 브라우저 열기" }));
-    expect(await screen.findByRole("alertdialog")).toHaveTextContent(/시스템 기본 브라우저나 기존 CDP 브라우저로 대체하지 않습니다/);
-    await user.click(screen.getByRole("button", { name: "이 단계 실행" }));
-    expect(await screen.findByText(/Ego Lite 인증 브라우저 열림/)).toBeInTheDocument();
-    expect(screen.getByText("CodexLB-account-target")).toBeInTheDocument();
-    expect(screen.getByText("17 · agentDelegatedToUser")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "인증 확인·반영" }));
-    await user.click(screen.getByRole("button", { name: "이 단계 실행" }));
-    expect(await screen.findByText(/OAuth 등록 확인됨/)).toBeInTheDocument();
-    expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs")).toEqual([]);
+    expect(await screen.findByText(/현재 멤버 OAuth 등록 · Ego Lite 인증 브라우저 열림/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "남은 OAuth 절차 자동 진행" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "인증 확인·반영" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "장치 코드 발급" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Ego Lite 인증 브라우저 열기" })).not.toBeInTheDocument();
   });
   it("does not offer OAuth registration when the current member auth is already active", async () => {
     mock.catalog.workspaces[0].currentMembers = [{

@@ -12,6 +12,7 @@ CONTROL_PROTOCOL = "managed_member_switch_v1"
 OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY = "ego_lite_owner_membership_observation_v1"
 OWNER_MEMBERSHIP_MUTATION_CAPABILITY = "ego_lite_owner_membership_mutation_v1"
 RECIPIENT_MEMBERSHIP_LIFECYCLE_CAPABILITY = "ego_lite_recipient_membership_lifecycle_v1"
+EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY = "ego_lite_device_auth_automation_v1"
 AUTH_ENROLLMENT_PROTOCOL = "managed_member_auth_enrollment_v2"
 
 
@@ -202,7 +203,7 @@ class FinalizeReceipt(DashboardModel):
     code: str
 
 
-class EgoOAuthBrowserRequest(DashboardModel):
+class EgoOAuthBrowserIdentityRequest(DashboardModel):
     model_config = ConfigDict(extra="forbid")
     enrollment_id: str
     workspace_id: str
@@ -214,7 +215,11 @@ class EgoOAuthBrowserRequest(DashboardModel):
     verification_url: str
 
 
-class EgoOAuthBrowserStatusRequest(EgoOAuthBrowserRequest):
+class EgoOAuthBrowserRequest(EgoOAuthBrowserIdentityRequest):
+    user_code: str
+
+
+class EgoOAuthBrowserStatusRequest(EgoOAuthBrowserIdentityRequest):
     pass
 
 

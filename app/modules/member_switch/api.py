@@ -89,6 +89,22 @@ async def active_auth_enrollment(
     return ActiveAuthEnrollmentResponse(enrollment=await service.active())
 
 
+@router.post("/oauth-enrollments/auto", response_model=AuthEnrollmentView)
+async def auto_auth_enrollment(
+    request: AuthEnrollmentCreateRequest,
+    service: MemberAuthEnrollmentService = Depends(get_member_auth_enrollment_service),
+) -> AuthEnrollmentView:
+    return await service.create_and_auto_complete(request)
+
+
+@router.post("/oauth-enrollments/{enrollment_id}/auto", response_model=AuthEnrollmentView)
+async def resume_auto_auth_enrollment(
+    enrollment_id: UUID,
+    service: MemberAuthEnrollmentService = Depends(get_member_auth_enrollment_service),
+) -> AuthEnrollmentView:
+    return await service.auto_complete(str(enrollment_id), allow_manual_resume=True)
+
+
 @router.get("/oauth-enrollments/{enrollment_id}", response_model=AuthEnrollmentView)
 async def get_auth_enrollment(
     enrollment_id: UUID,

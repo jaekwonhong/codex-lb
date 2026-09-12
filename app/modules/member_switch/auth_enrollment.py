@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Protocol
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -22,6 +25,7 @@ from app.modules.member_switch.repository import (
 from app.modules.member_switch.schemas import (
     AUTH_ENROLLMENT_PROTOCOL,
     CONTROL_PROTOCOL,
+    EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY,
     OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY,
     AuthEnrollmentAction,
     AuthEnrollmentCommandRequest,
@@ -68,6 +72,16 @@ def enrollment_allowed_actions(state: AuthEnrollmentState, pending_action: str |
     if state.phase in {"auth_confirmed", "needs_attention"}:
         return ["finish"]
     return []
+
+
+_AUTO_OAUTH_DEADLINE_SECONDS = 180.0
+_AUTO_OAUTH_POLL_SECONDS = 2.0
+_AUTO_OAUTH_MAX_ADVANCE_ATTEMPTS = 30
+_AUTO_BROWSER_CONTINUE_CODES = frozenset({
+    "authorization_complete",
+    "ego_device_auth_code_submitted",
+    "ego_device_auth_code_submission_unconfirmed",
+})
 
 
 class MemberAuthEnrollmentService:
@@ -164,7 +178,10 @@ class MemberAuthEnrollmentService:
             or CONTROL_PROTOCOL not in catalog.capabilities
         ):
             raise ControlConflict("catalog_identity_mismatch")
-        if OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY not in catalog.capabilities:
+        if (
+            OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY not in catalog.capabilities
+            or EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY not in catalog.capabilities
+        ):
             raise ControlConflict("companion_protocol_upgrade_required")
         workspace = next((item for item in catalog.workspaces if item.id == identity.workspace_id), None)
         target = (
@@ -284,6 +301,99 @@ class MemberAuthEnrollmentService:
         record = await self.controls.create(enrollment_id, "auth_enrollment", state.model_dump_json(), own_scope=True)
         return self._view(record)
 
+    async def create_and_auto_complete(self, request: AuthEnrollmentCreateRequest) -> AuthEnrollmentView:
+        """Create or resume one current-member OAuth enrollment through safe terminal completion.
+
+        Each external stage remains an ordinary durable command. Retries derive the next action
+        from stored state, reconcile any retained command before continuing, and never replay a
+        completed browser/device-code effect. Only OAuth observation/application is polled.
+        """
+        view = await self.create(request)
+        return await self.auto_complete(view.id)
+
+    async def auto_complete(self, enrollment_id: str, *, allow_manual_resume: bool = False) -> AuthEnrollmentView:
+        deadline = time.monotonic() + _AUTO_OAUTH_DEADLINE_SECONDS
+        advance_attempts = 0
+        while True:
+            record = await self.controls.get(enrollment_id)
+            if record is None:
+                raise ControlConflict("auth_enrollment_not_found")
+            state = self._decode(record)
+            view = self._view(record)
+            if state.phase == "completed":
+                return view
+            if state.phase == "needs_attention":
+                return view
+
+            if record.pending_action:
+                try:
+                    view = await self.command(
+                        enrollment_id,
+                        AuthEnrollmentCommandRequest(
+                            command_id=uuid4(), expected_revision=record.revision, action="reconcile"
+                        ),
+                    )
+                except ControlConflict:
+                    # A retained unknown effect is not permission to replay it. Leave the exact
+                    # durable record visible for explicit recovery when observation cannot settle it.
+                    return self._view((await self.controls.get(enrollment_id)) or record)
+                if view.phase == "completed":
+                    return view
+                continue
+
+            if state.phase == "prepared":
+                action: AuthEnrollmentAction = "prepare_auth"
+            elif state.phase == "auth_prepared":
+                action = "open_auth_browser"
+            elif state.phase == "auth_browser_opened":
+                # Manual challenges/ambiguous pages are intentionally handed to the operator.
+                # Only a browser result proving code submission/completion authorizes automatic
+                # OAuth observation/application.
+                can_observe_after_manual = (
+                    allow_manual_resume and state.last_code == "ego_device_auth_user_action_required"
+                )
+                if (
+                    state.last_code not in _AUTO_BROWSER_CONTINUE_CODES
+                    and state.auth_state not in {"oauth_pending", "oauth_verified"}
+                    and not can_observe_after_manual
+                ):
+                    return view
+                if time.monotonic() >= deadline or advance_attempts >= _AUTO_OAUTH_MAX_ADVANCE_ATTEMPTS:
+                    return view
+                action = "advance_auth"
+            elif state.phase == "auth_confirmed":
+                if state.auth_state != "completed":
+                    return view
+                action = "finish"
+            else:
+                return view
+
+            try:
+                next_view = await self.command(
+                    enrollment_id,
+                    AuthEnrollmentCommandRequest(
+                        command_id=uuid4(), expected_revision=view.revision, action=action
+                    ),
+                )
+            except ControlConflict:
+                current = await self.controls.get(enrollment_id)
+                if current is not None and current.pending_action:
+                    # The next loop iteration performs observation-only reconciliation.
+                    continue
+                raise
+
+            if action == "open_auth_browser" and (
+                next_view.phase != "auth_browser_opened"
+                or next_view.last_code not in _AUTO_BROWSER_CONTINUE_CODES
+            ):
+                return next_view
+            if action == "advance_auth" and next_view.phase == "auth_browser_opened":
+                advance_attempts += 1
+                if time.monotonic() >= deadline or advance_attempts >= _AUTO_OAUTH_MAX_ADVANCE_ATTEMPTS:
+                    return next_view
+                await asyncio.sleep(_AUTO_OAUTH_POLL_SECONDS)
+            view = next_view
+
     async def _save(
         self, record: ControlRecord, state: AuthEnrollmentState, *, release: bool = False
     ) -> AuthEnrollmentView:
@@ -316,6 +426,8 @@ class MemberAuthEnrollmentService:
             if auth.state == "completed"
             else "needs_attention"
             if auth.state == "failed"
+            else "auth_browser_opened"
+            if state.browser_task_space_id is not None
             else "auth_prepared"
         )
         return state.model_copy(
@@ -335,6 +447,8 @@ class MemberAuthEnrollmentService:
     def _browser_request(state: AuthEnrollmentState) -> EgoOAuthBrowserRequest:
         if state.verification_url is None:
             raise ControlConflict("verification_url_missing")
+        if state.user_code is None:
+            raise ControlConflict("user_code_missing")
         identity = state.identity
         return EgoOAuthBrowserRequest(
             enrollment_id=state.id,
@@ -345,6 +459,7 @@ class MemberAuthEnrollmentService:
             target_user_id=identity.target_user_id,
             catalog_fingerprint=identity.catalog_fingerprint,
             verification_url=state.verification_url,
+            user_code=state.user_code,
         )
 
     @staticmethod
@@ -361,7 +476,8 @@ class MemberAuthEnrollmentService:
 
     @classmethod
     def _browser_status_request(cls, state: AuthEnrollmentState) -> EgoOAuthBrowserStatusRequest:
-        return EgoOAuthBrowserStatusRequest.model_validate(cls._browser_request(state).model_dump())
+        request = cls._browser_request(state)
+        return EgoOAuthBrowserStatusRequest.model_validate(request.model_dump(exclude={"user_code"}))
 
     @staticmethod
     def _accept_browser(

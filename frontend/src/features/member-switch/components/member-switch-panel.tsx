@@ -83,6 +83,10 @@ const RECOVERY_HINTS: Record<string, string> = {
   ego_browser_timeout: "Ego Lite 응답 대기 시간이 지났습니다. 브라우저가 열리지 않았다고 단정하지 말고 저장된 실행 결과를 확인하세요.",
   ego_browser_response_invalid: "Ego Lite 응답이 불완전해 실행 결과를 확정하지 못했습니다. 작업 기록을 보존한 채 서버 기록과 저장된 실행 결과를 확인하고, 같은 브라우저 명령을 반복하지 마세요.",
   ego_owner_mutation_response_invalid: "소유주 Ego Lite의 변경 결과를 해석하지 못했습니다. 같은 삭제·초대·취소를 반복하지 말고 저장된 작업과 멤버 상태를 확인하세요.",
+  oauth_pending: "OAuth 서버 확인이 아직 진행 중입니다. 자동 확인 상한에 도달한 경우 현재 작업을 유지하고 「남은 OAuth 절차 자동 진행」으로 서버 상태 확인만 이어가세요. Ego Lite 장치코드를 다시 제출하지 않습니다.",
+  ego_device_auth_user_action_required: "Ego Lite가 정확한 계정·워크스페이스·장치코드 자동화를 안전하게 계속할 수 없어 같은 멤버 Space를 사용자에게 넘겼습니다. 비밀번호·MFA·보안 확인 또는 모호한 선택을 직접 완료한 뒤 「인증 확인·반영」을 사용하세요. 다른 브라우저로 대체하지 않습니다.",
+  ego_device_auth_code_submitted: "Ego Lite가 장치코드를 정확히 한 번 제출했지만 완료 화면을 확정하지 못했습니다. 같은 코드를 다시 제출하지 말고 현재 Space의 상태를 확인한 뒤 「인증 확인·반영」을 사용하세요.",
+  ego_device_auth_code_submission_unconfirmed: "장치코드 제출 단계에서 페이지 응답을 확인하지 못했습니다. 동일 코드를 자동 재제출하지 않았습니다. 현재 Ego Lite Space를 확인한 뒤 「인증 확인·반영」으로 서버 OAuth 상태를 조회하세요.",
   ego_browser_process_failed: "Ego Lite 실행 결과를 확정하지 못했습니다. 기본 브라우저로 대체하지 않았습니다.",
 };
 function recoveryHint(code: string, flow: RunView | null = null): string | undefined {
@@ -106,14 +110,8 @@ const PHASES: Record<string, string> = {
   completed: "작업 종료 확인됨", needs_attention: "별도 확인 필요", failed: "실패", outcome_unknown: "실행 결과 미확정",
 };
 const AUTH_ACTIONS: Record<AuthEnrollmentAction, { label: string; confirm?: string }> = {
-  prepare_auth: {
-    label: "장치 코드 발급",
-    confirm: "현재 워크스페이스 멤버십은 변경하지 않고 이 멤버의 장치 코드 OAuth만 시작합니다. 다른 멤버의 auth는 격리하거나 삭제하지 않습니다.",
-  },
-  open_auth_browser: {
-    label: "Ego Lite 인증 브라우저 열기",
-    confirm: "선택한 멤버의 stable account ID에 대응하는 Ego Lite 프로필만 사용해 인증 페이지를 엽니다. 시스템 기본 브라우저나 기존 CDP 브라우저로 대체하지 않습니다.",
-  },
+  prepare_auth: { label: "장치 코드 발급" },
+  open_auth_browser: { label: "Ego Lite 인증 브라우저 열기" },
   advance_auth: {
     label: "인증 확인·반영",
     confirm: "장치 코드 OAuth 상태를 확인하고 정확한 이메일·사용자 ID·워크스페이스가 일치하는 경우에만 auth를 등록합니다. 만료된 장치 코드는 자동 재발급하지 않으며 현재 작업을 종료한 뒤 새 OAuth 등록을 시작해야 합니다.",
@@ -158,7 +156,7 @@ export function MemberSwitchPanel({ readOnly }: { readOnly: boolean }) {
       <div><h2 id="member-switch-title" className="text-sm font-semibold">멤버 관리 · 전환 / OAuth 등록</h2>
         <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
           멤버 교체는 대상 확인 → 교체 → 인증 전환 → 종료 확인 순서로 직접 승인합니다.
-          이미 현재 멤버인 계정은 멤버십을 바꾸지 않고 장치 코드 OAuth만 별도로 등록할 수 있습니다.
+          이미 현재 멤버인 계정은 「OAuth 등록」 한 번으로 장치코드 발급 → Ego Lite 자동 인증 → 서버 인증 확인·반영 → 완료 정리까지 진행합니다. 멤버십은 변경하지 않습니다.
           서버 기록 새로고침은 저장 상태만 읽고, 목록 불러오기·새로고침은 각 워크스페이스 소유주 ID의 Ego Lite 프로필/Space에서 실제 멤버를 확인합니다.
           소유주 멤버 삭제·초대·초대취소와 그 전후 개인 계정 확인도 동일한 소유주 Ego Lite Space에서 수행하며, 기존 owner CDP를 대체 경로로 사용하지 않습니다.
           수신자의 Personal 확인, 워크스페이스 존재·부재 확인, 초대 수락도 해당 ID의 Ego Lite 프로필/Space에서 수행하며 managed 멤버 전환 중에는 recipient CDP로 fallback하지 않습니다.
@@ -174,7 +172,7 @@ export function MemberSwitchPanel({ readOnly }: { readOnly: boolean }) {
     </div>
     {readOnly ? <p className="mt-4 text-sm">관리자만 멤버 전환과 OAuth 등록을 조회·실행할 수 있습니다.</p> : null}
     {busy ? <p role="status" className="mt-4 flex items-center gap-2 text-sm"><Spinner size="sm" />
-      {ACTIONS[busy as RunAction]?.label ?? AUTH_ACTIONS[busy.replace(/^oauth_/, "") as AuthEnrollmentAction]?.label ?? "서버 조회"} · 응답 대기 중</p> : null}
+      {busy === "oauth_enrollment_auto" ? "OAuth 등록 자동 진행" : ACTIONS[busy as RunAction]?.label ?? AUTH_ACTIONS[busy.replace(/^oauth_/, "") as AuthEnrollmentAction]?.label ?? "서버 조회"} · 응답 대기 중</p> : null}
     {legacy ? <AlertMessage className="mt-4" variant="warning">이전 버전의 작업 기록이 있습니다. 새 교체를 시작하기 전 별도 복구 검토가 필요합니다. 기존 기록은 삭제하지 않았습니다.</AlertMessage> : null}
     {error ? <div className="mt-4" role="alert"><AlertMessage variant="error">
       {recoveryHint(error, flow) ?? "요청을 완료하지 못했습니다. 변경 요청은 재전송하지 않았습니다. 서버 기록을 새로고침해 결과를 확인하세요."}
@@ -267,7 +265,7 @@ export function MemberSwitchPanel({ readOnly }: { readOnly: boolean }) {
         <p className="text-xs text-muted-foreground">장치 코드</p>
         <code className="mt-1 block break-all text-lg font-semibold tracking-wider">{enrollment.userCode}</code>
         <p className="mt-2 text-xs text-muted-foreground">
-          인증 URL은 직접 열지 않습니다. 아래 「Ego Lite 인증 브라우저 열기」를 사용하면 이 멤버에 지정된 Ego Lite 프로필에서만 페이지를 엽니다.
+          「Ego Lite 인증 브라우저 열기」는 이 멤버의 전용 프로필에서 대상 계정 → 워크스페이스 → 장치코드 입력을 정확히 일치하는 항목에 한해 자동 진행합니다. 비밀번호·MFA·보안 확인 또는 모호한 화면에서는 자동화를 중단하고 같은 Space를 사용자에게 넘깁니다.
         </p>
         {enrollment.expiresInSeconds ? <p className="mt-1 text-xs text-muted-foreground">발급 시 유효시간: {enrollment.expiresInSeconds}초</p> : null}
       </div> : null}
@@ -284,13 +282,16 @@ export function MemberSwitchPanel({ readOnly }: { readOnly: boolean }) {
       {enrollment.phase === "needs_attention" ? <p className="mt-3 text-xs text-destructive">
         실패를 자동 재시도하지 않습니다. 잘못된 계정으로 로그인했거나 코드가 만료된 경우 현재 결과를 확인한 뒤 작업을 명시적으로 종료하세요.
       </p> : null}
-      <div className="mt-3 flex flex-wrap gap-2">{enrollment.allowedActions.map((action) =>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {enrollment.phase !== "completed" && !enrollment.pendingAction && enrollment.phase !== "needs_attention" ?
+          <Button size="sm" onClick={() => void runtime.resumeAuthEnrollment()} disabled={disabled || !checked}>
+            남은 OAuth 절차 자동 진행
+          </Button> : null}
+        {enrollment.allowedActions.map((action) =>
         <Button key={action} size="sm" variant="outline" disabled={disabled || !checked}
           onClick={() => AUTH_ACTIONS[action].confirm
             ? setAuthConfirmation({ action, id: enrollment.id, revision: enrollment.revision })
             : void runtime.enrollmentCommand(action)}>{AUTH_ACTIONS[action].label}</Button>)}
-        {enrollment.phase === "completed" ? <Button size="sm" disabled={disabled || !checked}
-          onClick={runtime.dismissFinishedEnrollment}>완료 기록 닫기</Button> : null}
       </div>
       <details className="mt-3 text-xs text-muted-foreground"><summary>OAuth 작업 식별자</summary>
         <pre className="mt-2 whitespace-pre-wrap break-all">{JSON.stringify({ enrollmentId: enrollment.id,

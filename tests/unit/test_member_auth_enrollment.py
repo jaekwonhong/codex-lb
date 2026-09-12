@@ -52,6 +52,9 @@ class EnrollmentCompanion:
         self.browser_outcome = "success"
         self.profile_ready = True
         self.owner_ego_capability = True
+        self.device_auth_automation_capability = True
+        self.browser_code = "authorization_complete"
+        self.status_code = "authorization_complete"
 
     async def admission(self) -> CompanionAdmission:
         self.calls.append("admission")
@@ -64,7 +67,8 @@ class EnrollmentCompanion:
             schema_version=1,
             catalog_fingerprint=FINGERPRINT,
             capabilities=["managed_member_switch_v1"]
-            + (["ego_lite_owner_membership_observation_v1"] if self.owner_ego_capability else []),
+            + (["ego_lite_owner_membership_observation_v1"] if self.owner_ego_capability else [])
+            + (["ego_lite_device_auth_automation_v1"] if self.device_auth_automation_capability else []),
             workspaces=[
                 Workspace(
                     id="workspace-1",
@@ -139,11 +143,11 @@ class EnrollmentCompanion:
         return EgoOAuthBrowserResponse(
             accepted=True,
             state="user_controlled",
-            code="ego_task_space_handed_off",
+            code=self.browser_code,
             enrollment_id=request.enrollment_id,
             profile_id="CodexLB-account-target",
             task_space_id=7,
-                ownership="agentDelegatedToUser",
+            ownership="agentDelegatedToUser",
         )
 
     async def ego_oauth_browser_status(self, request):
@@ -151,7 +155,7 @@ class EnrollmentCompanion:
         return EgoOAuthBrowserResponse(
             accepted=True,
             state="user_controlled",
-            code="ego_task_space_user_controlled",
+            code=self.status_code,
             enrollment_id=request.enrollment_id,
             profile_id="CodexLB-account-target",
             task_space_id=7,
@@ -174,6 +178,11 @@ class EnrollmentAuth:
         self.prepare_requests = []
         self.snapshot: MemberAuthHandoffResponse | None = None
         self.device_flow_id: str | None = None
+        self.pending_advances = 0
+        self.advance_calls = 0
+        self.prepare_calls = 0
+        self.lose_prepare_once = False
+        self.lose_advance_once = False
 
     def bind_catalog(self, catalog: Catalog) -> None:
         if catalog.catalog_fingerprint != FINGERPRINT:
@@ -206,6 +215,7 @@ class EnrollmentAuth:
         )
 
     async def prepare(self, request, *, managed_run_id=None):
+        self.prepare_calls += 1
         self.prepare_requests.append(request)
         parent = await self.controls.get(managed_run_id)
         assert parent is not None
@@ -225,14 +235,26 @@ class EnrollmentAuth:
             last_command_id=parent.command_id,
         )
         self.device_flow_id = "flow-enrollment"
+        if self.lose_prepare_once:
+            self.lose_prepare_once = False
+            raise ControlConflict("synthetic_prepare_reply_lost")
         return self.snapshot
 
     async def advance(self, handoff_id, *, managed_run_id=None):
         assert self.snapshot is not None and handoff_id == self.snapshot.handoff_id
         parent = await self.controls.get(managed_run_id)
         assert parent is not None
+        self.advance_calls += 1
+        if self.advance_calls <= self.pending_advances:
+            self.snapshot = self.snapshot.model_copy(
+                update={"state": "oauth_pending", "last_command_id": parent.command_id}
+            )
+            return self.snapshot
         self.snapshot = self.snapshot.model_copy(update={"state": "completed", "last_command_id": parent.command_id})
         self.state = "active"
+        if self.lose_advance_once:
+            self.lose_advance_once = False
+            raise ControlConflict("synthetic_advance_reply_lost")
         return self.snapshot
 
     async def get_for_operation(self, operation_id):
@@ -314,6 +336,135 @@ async def test_current_member_oauth_only_flow_never_requests_membership_mutation
     assert view.phase == "completed"
     assert await controls.active() is None
     assert all("start" not in call and "participant" not in call for call in companion.calls)
+
+
+async def test_one_click_auto_enrollment_reaches_terminal_and_releases_scope(enrollment_context):
+    service, controls, companion, auth = enrollment_context
+
+    view = await service.create_and_auto_complete(create_request())
+
+    assert view.phase == "completed"
+    assert view.auth_state == "completed"
+    assert await controls.active() is None
+    assert companion.calls.count("open_ego_browser") == 1
+    assert auth.advance_calls == 1
+    assert len(auth.prepare_requests) == 1
+    assert all("start" not in call and "participant" not in call for call in companion.calls)
+
+
+async def test_one_click_auto_enrollment_polls_oauth_without_reopening_browser(enrollment_context, monkeypatch):
+    service, controls, companion, auth = enrollment_context
+    auth.pending_advances = 2
+    monkeypatch.setattr("app.modules.member_switch.auth_enrollment._AUTO_OAUTH_POLL_SECONDS", 0)
+
+    view = await service.create_and_auto_complete(create_request())
+
+    assert view.phase == "completed" and view.auth_state == "completed"
+    assert companion.calls.count("open_ego_browser") == 1
+    assert auth.advance_calls == 3
+    assert await controls.active() is None
+
+
+async def test_one_click_auto_enrollment_stops_for_manual_browser_challenge(enrollment_context):
+    service, controls, companion, auth = enrollment_context
+    companion.browser_code = "ego_device_auth_user_action_required"
+
+    view = await service.create_and_auto_complete(create_request())
+
+    assert view.phase == "auth_browser_opened"
+    assert view.last_code == "ego_device_auth_user_action_required"
+    assert companion.calls.count("open_ego_browser") == 1
+    assert auth.advance_calls == 0
+    retained = await controls.active()
+    assert retained is not None and retained.id == view.id
+
+
+async def test_one_click_auto_enrollment_reconciles_unknown_browser_without_replay(enrollment_context):
+    service, controls, companion, auth = enrollment_context
+    companion.browser_outcome = "unknown"
+    companion.status_code = "ego_device_auth_code_submitted"
+
+    view = await service.create_and_auto_complete(create_request())
+
+    assert view.phase == "completed" and view.auth_state == "completed"
+    assert companion.calls.count("open_ego_browser") == 1
+    assert companion.calls.count("ego_browser_status") == 1
+    assert auth.advance_calls == 1
+    assert await controls.active() is None
+
+
+async def test_explicit_auto_resume_after_manual_challenge_observes_auth_without_reopening_browser(
+    enrollment_context, monkeypatch
+):
+    service, controls, companion, auth = enrollment_context
+    companion.browser_code = "ego_device_auth_user_action_required"
+    view = await service.create_and_auto_complete(create_request())
+    assert view.phase == "auth_browser_opened"
+    assert auth.advance_calls == 0
+    monkeypatch.setattr("app.modules.member_switch.auth_enrollment._AUTO_OAUTH_POLL_SECONDS", 0)
+
+    resumed = await service.auto_complete(view.id, allow_manual_resume=True)
+
+    assert resumed.phase == "completed" and resumed.auth_state == "completed"
+    assert companion.calls.count("open_ego_browser") == 1
+    assert auth.advance_calls == 1
+    assert await controls.active() is None
+
+
+async def test_one_click_auto_enrollment_stops_after_bounded_pending_polls(enrollment_context, monkeypatch):
+    service, controls, companion, auth = enrollment_context
+    auth.pending_advances = 100
+    monkeypatch.setattr("app.modules.member_switch.auth_enrollment._AUTO_OAUTH_POLL_SECONDS", 0)
+    monkeypatch.setattr("app.modules.member_switch.auth_enrollment._AUTO_OAUTH_MAX_ADVANCE_ATTEMPTS", 2)
+
+    view = await service.create_and_auto_complete(create_request())
+
+    assert view.phase == "auth_browser_opened"
+    assert view.auth_state == "oauth_pending"
+    assert auth.advance_calls == 2
+    assert companion.calls.count("open_ego_browser") == 1
+    assert await controls.active() is not None
+
+
+async def test_one_click_reconciles_lost_prepare_reply_without_reissuing_device_code(enrollment_context):
+    service, controls, companion, auth = enrollment_context
+    auth.lose_prepare_once = True
+
+    view = await service.create_and_auto_complete(create_request())
+
+    assert view.phase == "completed" and view.auth_state == "completed"
+    assert auth.prepare_calls == 1
+    assert companion.calls.count("open_ego_browser") == 1
+    assert await controls.active() is None
+
+
+async def test_one_click_reconciles_lost_advance_reply_without_rechecking_browser_effect(enrollment_context):
+    service, controls, companion, auth = enrollment_context
+    auth.lose_advance_once = True
+
+    view = await service.create_and_auto_complete(create_request())
+
+    assert view.phase == "completed" and view.auth_state == "completed"
+    assert auth.advance_calls == 1
+    assert companion.calls.count("open_ego_browser") == 1
+    assert companion.calls.count("ego_browser_status") == 0
+    assert await controls.active() is None
+
+
+async def test_one_click_auto_enrollment_is_idempotent_after_completion(enrollment_context):
+    service, _, companion, auth = enrollment_context
+    request = create_request()
+    first = await service.create_and_auto_complete(request)
+    first_calls = list(companion.calls)
+    first_prepare_count = len(auth.prepare_requests)
+    first_advance_count = auth.advance_calls
+
+    second = await service.create_and_auto_complete(request)
+
+    assert second.phase == "completed" and second.id == first.id
+    assert companion.calls == first_calls
+    assert len(auth.prepare_requests) == first_prepare_count
+    assert auth.advance_calls == first_advance_count
 
 
 async def test_enrollment_blocks_other_global_work_until_finished(enrollment_context):
@@ -457,6 +608,16 @@ async def test_unknown_ego_open_reconciles_exact_task_without_second_open(enroll
     assert companion.calls.count("ego_browser_status") == 1
 
 
+async def test_oauth_enrollment_requires_device_auth_automation_capability(enrollment_context):
+    service, _, companion, _ = enrollment_context
+    companion.device_auth_automation_capability = False
+
+    with pytest.raises(ControlConflict, match="companion_protocol_upgrade_required"):
+        await service.create(create_request())
+
+    assert "open_ego_browser" not in companion.calls
+
+
 async def test_oauth_current_member_validation_requires_owner_ego_capability_before_observation(enrollment_context):
     service, _, companion, _ = enrollment_context
     companion.owner_ego_capability = False
@@ -483,6 +644,35 @@ async def test_catalog_refresh_decorates_current_member_with_auth_state(enrollme
     current = catalog.workspaces[0].current_members[0]
     assert current.auth_state == "active"
     assert current.auth_account_id == "auth-target"
+
+
+async def test_auth_enrollment_auto_routes_complete_and_resume(enrollment_context):
+    service, controls, companion, auth = enrollment_context
+    app = FastAPI()
+    app.include_router(router)
+    app.add_exception_handler(ControlConflict, handle_control_conflict)
+    app.dependency_overrides[validate_dashboard_session] = lambda: None
+    app.dependency_overrides[require_dashboard_write_access] = lambda: None
+    app.dependency_overrides[get_member_switch_controls] = lambda: controls
+    app.dependency_overrides[get_member_auth_enrollment_service] = lambda: service
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        request = create_request()
+        completed = await client.post(
+            "/api/member-switch-runs/oauth-enrollments/auto",
+            json=request.model_dump(mode="json", by_alias=True),
+        )
+        assert completed.status_code == 200, completed.text
+        body = completed.json()
+        assert body["phase"] == "completed" and body["authState"] == "completed"
+        assert await controls.active() is None
+        assert companion.calls.count("open_ego_browser") == 1
+        assert auth.advance_calls == 1
+
+        resumed = await client.post(f"/api/member-switch-runs/oauth-enrollments/{body['id']}/auto")
+        assert resumed.status_code == 200 and resumed.json()["phase"] == "completed"
+        assert companion.calls.count("open_ego_browser") == 1
+        assert auth.advance_calls == 1
 
 
 async def test_auth_enrollment_routes_restore_only_through_enrollment_surface(enrollment_context):

@@ -79,6 +79,7 @@ class FakeCompanion:
                 "recipient_session_readiness",
                 "post_add_device_auth",
                 "ego_lite_member_browser_v1",
+                "ego_lite_device_auth_automation_v1",
                 "ego_lite_owner_membership_observation_v1",
                 "ego_lite_owner_membership_mutation_v1",
                 "ego_lite_recipient_membership_lifecycle_v1",
@@ -536,6 +537,84 @@ async def test_start_rechecks_owner_ego_mutation_capability_before_claiming_inte
 
     assert await controls.get(run.id) == before
     assert "start" not in companion.calls
+
+
+async def test_new_run_requires_device_auth_automation_capability_before_persisting(context):
+    service, controls, companion, _, _ = context
+    original_catalog = companion.catalog
+
+    async def old_catalog():
+        catalog = await original_catalog()
+        return catalog.model_copy(
+            update={
+                "capabilities": [
+                    item for item in catalog.capabilities if item != "ego_lite_device_auth_automation_v1"
+                ]
+            }
+        )
+
+    companion.catalog = old_catalog
+
+    with pytest.raises(ControlConflict, match="companion_protocol_upgrade_required"):
+        await create_run(service)
+
+    assert await controls.active() is None
+    assert "start" not in companion.calls
+
+
+async def test_prepare_auth_rechecks_device_auth_automation_before_claiming_intent(context):
+    service, controls, companion, auth, _ = context
+    run = await create_run(service)
+    for action in ("start", "observe_membership", "prepare_session"):
+        run = await command(service, run, action)
+    before = await controls.get(run.id)
+    original_catalog = companion.catalog
+
+    async def old_catalog():
+        catalog = await original_catalog()
+        return catalog.model_copy(
+            update={
+                "capabilities": [
+                    item for item in catalog.capabilities if item != "ego_lite_device_auth_automation_v1"
+                ]
+            }
+        )
+
+    companion.catalog = old_catalog
+
+    with pytest.raises(ControlConflict, match="companion_protocol_upgrade_required"):
+        await command(service, run, "prepare_auth")
+
+    assert await controls.get(run.id) == before
+    assert auth.calls == []
+
+
+async def test_open_browser_rechecks_device_auth_automation_capability_before_participant_effect(context):
+    service, controls, companion, _, _ = context
+    run = await create_run(service)
+    for action in ("start", "observe_membership", "prepare_session", "prepare_auth"):
+        run = await command(service, run, action)
+    before = await controls.get(run.id)
+    browser_calls = companion.calls.count("open_browser")
+    original_catalog = companion.catalog
+
+    async def old_catalog():
+        catalog = await original_catalog()
+        return catalog.model_copy(
+            update={
+                "capabilities": [
+                    item for item in catalog.capabilities if item != "ego_lite_device_auth_automation_v1"
+                ]
+            }
+        )
+
+    companion.catalog = old_catalog
+
+    with pytest.raises(ControlConflict, match="companion_protocol_upgrade_required"):
+        await command(service, run, "open_browser")
+
+    assert await controls.get(run.id) == before
+    assert companion.calls.count("open_browser") == browser_calls
 
 
 async def test_new_run_requires_recipient_ego_lifecycle_capability_before_persisting(context):

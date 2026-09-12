@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useMemberSwitch } from "./use-member-switch";
-import { installMemberSwitchMocks, makeRunView, memberIdentity } from "@/test/mocks/member-switch";
+import { installMemberSwitchMocks, makeAuthEnrollmentView, makeRunView, memberIdentity } from "@/test/mocks/member-switch";
 import { readRunLocator } from "@/features/member-switch/active-flow";
 
 describe("server-owned member switch", () => {
@@ -112,7 +112,7 @@ describe("server-owned member switch", () => {
     expect(mock.run.phase).toBe("previewed");
     await act(hook.result.current.refresh); expect(hook.result.current.flow?.revision).toBe(10);
   });
-  it("creates and advances an OAuth-only enrollment without a member-switch run", async () => {
+  it("completes OAuth enrollment from one click and dismisses the completed record", async () => {
     mock.catalog.workspaces[0].currentMembers = [{
       email: memberIdentity.targetEmail,
       userId: memberIdentity.targetUserId,
@@ -125,26 +125,71 @@ describe("server-owned member switch", () => {
     await act(() => hook.result.current.startAuthEnrollment(
       "cdp-1", memberIdentity.presetId, memberIdentity.targetEmail, memberIdentity.targetUserId,
     ));
-    expect(hook.result.current.enrollment?.phase).toBe("prepared");
-    expect(hook.result.current.flow).toBeNull();
-    expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs")).toEqual([]);
 
-    await act(() => hook.result.current.enrollmentCommand("prepare_auth"));
-    expect(hook.result.current.enrollment?.userCode).toBe("ABCD-EFGH");
-    await act(() => hook.result.current.enrollmentCommand("open_auth_browser"));
-    expect(hook.result.current.enrollment?.phase).toBe("auth_browser_opened");
-    expect(hook.result.current.enrollment?.browserProfileId).toBe("CodexLB-account-target");
-    await act(() => hook.result.current.enrollmentCommand("advance_auth"));
-    expect(hook.result.current.enrollment?.phase).toBe("auth_confirmed");
-    await act(() => hook.result.current.enrollmentCommand("finish"));
-    expect(hook.result.current.enrollment?.phase).toBe("completed");
-    expect(mock.requests.filter((item) => item.path.endsWith("/commands")).map((item) => item.body)).toEqual([
-      expect.objectContaining({ action: "prepare_auth" }),
-      expect.objectContaining({ action: "open_auth_browser" }),
-      expect.objectContaining({ action: "advance_auth" }),
-      expect.objectContaining({ action: "finish" }),
-    ]);
+    expect(hook.result.current.enrollment).toBeNull();
+    expect(hook.result.current.flow).toBeNull();
+    expect(hook.result.current.catalog?.workspaces[0].currentMembers[0]?.authState).toBe("active");
+    expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
+    expect(mock.requests.filter((item) => item.path.includes("/oauth-enrollments/") && item.path.endsWith("/commands"))).toHaveLength(0);
   });
+
+  it("recovers a lost successful one-click reply without replaying enrollment", async () => {
+    mock.loseAutoEnrollmentResponse = true;
+    mock.catalog.workspaces[0].currentMembers = [{
+      email: memberIdentity.targetEmail,
+      userId: memberIdentity.targetUserId,
+      presetId: memberIdentity.presetId,
+      authState: "absent",
+      authAccountId: null,
+    }];
+    const hook = await mount();
+    await act(hook.result.current.loadCatalog);
+    await act(() => hook.result.current.startAuthEnrollment(
+      "cdp-1", memberIdentity.presetId, memberIdentity.targetEmail, memberIdentity.targetUserId,
+    ));
+    expect(hook.result.current.checked).toBe(false);
+    expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
+
+    mock.loseAutoEnrollmentResponse = false;
+    await act(hook.result.current.refresh);
+
+    expect(hook.result.current.enrollment).toBeNull();
+    expect(hook.result.current.catalog).toBeNull();
+    expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
+  });
+
+  it("keeps the stored enrollment visible when one-click automation requires manual auth", async () => {
+    mock.autoEnrollmentResult = "manual";
+    mock.catalog.workspaces[0].currentMembers = [{
+      email: memberIdentity.targetEmail,
+      userId: memberIdentity.targetUserId,
+      presetId: memberIdentity.presetId,
+      authState: "absent",
+      authAccountId: null,
+    }];
+    const hook = await mount();
+    await act(hook.result.current.loadCatalog);
+    await act(() => hook.result.current.startAuthEnrollment(
+      "cdp-1", memberIdentity.presetId, memberIdentity.targetEmail, memberIdentity.targetUserId,
+    ));
+
+    expect(hook.result.current.enrollment?.phase).toBe("auth_browser_opened");
+    expect(hook.result.current.enrollment?.lastCode).toBe("ego_device_auth_user_action_required");
+    expect(hook.result.current.enrollment?.allowedActions).toContain("advance_auth");
+    expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
+  });
+  it("resumes a stored prepared enrollment with one automatic recovery request", async () => {
+    mock.enrollment = makeAuthEnrollmentView({ phase: "prepared", allowedActions: ["prepare_auth", "cancel"] });
+    const hook = await mount();
+    expect(hook.result.current.enrollment?.phase).toBe("prepared");
+
+    await act(hook.result.current.resumeAuthEnrollment);
+
+    expect(hook.result.current.enrollment).toBeNull();
+    expect(mock.requests.filter((item) => item.method === "POST" && /\/oauth-enrollments\/[^/]+\/auto$/.test(item.path))).toHaveLength(1);
+    expect(mock.requests.filter((item) => item.path.endsWith("/commands"))).toHaveLength(0);
+  });
+
   it("blocks catalog browser work after an unresolved create response", async () => {
     const hook = await mount(); mock.loseResponseFor = "create"; await preview(hook);
     expect(hook.result.current.checked).toBe(false);
@@ -169,7 +214,7 @@ describe("server-owned member switch", () => {
     const hook = await mount(); await act(hook.result.current.loadCatalog);
     await act(() => hook.result.current.startAuthEnrollment("cdp-1", memberIdentity.presetId,
       memberIdentity.targetEmail, memberIdentity.targetUserId));
-    expect(mock.requests.filter(item => item.path === "/api/member-switch-runs/oauth-enrollments")).toHaveLength(0);
+    expect(mock.requests.filter(item => item.method === "POST" && item.path.startsWith("/api/member-switch-runs/oauth-enrollments"))).toHaveLength(0);
   });
 
 });

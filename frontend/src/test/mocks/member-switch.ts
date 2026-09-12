@@ -43,6 +43,8 @@ export function installMemberSwitchMocks() {
     run: null as RunView | null,
     enrollment: null as AuthEnrollmentView | null,
     loseResponseFor: null as RunAction | "create" | null,
+    autoEnrollmentResult: "completed" as "completed" | "manual",
+    loseAutoEnrollmentResponse: false,
   };
   const failure = (code: string, status = 409) => HttpResponse.json({ error: { code, message: code } }, { status });
   async function respond(request: Request) {
@@ -53,9 +55,37 @@ export function installMemberSwitchMocks() {
     if (path.endsWith("/catalog") || path.endsWith("/catalog/refresh")) return HttpResponse.json(state.catalog);
     if (path.endsWith("/oauth-enrollments/active")) return HttpResponse.json({ enrollment: state.enrollment?.phase === "completed" ? null : state.enrollment });
     if (path === "/api/member-switch-runs/active") return HttpResponse.json({ run: state.run?.phase === "completed" ? null : state.run });
+    if (path === "/api/member-switch-runs/oauth-enrollments/auto" && request.method === "POST") {
+      const enrollmentId = (body as { enrollmentId: string }).enrollmentId;
+      state.enrollment = state.autoEnrollmentResult === "completed"
+        ? makeAuthEnrollmentView({ id: enrollmentId, revision: 8, phase: "completed", lastCode: "auth_enrollment_finalized",
+            authState: "completed", allowedActions: [], handoffId: "handoff-enroll-1", flowId: "flow-enroll-1",
+            verificationUrl: "https://auth.example/device", userCode: "ABCD-EFGH", expiresInSeconds: 900,
+            browserProfileId: "CodexLB-account-target", browserTaskSpaceId: 17, browserOwnership: "agentDelegatedToUser" })
+        : makeAuthEnrollmentView({ id: enrollmentId, revision: 4, phase: "auth_browser_opened",
+            lastCode: "ego_device_auth_user_action_required", authState: "device_code_issued",
+            allowedActions: ["advance_auth"], handoffId: "handoff-enroll-1", flowId: "flow-enroll-1",
+            verificationUrl: "https://auth.example/device", userCode: "ABCD-EFGH", expiresInSeconds: 900,
+            browserProfileId: "CodexLB-account-target", browserTaskSpaceId: 17, browserOwnership: "agentDelegatedToUser" });
+      if (state.autoEnrollmentResult === "completed") {
+        state.catalog.workspaces[0].currentMembers = [{ email: memberIdentity.targetEmail,
+          userId: memberIdentity.targetUserId, presetId: memberIdentity.presetId, authState: "active", authAccountId: "auth-target" }];
+      }
+      if (state.loseAutoEnrollmentResponse) return HttpResponse.error();
+      return HttpResponse.json(state.enrollment);
+    }
     if (path === "/api/member-switch-runs/oauth-enrollments" && request.method === "POST") {
       const enrollmentId = (body as { enrollmentId: string }).enrollmentId;
       state.enrollment = makeAuthEnrollmentView({ id: enrollmentId });
+      return HttpResponse.json(state.enrollment);
+    }
+    if (request.method === "POST" && /\/oauth-enrollments\/[^/]+\/auto$/.test(path)) {
+      if (!state.enrollment) return failure("auth_enrollment_not_found", 404);
+      state.enrollment = makeAuthEnrollmentView({ ...state.enrollment, revision: state.enrollment.revision + 8,
+        phase: "completed", lastCode: "auth_enrollment_finalized", authState: "completed", allowedActions: [] });
+      state.catalog.workspaces[0].currentMembers = [{ email: state.enrollment.identity.targetEmail,
+        userId: state.enrollment.identity.targetUserId, presetId: state.enrollment.identity.presetId,
+        authState: "active", authAccountId: "auth-target" }];
       return HttpResponse.json(state.enrollment);
     }
     if (path.includes("/oauth-enrollments/")) {
