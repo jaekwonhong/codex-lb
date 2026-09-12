@@ -130,11 +130,13 @@ class MemberSwitchService:
         if OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY not in initial.capabilities:
             raise ControlConflict("companion_protocol_upgrade_required")
         observations: dict[str, tuple[list[CurrentMember], str, datetime | None]] = {}
+        owner_observations: dict[str, tuple[str, str] | None] = {}
         for workspace in initial.workspaces:
             try:
                 observed = await self.companion.observe_membership(workspace.id)
             except ControlConflict as error:
                 observations[workspace.id] = ([], error.code, None)
+                owner_observations[workspace.id] = None
                 continue
             if (
                 observed.workspace_id != workspace.id
@@ -142,6 +144,7 @@ class MemberSwitchService:
                 or observed.catalog_fingerprint != initial.catalog_fingerprint
             ):
                 observations[workspace.id] = ([], "membership_observation_identity_mismatch", observed.observed_at)
+                owner_observations[workspace.id] = None
                 continue
             if (
                 not observed.available
@@ -150,7 +153,12 @@ class MemberSwitchService:
                 or observed.identity_ambiguous
             ):
                 observations[workspace.id] = ([], observed.code, observed.observed_at)
+                owner_observations[workspace.id] = None
                 continue
+            owners = [member for member in observed.members if member.classification == "owner"]
+            owner_observations[workspace.id] = (
+                (owners[0].email, owners[0].user_id) if len(owners) == 1 else None
+            )
             current = [
                 CurrentMember(email=member.email, user_id=member.user_id)
                 for member in observed.members
@@ -229,12 +237,50 @@ class MemberSwitchService:
                 )
             return decorated
 
+        def decorate_owner_auth(workspace):
+            owner_auth = workspace.owner_auth
+            if owner_auth is None:
+                return None
+            observed_owner = owner_observations.get(workspace.id)
+            if (
+                observed_owner is None
+                or observed_owner[0].casefold() != owner_auth.email.casefold()
+                or observed_owner[1] != owner_auth.user_id
+            ):
+                return owner_auth.model_copy(update={"auth_state": "ambiguous", "auth_account_id": None})
+            auth_observation = auth_observations.get(workspace.id)
+            if (
+                auth_observation is None
+                or not auth_observation.available
+                or auth_observation.catalog_fingerprint != refreshed.catalog_fingerprint
+            ):
+                return owner_auth.model_copy(update={"auth_state": "unknown", "auth_account_id": None})
+            if auth_observation.identity_ambiguous:
+                return owner_auth.model_copy(update={"auth_state": "ambiguous", "auth_account_id": None})
+            auth_member = next(
+                (
+                    member
+                    for member in auth_observation.members
+                    if member.preset_id == owner_auth.preset_id
+                    and member.email.casefold() == owner_auth.email.casefold()
+                    and member.user_id == owner_auth.user_id
+                ),
+                None,
+            )
+            return owner_auth.model_copy(
+                update={
+                    "auth_state": auth_member.state if auth_member else "unknown",
+                    "auth_account_id": auth_member.auth_account_id if auth_member else None,
+                }
+            )
+
         return refreshed.model_copy(
             update={
                 "workspaces": [
                     workspace.model_copy(
                         update={
                             "current_members": decorate_current_members(workspace),
+                            "owner_auth": decorate_owner_auth(workspace),
                             "membership_code": observations.get(workspace.id, ([], "not_checked", None))[1],
                             "membership_observed_at": observations.get(workspace.id, ([], "not_checked", None))[2],
                         }

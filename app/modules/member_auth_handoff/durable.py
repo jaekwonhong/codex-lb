@@ -76,7 +76,19 @@ class DurableMemberAuthHandoffService(MemberAuthHandoffService):
                 )
                 for workspace in catalog.workspaces
                 for member in workspace.members
-            )
+            ),
+            owner_entries=tuple(
+                MemberAuthHandoffCatalogEntry(
+                    preset_id=workspace.owner_auth.preset_id,
+                    workspace_id=workspace.id,
+                    owner_email=workspace.owner_email,
+                    workspace_account_id=workspace.workspace_account_id,
+                    email=workspace.owner_auth.email,
+                    user_id=workspace.owner_auth.user_id,
+                )
+                for workspace in catalog.workspaces
+                if workspace.owner_auth is not None
+            ),
         )
         if not catalog.enabled:
             raise ControlConflict("auth_catalog_unavailable")
@@ -119,7 +131,7 @@ class DurableMemberAuthHandoffService(MemberAuthHandoffService):
 
     def validate_identity(self, identity: Identity, removed_email: str | None = None) -> None:
         catalog = self._catalog_snapshot()
-        target = catalog.find_target(
+        target = catalog.find_auth_target(
             preset_id=identity.preset_id, email=identity.target_email, user_id=identity.target_user_id
         )
         if (

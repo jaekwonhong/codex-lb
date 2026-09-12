@@ -30,6 +30,7 @@ class MemberAuthHandoffCatalogEntry:
 @dataclass(frozen=True, slots=True)
 class MemberAuthHandoffCatalog:
     entries: tuple[MemberAuthHandoffCatalogEntry, ...]
+    owner_entries: tuple[MemberAuthHandoffCatalogEntry, ...] = ()
 
     def fingerprint(self) -> str:
         canonical = "\n".join(
@@ -58,6 +59,32 @@ class MemberAuthHandoffCatalog:
                 and entry.user_id == user_id
             ),
             None,
+        )
+
+    def find_auth_target(
+        self,
+        *,
+        preset_id: str,
+        email: str,
+        user_id: str,
+    ) -> MemberAuthHandoffCatalogEntry | None:
+        normalized_email = email.casefold()
+        return next(
+            (
+                entry
+                for entry in (*self.entries, *self.owner_entries)
+                if entry.preset_id == preset_id
+                and entry.email.casefold() == normalized_email
+                and entry.user_id == user_id
+            ),
+            None,
+        )
+
+    def auth_entries_for_workspace(self, workspace_id: str) -> tuple[MemberAuthHandoffCatalogEntry, ...]:
+        return tuple(
+            entry
+            for entry in (*self.entries, *self.owner_entries)
+            if entry.workspace_id == workspace_id
         )
 
     def contains_member(
@@ -111,7 +138,10 @@ class MemberAuthHandoffCatalogRegistry:
     def effective_catalog(self) -> MemberAuthHandoffCatalog:
         with self._lock:
             custom_entries = tuple(self._to_catalog_entry(record) for record in self._repository.load())
-            return MemberAuthHandoffCatalog(entries=self._packaged_catalog.entries + custom_entries)
+            return MemberAuthHandoffCatalog(
+                entries=self._packaged_catalog.entries + custom_entries,
+                owner_entries=self._packaged_catalog.owner_entries,
+            )
 
     def register(
         self,

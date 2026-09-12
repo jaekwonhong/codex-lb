@@ -1,0 +1,8 @@
+- [x] Add a nullable OAuth-only owner descriptor without changing member candidates or fingerprint.
+- [x] Allow durable OAuth identity validation/observation to use owner entries while keeping membership mutation member-only.
+- [x] Resolve owner OAuth through Companion `OwnerAccountId` and the existing managed Ego Lite profile.
+- [x] Allow owner account-pool identity during OAuth import without adding an assignment.
+- [x] Render owner OAuth state/button in each workspace and reuse the current one-click UI flow.
+- [x] Add explicit mixed-version Companion capability gating.
+- [x] Run strict spec validation and full server/frontend/Companion qualification; independent review is the final source gate.
+- [ ] Seal, deploy Companion first, deploy Beta second, and verify live owner descriptors without starting OAuth during smoke.

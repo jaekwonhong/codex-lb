@@ -88,11 +88,13 @@ describe("manual server-owned panel", () => {
     const user = userEvent.setup(); render(<MemberSwitchPanel readOnly={false} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "목록 불러오기" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
-    expect(await screen.findByText("OAuth 미등록")).toBeInTheDocument();
+    const memberLabel = await screen.findByText(`멤버: ${memberIdentity.targetEmail}`);
+    const memberCard = memberLabel.closest("div.rounded-md") as HTMLElement;
+    expect(within(memberCard).getByText("OAuth 미등록")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "OAuth 등록" }));
+    await user.click(within(memberCard).getByRole("button", { name: "OAuth 등록" }));
 
-    expect(await screen.findByText("OAuth 등록됨")).toBeInTheDocument();
+    expect(await within(memberCard).findByText("OAuth 등록됨")).toBeInTheDocument();
     expect(await screen.findByText(/강제 Probe 완료 · 연결 정상 · 토큰 사용 가능 · HTTP 200/)).toBeInTheDocument();
     expect(screen.queryByText(/현재 멤버 OAuth 등록 ·/)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "장치 코드 발급" })).not.toBeInTheDocument();
@@ -100,6 +102,37 @@ describe("manual server-owned panel", () => {
     expect(screen.queryByRole("button", { name: "인증 확인·반영" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "완료 기록 닫기" })).not.toBeInTheDocument();
     expect(mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto")).toHaveLength(1);
+    expect(mock.requests.filter((item) => item.path.endsWith("/commands"))).toHaveLength(0);
+    expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
+  });
+
+  it("offers the same one-click OAuth registration for the workspace owner without making the owner a switch candidate", async () => {
+    mock.catalog.workspaces[0].ownerAuth = {
+      presetId: "owner:cdp-1", email: "owner@example.com", userId: "user-Owner123",
+      authState: "absent", authAccountId: null,
+    };
+    const user = userEvent.setup(); render(<MemberSwitchPanel readOnly={false} />);
+    await waitFor(() => expect(screen.getByRole("button", { name: "목록 불러오기" })).toBeEnabled());
+    await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
+
+    const ownerLabel = await screen.findByText("소유주: owner@example.com");
+    const ownerCard = ownerLabel.closest("div.rounded-md") as HTMLElement;
+    expect(within(ownerCard).getByText("OAuth 미등록")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /owner@example\.com/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Target member/ })).toBeInTheDocument();
+
+    await user.click(within(ownerCard).getByRole("button", { name: "OAuth 등록" }));
+
+    expect(await within(ownerCard).findByText("OAuth 등록됨")).toBeInTheDocument();
+    expect(await screen.findByText(/강제 Probe 완료 · 연결 정상 · 토큰 사용 가능 · HTTP 200/)).toBeInTheDocument();
+    const auto = mock.requests.filter((item) => item.path === "/api/member-switch-runs/oauth-enrollments/auto");
+    expect(auto).toHaveLength(1);
+    expect(auto[0].body).toMatchObject({
+      workspaceId: "cdp-1",
+      presetId: "owner:cdp-1",
+      memberEmail: "owner@example.com",
+      memberUserId: "user-Owner123",
+    });
     expect(mock.requests.filter((item) => item.path.endsWith("/commands"))).toHaveLength(0);
     expect(mock.requests.filter((item) => item.path === "/api/accounts/auth-target/probe")).toHaveLength(0);
   });
@@ -193,9 +226,11 @@ describe("manual server-owned panel", () => {
     const user = userEvent.setup(); render(<MemberSwitchPanel readOnly={false} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "목록 불러오기" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
-    await user.click(await screen.findByRole("button", { name: "OAuth 등록" }));
+    const memberLabel = await screen.findByText(`멤버: ${memberIdentity.targetEmail}`);
+    const memberCard = memberLabel.closest("div.rounded-md") as HTMLElement;
+    await user.click(within(memberCard).getByRole("button", { name: "OAuth 등록" }));
 
-    expect(await screen.findByText("OAuth 등록됨")).toBeInTheDocument();
+    expect(await within(memberCard).findByText("OAuth 등록됨")).toBeInTheDocument();
     expect(await screen.findByText("OAuth 등록은 완료됐습니다. 강제 Probe에서 토큰 갱신에 실패했습니다.")).toBeInTheDocument();
     expect(screen.queryByText(/OAuth 등록 실패/)).not.toBeInTheDocument();
   });
@@ -214,7 +249,7 @@ describe("manual server-owned panel", () => {
     await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
     await user.click(await screen.findByRole("button", { name: "OAuth 등록" }));
 
-    expect(await screen.findByText(/현재 멤버 OAuth 등록 · Ego Lite 인증 브라우저 열림/)).toBeInTheDocument();
+    expect(await screen.findByText(/OAuth 등록 · Ego Lite 인증 브라우저 열림/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "남은 OAuth 절차 자동 진행" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "인증 확인·반영" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "장치 코드 발급" })).not.toBeInTheDocument();
@@ -231,7 +266,9 @@ describe("manual server-owned panel", () => {
     const user = userEvent.setup(); render(<MemberSwitchPanel readOnly={false} />);
     await waitFor(() => expect(screen.getByRole("button", { name: "목록 불러오기" })).toBeEnabled());
     await user.click(screen.getByRole("button", { name: "목록 불러오기" }));
-    expect(await screen.findByText("OAuth 등록됨")).toBeInTheDocument();
+    const memberLabel = await screen.findByText(`멤버: ${memberIdentity.targetEmail}`);
+    const memberCard = memberLabel.closest("div.rounded-md") as HTMLElement;
+    expect(within(memberCard).getByText("OAuth 등록됨")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /OAuth .*등록/ })).not.toBeInTheDocument();
   });
   it("separates membership completion, auth observation and explicit auth mutation", async () => {

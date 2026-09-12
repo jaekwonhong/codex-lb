@@ -126,7 +126,8 @@ def resolve_companion_account_pool_payload(
         and _field(assignment, "AccountId", "accountId") == account_id
         and _field(assignment, "Included", "included") is True
     ]
-    if len(matching_assignments) != 1:
+    is_owner = _field(group, "OwnerAccountId", "ownerAccountId") == account_id
+    if not is_owner and len(matching_assignments) != 1:
         return None
     return ImportedAccountIdentity(
         user_id=user_id,

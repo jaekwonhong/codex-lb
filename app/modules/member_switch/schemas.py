@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from app.modules.shared.schemas import DashboardModel
 
@@ -13,6 +13,7 @@ OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY = "ego_lite_owner_membership_observation
 OWNER_MEMBERSHIP_MUTATION_CAPABILITY = "ego_lite_owner_membership_mutation_v1"
 RECIPIENT_MEMBERSHIP_LIFECYCLE_CAPABILITY = "ego_lite_recipient_membership_lifecycle_v1"
 EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY = "ego_lite_device_auth_automation_v1"
+OWNER_OAUTH_ENROLLMENT_CAPABILITY = "ego_lite_owner_oauth_enrollment_v1"
 AUTH_ENROLLMENT_PROTOCOL = "managed_member_auth_enrollment_v2"
 
 
@@ -57,15 +58,46 @@ class CurrentMember(DashboardModel):
     auth_account_id: str | None = None
 
 
+class OwnerAuthTarget(DashboardModel):
+    preset_id: str = Field(min_length=1)
+    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    user_id: str = Field(pattern=r"^user-[A-Za-z0-9]+$")
+    auth_state: Literal[
+        "active",
+        "handoff_quarantined",
+        "inactive",
+        "absent",
+        "ambiguous",
+        "unmanaged",
+        "unknown",
+    ] = "unknown"
+    auth_account_id: str | None = None
+
+
 class Workspace(DashboardModel):
     id: str = Field(min_length=1)
     workspace_account_id: str = Field(min_length=1)
     workspace_name: str = Field(min_length=1)
     owner_email: str = Field(min_length=3)
+    owner_auth: OwnerAuthTarget | None = None
     members: list[Member]
     current_members: list[CurrentMember] = Field(default_factory=list)
     membership_code: str = "not_checked"
     membership_observed_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_owner_auth_boundary(self) -> Workspace:
+        owner = self.owner_auth
+        if owner is None:
+            return self
+        if owner.preset_id != f"owner:{self.id}" or owner.email.casefold() != self.owner_email.casefold():
+            raise ValueError("owner_auth_identity_mismatch")
+        if any(
+            member.email.casefold() == owner.email.casefold() or member.user_id == owner.user_id
+            for member in self.members
+        ):
+            raise ValueError("owner_auth_must_not_be_member_candidate")
+        return self
 
 
 class Catalog(DashboardModel):

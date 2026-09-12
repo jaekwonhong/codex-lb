@@ -14,6 +14,11 @@ export const RunCatalogSchema = z.object({
   enabled: z.boolean(), schemaVersion: z.literal(1), catalogFingerprint: z.string(), capabilities: z.array(z.string()),
   workspaces: z.array(z.object({
     id: z.string(), workspaceAccountId: z.string(), workspaceName: z.string(), ownerEmail: z.string(),
+    ownerAuth: z.object({
+      presetId: z.string(), email: z.string(), userId: z.string(),
+      authState: z.enum(["active", "handoff_quarantined", "inactive", "absent", "ambiguous", "unmanaged", "unknown"]).default("unknown"),
+      authAccountId: z.string().nullable().default(null),
+    }).nullable().default(null),
     members: z.array(z.object({ presetId: z.string(), displayName: z.string(), email: z.string(), userId: z.string() })),
     currentMembers: z.array(z.object({
       email: z.string(), userId: z.string(), presetId: z.string().nullable().default(null),

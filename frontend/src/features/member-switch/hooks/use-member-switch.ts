@@ -22,6 +22,29 @@ function requireRunId(run: RunView, id: string): RunView {
   return run;
 }
 
+function markCatalogAuthActive(catalog: RunCatalog, result: AuthEnrollmentView): RunCatalog {
+  return {
+    ...catalog,
+    workspaces: catalog.workspaces.map((workspace) => {
+      if (workspace.id !== result.identity.workspaceId) return workspace;
+      const matches = (email: string, userId: string, presetId: string | null) =>
+        presetId === result.identity.presetId
+        && email.toLowerCase() === result.identity.targetEmail
+        && userId === result.identity.targetUserId;
+      return {
+        ...workspace,
+        ownerAuth: workspace.ownerAuth && matches(workspace.ownerAuth.email, workspace.ownerAuth.userId, workspace.ownerAuth.presetId)
+          ? { ...workspace.ownerAuth, authState: "active" as const, authAccountId: result.authAccountId }
+          : workspace.ownerAuth,
+        currentMembers: workspace.currentMembers.map((member) =>
+          matches(member.email, member.userId, member.presetId)
+            ? { ...member, authState: "active" as const, authAccountId: result.authAccountId }
+            : member),
+      };
+    }),
+  };
+}
+
 async function readStoredState(signal: AbortSignal) {
   const runLocator = readRunLocator();
   const enrollmentLocator = readAuthEnrollmentLocator();
@@ -289,7 +312,12 @@ export function useMemberSwitch(
     if (!catalog.enabled || !workspace || !membershipObservationConfirmed(workspace)) return;
     const current = workspace.currentMembers.find(member => member.presetId === presetId
       && member.email.toLowerCase() === memberEmail.toLowerCase() && member.userId === memberUserId);
-    if (!current || !["absent", "inactive"].includes(current.authState)) return;
+    const owner = workspace.ownerAuth?.presetId === presetId
+      && workspace.ownerAuth.email.toLowerCase() === memberEmail.toLowerCase()
+      && workspace.ownerAuth.userId === memberUserId
+      ? workspace.ownerAuth : null;
+    const target = current ?? owner;
+    if (!target || !["absent", "inactive"].includes(target.authState)) return;
 
     const enrollmentId = crypto.randomUUID();
     const completedHolder: { value: AuthEnrollmentView | null } = { value: null };
@@ -318,16 +346,7 @@ export function useMemberSwitch(
           if (postProbeReady && readAuthEnrollmentLocator() === result.id) writeAuthEnrollmentLocator(null);
           setEnrollment(postProbeReady ? null : result);
           if (!postProbeReady) setChecked(false);
-          setCatalog((currentCatalog) => currentCatalog ? {
-            ...currentCatalog,
-            workspaces: currentCatalog.workspaces.map((currentWorkspace) => currentWorkspace.id === result.identity.workspaceId ? {
-              ...currentWorkspace,
-              currentMembers: currentWorkspace.currentMembers.map((member) =>
-                member.email.toLowerCase() === result.identity.targetEmail && member.userId === result.identity.targetUserId
-                  ? { ...member, authState: "active" as const, authAccountId: result.authAccountId }
-                  : member),
-            } : currentWorkspace),
-          } : currentCatalog);
+          setCatalog((currentCatalog) => currentCatalog ? markCatalogAuthActive(currentCatalog, result) : currentCatalog);
         } else {
           setEnrollment(result);
         }
@@ -364,16 +383,7 @@ export function useMemberSwitch(
           if (postProbeReady && readAuthEnrollmentLocator() === result.id) writeAuthEnrollmentLocator(null);
           setEnrollment(postProbeReady ? null : result);
           if (!postProbeReady) setChecked(false);
-          setCatalog((currentCatalog) => currentCatalog ? {
-            ...currentCatalog,
-            workspaces: currentCatalog.workspaces.map((currentWorkspace) => currentWorkspace.id === result.identity.workspaceId ? {
-              ...currentWorkspace,
-              currentMembers: currentWorkspace.currentMembers.map((member) =>
-                member.email.toLowerCase() === result.identity.targetEmail && member.userId === result.identity.targetUserId
-                  ? { ...member, authState: "active" as const, authAccountId: result.authAccountId }
-                  : member),
-            } : currentWorkspace),
-          } : currentCatalog);
+          setCatalog((currentCatalog) => currentCatalog ? markCatalogAuthActive(currentCatalog, result) : currentCatalog);
         } else {
           setEnrollment(result);
         }
@@ -405,16 +415,7 @@ export function useMemberSwitch(
       }
       if (action === "reconcile" && result.phase === "completed") setCatalog(null);
       if (action === "advance_auth" && result.phase === "auth_confirmed" && result.authState === "completed") {
-        setCatalog((current) => current ? {
-          ...current,
-          workspaces: current.workspaces.map((workspace) => workspace.id === result.identity.workspaceId ? {
-            ...workspace,
-            currentMembers: workspace.currentMembers.map((member) =>
-              member.email.toLowerCase() === result.identity.targetEmail && member.userId === result.identity.targetUserId
-                ? { ...member, authState: "active" as const }
-                : member),
-          } : workspace),
-        } : current);
+        setCatalog((current) => current ? markCatalogAuthActive(current, result) : current);
       }
       refreshAfterFinish = action === "finish" && result.phase === "completed";
     });

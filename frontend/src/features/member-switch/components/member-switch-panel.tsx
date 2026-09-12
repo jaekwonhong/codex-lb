@@ -31,8 +31,9 @@ const RECOVERY_HINTS: Record<string, string> = {
   participant_outcome_still_unknown: "저장된 완료 결과가 아직 없습니다. 작업 ID와 잠금을 유지하고 변경 명령을 반복하지 마세요. 잠시 후 저장된 실행 결과를 다시 확인할 수 있습니다.",
   start_outcome_still_unknown: "멤버 교체의 접수 여부를 아직 확정할 수 없습니다. 같은 교체를 다시 시작하거나 작업 기록을 지우지 마세요.",
   browser_runtime_binding_unavailable: "이 브라우저의 실행 소유권을 현재 Companion에서 확인할 수 없습니다. 다시 열거나 강제로 종료하지 말고 작업 식별자를 보존해 운영자 확인을 받으세요.",
-  member_auth_already_active: "선택한 현재 멤버의 OAuth가 이미 활성 상태입니다. 목록을 새로고침해 현재 OAuth 상태를 다시 확인하세요.",
+  member_auth_already_active: "선택한 ID의 OAuth가 이미 활성 상태입니다. 목록을 새로고침해 현재 OAuth 상태를 다시 확인하세요.",
   oauth_enrollment_member_not_current: "선택한 멤버가 더 이상 실제 워크스페이스 멤버로 확인되지 않습니다. 목록을 새로고침해 실제 멤버를 다시 확인하세요.",
+  oauth_enrollment_owner_not_current: "선택한 소유주 ID를 현재 워크스페이스 소유주로 정확히 확인하지 못했습니다. 목록을 새로고침해 실제 소유주 상태를 다시 확인하세요.",
   member_auth_identity_ambiguous: "같은 워크스페이스의 로컬 OAuth 신원을 하나로 확정할 수 없습니다. 자동으로 덮어쓰지 않았습니다. 계정 목록과 OAuth 상태를 먼저 정리하세요.",
   member_auth_quarantined: "선택한 멤버의 auth가 기존 handoff 격리 상태입니다. 새 OAuth를 덮어쓰지 말고 기존 작업 기록을 먼저 확인하세요.",
   auth_enrollment_retained: "완료되지 않은 OAuth-only 작업이 남아 있습니다. 서버 기록 새로고침으로 해당 작업을 복원한 뒤 이어서 처리하세요.",
@@ -193,7 +194,7 @@ export function MemberSwitchPanel({
       <div><h2 id="member-switch-title" className="text-sm font-semibold">멤버 관리 · 전환 / OAuth 등록</h2>
         <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
           멤버 교체는 대상 확인 → 교체 → 인증 전환 → 종료 확인 순서로 직접 승인합니다.
-          이미 현재 멤버인 계정은 「OAuth 등록」 한 번으로 장치코드 발급 → Ego Lite 자동 인증 → 서버 인증 확인·반영 → 완료 정리까지 진행합니다. 멤버십은 변경하지 않습니다.
+          소유주 또는 이미 현재 멤버인 계정은 「OAuth 등록」 한 번으로 장치코드 발급 → Ego Lite 자동 인증 → 서버 인증 확인·반영 → 완료 정리까지 진행합니다. 멤버십은 변경하지 않습니다.
           서버 기록 새로고침은 저장 상태만 읽고, 목록 불러오기·새로고침은 각 워크스페이스 소유주 ID의 Ego Lite 프로필/Space에서 실제 멤버를 확인합니다.
           소유주 멤버 삭제·초대·초대취소와 그 전후 개인 계정 확인도 동일한 소유주 Ego Lite Space에서 수행하며, 기존 owner CDP를 대체 경로로 사용하지 않습니다.
           수신자의 Personal 확인, 워크스페이스 존재·부재 확인, 초대 수락도 해당 ID의 Ego Lite 프로필/Space에서 수행하며 managed 멤버 전환 중에는 recipient CDP로 fallback하지 않습니다.
@@ -249,7 +250,24 @@ export function MemberSwitchPanel({
     {catalog?.enabled ? <div className="mt-4 grid gap-3 lg:grid-cols-2">{catalog.workspaces.map((workspace) =>
       <section key={workspace.id} className="min-w-0 rounded-lg border p-3">
         <h3 className="break-words text-sm font-medium">{workspace.workspaceName}</h3>
-        <p className="mt-1 break-all text-xs text-muted-foreground">소유주: {workspace.ownerEmail}</p>
+        {workspace.ownerAuth ? (() => {
+          const owner = workspace.ownerAuth;
+          const canEnrollOwner = membershipObservationConfirmed(workspace) && ["absent", "inactive"].includes(owner.authState)
+            && !disabled && checked && !legacy && !(flow && flow.phase !== "completed") && !(enrollment && enrollment.phase !== "completed");
+          return <div className="mt-2 rounded-md border bg-muted/20 px-2.5 py-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="min-w-0">
+                <p className="break-all text-xs text-muted-foreground">소유주: {owner.email}</p>
+                <p className="mt-0.5 text-xs">{AUTH_STATE_LABELS[owner.authState] ?? owner.authState}</p>
+              </div>
+              {canEnrollOwner ? <Button size="sm" variant="outline" onClick={() =>
+                void runtime.startAuthEnrollment(workspace.id, owner.presetId, owner.email, owner.userId)}>
+                {owner.authState === "inactive" ? "OAuth 다시 등록" : "OAuth 등록"}
+              </Button> : null}
+            </div>
+            {owner.authAccountId ? <code className="mt-1 block break-all text-[11px] text-muted-foreground">auth: {owner.authAccountId}</code> : null}
+          </div>;
+        })() : <p className="mt-1 break-all text-xs text-muted-foreground">소유주: {workspace.ownerEmail}</p>}
         {workspace.membershipCode === "not_checked" ? <p className="mt-1 text-xs text-muted-foreground">멤버: 목록 새로고침 필요</p>
           : workspace.currentMembers.length > 0 ? <div className="mt-2 space-y-2">{workspace.currentMembers.map((member) => {
             const canEnroll = membershipObservationConfirmed(workspace) && Boolean(member.presetId) && ["absent", "inactive"].includes(member.authState)
@@ -321,7 +339,7 @@ export function MemberSwitchPanel({
       </details>
     </div> : null}
     {enrollment ? <div className="mt-4 rounded-lg border bg-muted/20 p-3" aria-live="polite">
-      <h3 className="text-sm font-semibold">현재 멤버 OAuth 등록 · {AUTH_PHASES[enrollment.phase] ?? enrollment.phase}</h3>
+      <h3 className="text-sm font-semibold">OAuth 등록 · {AUTH_PHASES[enrollment.phase] ?? enrollment.phase}</h3>
       <p className="mt-1 break-all text-xs">{enrollment.identity.workspaceId} · {enrollment.identity.targetEmail}</p>
       <p className="mt-2 text-xs text-muted-foreground">이 경로는 워크스페이스 멤버를 제거·초대·교체하지 않으며 다른 멤버의 auth를 격리·삭제하지 않습니다.</p>
       {enrollment.pendingAction ? <AlertMessage variant="warning" className="mt-3">
@@ -331,7 +349,7 @@ export function MemberSwitchPanel({
         <p className="text-xs text-muted-foreground">장치 코드</p>
         <code className="mt-1 block break-all text-lg font-semibold tracking-wider">{enrollment.userCode}</code>
         <p className="mt-2 text-xs text-muted-foreground">
-          「Ego Lite 인증 브라우저 열기」는 이 멤버의 전용 프로필에서 대상 계정 → 워크스페이스 → 장치코드 입력을 정확히 일치하는 항목에 한해 자동 진행합니다. 비밀번호·MFA·보안 확인 또는 모호한 화면에서는 자동화를 중단하고 같은 Space를 사용자에게 넘깁니다.
+          「Ego Lite 인증 브라우저 열기」는 이 ID의 전용 프로필에서 대상 계정 → 워크스페이스 → 장치코드 입력을 정확히 일치하는 항목에 한해 자동 진행합니다. 비밀번호·MFA·보안 확인 또는 모호한 화면에서는 자동화를 중단하고 같은 Space를 사용자에게 넘깁니다.
         </p>
         {enrollment.expiresInSeconds ? <p className="mt-1 text-xs text-muted-foreground">발급 시 유효시간: {enrollment.expiresInSeconds}초</p> : null}
       </div> : null}

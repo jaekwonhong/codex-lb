@@ -12,6 +12,7 @@ from app.modules.member_auth_handoff.catalog import (
     PACKAGED_MEMBER_AUTH_HANDOFF_CATALOG,
     MemberAuthCatalogRegistrationError,
     MemberAuthHandoffCatalog,
+    MemberAuthHandoffCatalogEntry,
     MemberAuthHandoffCatalogRegistry,
 )
 from app.modules.member_auth_handoff.repository import MemberAuthCatalogOverlayRepository
@@ -432,6 +433,58 @@ async def test_prepare_uses_cdp2_catalog_mapping_without_owner_auth_row() -> Non
     assert result.state == "device_code_issued"
     assert repository.list_calls == 1
     assert oauth.requests[0].expected_chatgpt_account_id == request.workspace_account_id
+
+
+@pytest.mark.asyncio
+async def test_prepare_accepts_oauth_only_owner_entry_without_changing_member_catalog_fingerprint() -> None:
+    repository = FakeRepository([])
+    # Owner identity authority comes from the Companion account pool. This local
+    # auth repository intentionally starts without that target credential.
+    repository.accounts.clear()
+    oauth = FakeOauth()
+    catalog = MemberAuthHandoffCatalog(
+        entries=PACKAGED_MEMBER_AUTH_HANDOFF_CATALOG.entries,
+        owner_entries=(
+            MemberAuthHandoffCatalogEntry(
+                preset_id="owner:cdp-1",
+                workspace_id="cdp-1",
+                owner_email="jaekwonhong14@gmail.com",
+                workspace_account_id="4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+                email="jaekwonhong14@gmail.com",
+                user_id="user-pQlg20Jguwdu0SCQgCFxvw6w",
+            ),
+        ),
+    )
+    service = MemberAuthHandoffService(repository, oauth, MemberAuthHandoffStore(), catalog=catalog)
+    request = MemberAuthHandoffPrepareRequest(
+        member_switch_operation_id="owner-oauth-cdp1",
+        preset_id="owner:cdp-1",
+        workspace_account_id="4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+        removed_email=None,
+        removed_user_id=None,
+        target_email="jaekwonhong14@gmail.com",
+        target_user_id="user-pQlg20Jguwdu0SCQgCFxvw6w",
+        membership_state="active",
+        catalog_fingerprint=PACKAGED_MEMBER_AUTH_HANDOFF_CATALOG.fingerprint(),
+        preserve_other_auth=True,
+    )
+
+    result = await service.prepare(request)
+
+    assert catalog.fingerprint() == PACKAGED_MEMBER_AUTH_HANDOFF_CATALOG.fingerprint()
+    assert catalog.find_target(
+        preset_id=request.preset_id,
+        email=request.target_email,
+        user_id=request.target_user_id,
+    ) is None
+    assert catalog.find_auth_target(
+        preset_id=request.preset_id,
+        email=request.target_email,
+        user_id=request.target_user_id,
+    ) is not None
+    assert result.state == "device_code_issued"
+    assert repository.status_updates == []
+    assert len(oauth.requests) == 1
 
 
 def test_packaged_catalog_has_exact_workspace_account_ids() -> None:

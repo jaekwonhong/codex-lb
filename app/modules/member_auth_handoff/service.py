@@ -291,7 +291,11 @@ class MemberAuthHandoffService:
 
     def _catalog_snapshot(self) -> MemberAuthHandoffCatalog:
         if self._catalog_registry is not None:
-            return self._catalog_registry.effective_catalog()
+            effective = self._catalog_registry.effective_catalog()
+            return MemberAuthHandoffCatalog(
+                entries=effective.entries,
+                owner_entries=self._catalog.owner_entries,
+            )
         return self._catalog
 
     async def observe_workspace_auth(
@@ -302,7 +306,7 @@ class MemberAuthHandoffService:
     ) -> WorkspaceAuthObservationResponse:
         catalog = self._catalog_snapshot()
         fingerprint = catalog.fingerprint()
-        entries = tuple(entry for entry in catalog.entries if entry.workspace_id == workspace_id)
+        entries = catalog.auth_entries_for_workspace(workspace_id)
         observed_at = datetime.now(timezone.utc)
         if not entries or any(entry.workspace_account_id != workspace_account_id for entry in entries):
             return WorkspaceAuthObservationResponse(
@@ -455,7 +459,7 @@ class MemberAuthHandoffService:
             catalog = self._catalog_snapshot()
             if request.catalog_fingerprint != catalog.fingerprint():
                 return self._fail_and_store(handoff, "catalog_mismatch")
-            target_mapping = catalog.find_target(
+            target_mapping = catalog.find_auth_target(
                 preset_id=request.preset_id,
                 email=request.target_email,
                 user_id=request.target_user_id,

@@ -32,9 +32,11 @@ export function installMemberSwitchMocks() {
     requests: [] as { method: string; path: string; body: unknown }[],
     catalog: {
       enabled: true, schemaVersion: 1, catalogFingerprint: memberIdentity.catalogFingerprint,
-      capabilities: ["managed_member_switch_v1", "recipient_acceptance", "recipient_session_readiness", "post_add_device_auth", "durable_client_flow", "durable_participant_commands_v1"],
+      capabilities: ["managed_member_switch_v1", "recipient_acceptance", "recipient_session_readiness", "post_add_device_auth", "durable_client_flow", "durable_participant_commands_v1", "ego_lite_owner_oauth_enrollment_v1"],
       workspaces: [{ id: "cdp-1", workspaceAccountId: memberIdentity.workspaceAccountId, workspaceName: "Test workspace",
-        ownerEmail: "owner@example.com", members: [{ presetId: memberIdentity.presetId, displayName: "Target member",
+        ownerEmail: "owner@example.com", ownerAuth: { presetId: "owner:cdp-1", email: "owner@example.com", userId: "user-Owner123",
+          authState: "active" as const, authAccountId: "auth-owner" },
+        members: [{ presetId: memberIdentity.presetId, displayName: "Target member",
           email: memberIdentity.targetEmail, userId: memberIdentity.targetUserId }],
         currentMembers: [{ email: "current@example.com", userId: "user-Current123", presetId: null,
           authState: "unmanaged" as const, authAccountId: null }],
@@ -69,10 +71,13 @@ export function installMemberSwitchMocks() {
     if (path.endsWith("/oauth-enrollments/active")) return HttpResponse.json({ enrollment: state.enrollment?.phase === "completed" ? null : state.enrollment });
     if (path === "/api/member-switch-runs/active") return HttpResponse.json({ run: state.run?.phase === "completed" ? null : state.run });
     if (path === "/api/member-switch-runs/oauth-enrollments/auto" && request.method === "POST") {
-      const enrollmentId = (body as { enrollmentId: string }).enrollmentId;
+      const requestBody = body as { enrollmentId: string; workspaceId: string; presetId: string; memberEmail: string; memberUserId: string };
+      const enrollmentId = requestBody.enrollmentId;
+      const identity = { ...memberIdentity, workspaceId: requestBody.workspaceId, presetId: requestBody.presetId,
+        targetEmail: requestBody.memberEmail.toLowerCase(), targetUserId: requestBody.memberUserId };
       if (state.autoEnrollmentDelayMs > 0) {
         state.enrollment = makeAuthEnrollmentView({
-          id: enrollmentId, revision: 2, phase: "auth_prepared", lastCode: "device_code_issued",
+          id: enrollmentId, identity, revision: 2, phase: "auth_prepared", lastCode: "device_code_issued",
           authState: "device_code_issued", allowedActions: ["open_auth_browser"], handoffId: "handoff-enroll-1",
           flowId: "flow-enroll-1", verificationUrl: "https://auth.example/device", userCode: "ABCD-EFGH", expiresInSeconds: 900,
         });
@@ -81,18 +86,23 @@ export function installMemberSwitchMocks() {
       const initialPostProbe = state.omitInitialPostProbeOnce ? null : postProbe();
       state.omitInitialPostProbeOnce = false;
       state.enrollment = state.autoEnrollmentResult === "completed"
-        ? makeAuthEnrollmentView({ id: enrollmentId, revision: 8, phase: "completed", lastCode: "auth_enrollment_finalized",
+        ? makeAuthEnrollmentView({ id: enrollmentId, identity, revision: 8, phase: "completed", lastCode: "auth_enrollment_finalized",
             authState: "completed", authAccountId: "auth-target", postProbe: initialPostProbe, allowedActions: [], handoffId: "handoff-enroll-1", flowId: "flow-enroll-1",
             verificationUrl: "https://auth.example/device", userCode: "ABCD-EFGH", expiresInSeconds: 900,
             browserProfileId: "CodexLB-account-target", browserTaskSpaceId: 17, browserOwnership: "agentDelegatedToUser" })
-        : makeAuthEnrollmentView({ id: enrollmentId, revision: 4, phase: "auth_browser_opened",
+        : makeAuthEnrollmentView({ id: enrollmentId, identity, revision: 4, phase: "auth_browser_opened",
             lastCode: "ego_device_auth_user_action_required", authState: "device_code_issued",
             allowedActions: ["advance_auth"], handoffId: "handoff-enroll-1", flowId: "flow-enroll-1",
             verificationUrl: "https://auth.example/device", userCode: "ABCD-EFGH", expiresInSeconds: 900,
             browserProfileId: "CodexLB-account-target", browserTaskSpaceId: 17, browserOwnership: "agentDelegatedToUser" });
       if (state.autoEnrollmentResult === "completed") {
-        state.catalog.workspaces[0].currentMembers = [{ email: memberIdentity.targetEmail,
-          userId: memberIdentity.targetUserId, presetId: memberIdentity.presetId, authState: "active", authAccountId: "auth-target" }];
+        if (identity.presetId.startsWith("owner:")) {
+          state.catalog.workspaces[0].ownerAuth = { presetId: identity.presetId, email: identity.targetEmail,
+            userId: identity.targetUserId, authState: "active", authAccountId: "auth-target" };
+        } else {
+          state.catalog.workspaces[0].currentMembers = [{ email: identity.targetEmail,
+            userId: identity.targetUserId, presetId: identity.presetId, authState: "active", authAccountId: "auth-target" }];
+        }
       }
       if (state.loseAutoEnrollmentResponse) return HttpResponse.error();
       return HttpResponse.json(state.enrollment);
@@ -108,9 +118,14 @@ export function installMemberSwitchMocks() {
       state.omitResumePostProbeOnce = false;
       state.enrollment = makeAuthEnrollmentView({ ...state.enrollment, revision: state.enrollment.revision + 8,
         phase: "completed", lastCode: "auth_enrollment_finalized", authState: "completed", authAccountId: "auth-target", postProbe: resumedPostProbe, allowedActions: [] });
-      state.catalog.workspaces[0].currentMembers = [{ email: state.enrollment.identity.targetEmail,
-        userId: state.enrollment.identity.targetUserId, presetId: state.enrollment.identity.presetId,
-        authState: "active", authAccountId: "auth-target" }];
+      if (state.enrollment.identity.presetId.startsWith("owner:")) {
+        state.catalog.workspaces[0].ownerAuth = { presetId: state.enrollment.identity.presetId, email: state.enrollment.identity.targetEmail,
+          userId: state.enrollment.identity.targetUserId, authState: "active", authAccountId: "auth-target" };
+      } else {
+        state.catalog.workspaces[0].currentMembers = [{ email: state.enrollment.identity.targetEmail,
+          userId: state.enrollment.identity.targetUserId, presetId: state.enrollment.identity.presetId,
+          authState: "active", authAccountId: "auth-target" }];
+      }
       return HttpResponse.json(state.enrollment);
     }
     if (path.includes("/oauth-enrollments/")) {

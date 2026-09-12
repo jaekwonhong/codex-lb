@@ -63,6 +63,40 @@ def test_companion_pool_resolves_one_ready_included_member(tmp_path) -> None:
     assert resolved.burn_first_enabled is True
 
 
+def test_companion_pool_resolves_ready_workspace_owner_without_member_assignment(tmp_path) -> None:
+    resolved = resolve_companion_account_pool_identity(
+        _write_pool(
+            tmp_path,
+            accounts=[
+                {
+                    "Id": "account-owner",
+                    "Email": "owner@example.com",
+                    "UserId": "user-Owner123",
+                    "State": "ready",
+                }
+            ],
+            groups=[
+                {
+                    "Id": "cdp-1",
+                    "WorkspaceName": "workspace-1",
+                    "WorkspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+                    "OwnerAccountId": "account-owner",
+                    "BurnFirstEnabled": False,
+                    "Archived": False,
+                    "Assignments": [],
+                }
+            ],
+        ),
+        workspace_account_id="4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+        email="owner@example.com",
+    )
+
+    assert resolved is not None
+    assert resolved.user_id == "user-Owner123"
+    assert resolved.workspace_label == "workspace-1"
+    assert resolved.burn_first_enabled is False
+
+
 @pytest.mark.asyncio
 async def test_companion_pool_http_fetch_uses_beta_origin_and_loopback_host(tmp_path) -> None:
     payload = json.loads(_write_pool(tmp_path).read_text(encoding="utf-8"))

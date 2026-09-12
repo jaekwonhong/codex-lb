@@ -9,6 +9,7 @@ import httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
+from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.auth.dependencies import require_dashboard_write_access, validate_dashboard_session
@@ -43,6 +44,7 @@ from app.modules.member_switch.schemas import (
     Member,
     MembershipObservation,
     MembershipObservationMember,
+    OwnerAuthTarget,
     Workspace,
 )
 from app.modules.member_switch.service import MemberSwitchService
@@ -61,6 +63,8 @@ class EnrollmentCompanion:
         self.browser_outcome = "success"
         self.profile_ready = True
         self.owner_ego_capability = True
+        self.owner_oauth_capability = True
+        self.owner_auth_available = True
         self.device_auth_automation_capability = True
         self.browser_code = "authorization_complete"
         self.status_code = "authorization_complete"
@@ -77,13 +81,23 @@ class EnrollmentCompanion:
             catalog_fingerprint=FINGERPRINT,
             capabilities=["managed_member_switch_v1"]
             + (["ego_lite_owner_membership_observation_v1"] if self.owner_ego_capability else [])
-            + (["ego_lite_device_auth_automation_v1"] if self.device_auth_automation_capability else []),
+            + (["ego_lite_device_auth_automation_v1"] if self.device_auth_automation_capability else [])
+            + (["ego_lite_owner_oauth_enrollment_v1"] if self.owner_oauth_capability else []),
             workspaces=[
                 Workspace(
                     id="workspace-1",
                     workspace_account_id=WORKSPACE_ID,
                     workspace_name="Workspace 1",
                     owner_email="owner@example.com",
+                    owner_auth=(
+                        OwnerAuthTarget(
+                            preset_id="owner:workspace-1",
+                            email="owner@example.com",
+                            user_id="user-Owner",
+                        )
+                        if self.owner_auth_available
+                        else None
+                    ),
                     members=[
                         Member(
                             preset_id="target",
@@ -114,6 +128,12 @@ class EnrollmentCompanion:
             unknown_member=False,
             members=[
                 MembershipObservationMember(
+                    email="owner@example.com",
+                    user_id="user-Owner",
+                    preset_id=None,
+                    classification="owner",
+                ),
+                MembershipObservationMember(
                     email=self.current_email,
                     user_id=self.current_user_id,
                     preset_id="target",
@@ -127,9 +147,13 @@ class EnrollmentCompanion:
         assert request.enrollment_id
         assert request.workspace_id == "workspace-1"
         assert request.workspace_account_id == WORKSPACE_ID
-        assert request.preset_id == "target"
-        assert request.target_email == "target@example.com"
-        assert request.target_user_id == "user-Target"
+        if request.preset_id == "owner:workspace-1":
+            assert request.target_email == "owner@example.com"
+            assert request.target_user_id == "user-Owner"
+        else:
+            assert request.preset_id == "target"
+            assert request.target_email == "target@example.com"
+            assert request.target_user_id == "user-Target"
         if self.browser_outcome == "unknown":
             return EgoOAuthBrowserResponse(
                 accepted=False,
@@ -184,6 +208,8 @@ class EnrollmentAuth:
     def __init__(self, controls: MemberSwitchControlRepository) -> None:
         self.controls = controls
         self.state = "absent"
+        self.owner_state = "absent"
+        self.last_preset_id = "target"
         self.prepare_requests = []
         self.snapshot: MemberAuthHandoffResponse | None = None
         self.device_flow_id: str | None = None
@@ -227,13 +253,21 @@ class EnrollmentAuth:
                     user_id="user-Target",
                     state=self.state,
                     auth_account_id="auth-target" if self.state != "absent" else None,
-                )
+                ),
+                WorkspaceAuthObservationMember(
+                    preset_id="owner:workspace-1",
+                    email="owner@example.com",
+                    user_id="user-Owner",
+                    state=self.owner_state,
+                    auth_account_id="auth-owner" if self.owner_state != "absent" else None,
+                ),
             ],
         )
 
     async def prepare(self, request, *, managed_run_id=None):
         self.prepare_calls += 1
         self.prepare_requests.append(request)
+        self.last_preset_id = request.preset_id
         parent = await self.controls.get(managed_run_id)
         assert parent is not None
         self.snapshot = MemberAuthHandoffResponse(
@@ -268,7 +302,10 @@ class EnrollmentAuth:
             )
             return self.snapshot
         self.snapshot = self.snapshot.model_copy(update={"state": "completed", "last_command_id": parent.command_id})
-        self.state = "active"
+        if self.last_preset_id == "owner:workspace-1":
+            self.owner_state = "active"
+        else:
+            self.state = "active"
         if self.lose_advance_once:
             self.lose_advance_once = False
             raise ControlConflict("synthetic_advance_reply_lost")
@@ -348,6 +385,40 @@ def create_request() -> AuthEnrollmentCreateRequest:
     )
 
 
+def owner_request() -> AuthEnrollmentCreateRequest:
+    return AuthEnrollmentCreateRequest(
+        enrollment_id=uuid4(),
+        workspace_id="workspace-1",
+        preset_id="owner:workspace-1",
+        member_email="owner@example.com",
+        member_user_id="user-Owner",
+        catalog_fingerprint=FINGERPRINT,
+    )
+
+
+def test_workspace_schema_rejects_owner_oauth_identity_as_member_candidate() -> None:
+    with pytest.raises(ValidationError, match="owner_auth_must_not_be_member_candidate"):
+        Workspace(
+            id="workspace-1",
+            workspace_account_id="4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+            workspace_name="Workspace 1",
+            owner_email="owner@example.com",
+            owner_auth=OwnerAuthTarget(
+                preset_id="owner:workspace-1",
+                email="owner@example.com",
+                user_id="user-Owner",
+            ),
+            members=[
+                Member(
+                    preset_id="target",
+                    display_name="bad owner candidate",
+                    email="owner@example.com",
+                    user_id="user-Owner",
+                )
+            ],
+        )
+
+
 async def command(service, view, action):
     return await service.command(
         view.id,
@@ -395,6 +466,34 @@ async def test_current_member_oauth_only_flow_never_requests_membership_mutation
     assert view.auth_account_id == "auth-target"
     assert await controls.active() is None
     assert all("start" not in call and "participant" not in call for call in companion.calls)
+
+
+async def test_workspace_owner_uses_same_one_click_oauth_flow_without_membership_mutation(enrollment_probe_context):
+    service, controls, companion, auth, post_probe = enrollment_probe_context
+
+    completed = await service.create_and_auto_complete(owner_request())
+
+    assert completed.phase == "completed"
+    assert completed.auth_state == "completed"
+    assert completed.identity.preset_id == "owner:workspace-1"
+    assert completed.identity.target_email == "owner@example.com"
+    assert completed.identity.target_user_id == "user-Owner"
+    assert completed.auth_account_id == "auth-owner"
+    assert post_probe.calls == ["auth-owner"]
+    assert len(auth.prepare_requests) == 1
+    assert auth.prepare_requests[0].preserve_other_auth is True
+    assert auth.prepare_requests[0].removed_email is None
+    assert await controls.active() is None
+    assert all("start" not in call and "participant" not in call for call in companion.calls)
+
+
+async def test_workspace_owner_oauth_requires_explicit_companion_capability(enrollment_context):
+    service, _, companion, _ = enrollment_context
+    companion.owner_oauth_capability = False
+    companion.owner_auth_available = False
+
+    with pytest.raises(ControlConflict, match="companion_protocol_upgrade_required"):
+        await service.create(owner_request())
 
 
 async def test_auto_resume_rebinds_catalog_before_resolving_auth_account(enrollment_context):
@@ -1041,12 +1140,24 @@ async def test_catalog_refresh_decorates_current_member_with_auth_state(enrollme
     assert current.preset_id == "target"
     assert current.auth_state == "absent"
     assert current.auth_account_id is None
+    owner = catalog.workspaces[0].owner_auth
+    assert owner is not None
+    assert owner.preset_id == "owner:workspace-1"
+    assert owner.email == "owner@example.com"
+    assert owner.user_id == "user-Owner"
+    assert owner.auth_state == "absent"
+    assert owner.auth_account_id is None
 
     auth.state = "active"
+    auth.owner_state = "active"
     catalog = await service.refresh_catalog()
     current = catalog.workspaces[0].current_members[0]
     assert current.auth_state == "active"
     assert current.auth_account_id == "auth-target"
+    owner = catalog.workspaces[0].owner_auth
+    assert owner is not None
+    assert owner.auth_state == "active"
+    assert owner.auth_account_id == "auth-owner"
 
 
 async def test_auth_enrollment_auto_route_returns_server_post_probe(enrollment_probe_context):

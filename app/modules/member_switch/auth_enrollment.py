@@ -28,6 +28,7 @@ from app.modules.member_switch.schemas import (
     CONTROL_PROTOCOL,
     EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY,
     OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY,
+    OWNER_OAUTH_ENROLLMENT_CAPABILITY,
     AuthEnrollmentAction,
     AuthEnrollmentCommandRequest,
     AuthEnrollmentCreateRequest,
@@ -178,6 +179,23 @@ class MemberAuthEnrollmentService:
             return None
         return self._view(record)
 
+    @staticmethod
+    def _owner_preset_id(workspace_id: str) -> str:
+        return f"owner:{workspace_id}"
+
+    @staticmethod
+    def _oauth_target(workspace, preset_id: str):
+        member = next((item for item in workspace.members if item.preset_id == preset_id), None)
+        if member is not None:
+            return member, False
+        if (
+            preset_id == MemberAuthEnrollmentService._owner_preset_id(workspace.id)
+            and workspace.owner_auth is not None
+            and workspace.owner_auth.preset_id == preset_id
+        ):
+            return workspace.owner_auth, True
+        return None, False
+
     async def _validate_current_member(
         self,
         identity: Identity,
@@ -200,11 +218,10 @@ class MemberAuthEnrollmentService:
         ):
             raise ControlConflict("companion_protocol_upgrade_required")
         workspace = next((item for item in catalog.workspaces if item.id == identity.workspace_id), None)
-        target = (
-            next((item for item in workspace.members if item.preset_id == identity.preset_id), None)
-            if workspace
-            else None
-        )
+        owner_requested = workspace is not None and identity.preset_id == self._owner_preset_id(workspace.id)
+        if owner_requested and OWNER_OAUTH_ENROLLMENT_CAPABILITY not in catalog.capabilities:
+            raise ControlConflict("companion_protocol_upgrade_required")
+        target, owner_target = self._oauth_target(workspace, identity.preset_id) if workspace else (None, False)
         if (
             workspace is None
             or target is None
@@ -232,12 +249,14 @@ class MemberAuthEnrollmentService:
         ):
             raise ControlConflict(observed.code)
         if not any(
-            member.classification != "owner"
+            (member.classification == "owner") == owner_target
             and member.email.casefold() == identity.target_email
             and member.user_id == identity.target_user_id
             for member in observed.members
         ):
-            raise ControlConflict("oauth_enrollment_member_not_current")
+            raise ControlConflict(
+                "oauth_enrollment_owner_not_current" if owner_target else "oauth_enrollment_member_not_current"
+            )
 
         self.auth.bind_catalog(catalog)
         self.auth.validate_identity(identity)
@@ -282,11 +301,13 @@ class MemberAuthEnrollmentService:
         await require_new_work_admission(self.controls)
         catalog = await self.companion.catalog()
         workspace = next((item for item in catalog.workspaces if item.id == request.workspace_id), None)
-        target = (
-            next((item for item in workspace.members if item.preset_id == request.preset_id), None)
-            if workspace
-            else None
-        )
+        if (
+            workspace is not None
+            and request.preset_id == self._owner_preset_id(workspace.id)
+            and OWNER_OAUTH_ENROLLMENT_CAPABILITY not in catalog.capabilities
+        ):
+            raise ControlConflict("companion_protocol_upgrade_required")
+        target, _ = self._oauth_target(workspace, request.preset_id) if workspace else (None, False)
         if (
             workspace is None
             or target is None
@@ -329,11 +350,7 @@ class MemberAuthEnrollmentService:
             if not catalog.enabled or catalog.catalog_fingerprint != state.identity.catalog_fingerprint:
                 return None
             workspace = next((item for item in catalog.workspaces if item.id == state.identity.workspace_id), None)
-            target = (
-                next((item for item in workspace.members if item.preset_id == state.identity.preset_id), None)
-                if workspace
-                else None
-            )
+            target, _ = self._oauth_target(workspace, state.identity.preset_id) if workspace else (None, False)
             if (
                 workspace is None
                 or target is None
