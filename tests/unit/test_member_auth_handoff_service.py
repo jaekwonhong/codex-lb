@@ -365,7 +365,9 @@ async def test_fresh_recovery_does_not_supersede_a_nonterminal_handoff() -> None
     assert recovered.error_code == "global_flow_busy"
     assert recovered.handoff_id != stale.handoff_id
     assert len(oauth.requests) == 1
-    assert (await service.get_status(stale.handoff_id)).state == "device_code_issued"
+    retained = await service.get_status(stale.handoff_id)
+    assert retained is not None
+    assert retained.state == "device_code_issued"
 
 
 @pytest.mark.parametrize(
@@ -472,16 +474,22 @@ async def test_prepare_accepts_oauth_only_owner_entry_without_changing_member_ca
     result = await service.prepare(request)
 
     assert catalog.fingerprint() == PACKAGED_MEMBER_AUTH_HANDOFF_CATALOG.fingerprint()
-    assert catalog.find_target(
-        preset_id=request.preset_id,
-        email=request.target_email,
-        user_id=request.target_user_id,
-    ) is None
-    assert catalog.find_auth_target(
-        preset_id=request.preset_id,
-        email=request.target_email,
-        user_id=request.target_user_id,
-    ) is not None
+    assert (
+        catalog.find_target(
+            preset_id=request.preset_id,
+            email=request.target_email,
+            user_id=request.target_user_id,
+        )
+        is None
+    )
+    assert (
+        catalog.find_auth_target(
+            preset_id=request.preset_id,
+            email=request.target_email,
+            user_id=request.target_user_id,
+        )
+        is not None
+    )
     assert result.state == "device_code_issued"
     assert repository.status_updates == []
     assert len(oauth.requests) == 1
@@ -528,9 +536,22 @@ async def test_prepare_quarantines_exact_removed_auth_before_device_oauth(monkey
     events: list[str] = []
 
     class OrderedRepository(FakeRepository):
-        async def update_status(self, account_id, status, deactivation_reason=None, **kwargs):
+        async def update_status(
+            self,
+            account_id: str,
+            status: AccountStatus,
+            deactivation_reason: str | None = None,
+            reset_at: int | None = None,
+            blocked_at: int | None | object = ...,
+        ) -> bool:
             events.append("quarantine")
-            return await super().update_status(account_id, status, deactivation_reason, **kwargs)
+            return await super().update_status(
+                account_id,
+                status,
+                deactivation_reason,
+                reset_at,
+                blocked_at,
+            )
 
     class OrderedOauth(FakeOauth):
         async def start_oauth(self, request: OauthStartRequest) -> OauthStartResponse:
@@ -572,7 +593,14 @@ async def test_prepare_quarantines_exact_removed_auth_before_device_oauth(monkey
 @pytest.mark.asyncio
 async def test_prepare_blocks_device_oauth_when_removed_auth_quarantine_fails(monkeypatch) -> None:
     class QuarantineFailingRepository(FakeRepository):
-        async def update_status(self, account_id, status, deactivation_reason=None, **kwargs):
+        async def update_status(
+            self,
+            account_id: str,
+            status: AccountStatus,
+            deactivation_reason: str | None = None,
+            reset_at: int | None = None,
+            blocked_at: int | None | object = ...,
+        ) -> bool:
             self.status_updates.append((account_id, status, deactivation_reason))
             return False
 

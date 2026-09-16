@@ -49,8 +49,8 @@ either still executing or interrupted; the UI does not guess which from age.
 separate read dependency: it does not even construct OAuth writers or token
 encryption objects. Private responses use `Cache-Control: no-store`.
 
-`GET /api/member-switch-runs/catalog` reads Companion metadata. Creation and
-all progress commands require administrator write access. The single progression
+`GET /api/member-switch-runs/catalog` reads Companion metadata. These member/owner
+identity surfaces and all progress commands require `accounts:write`. The single progression
 endpoint is `POST /api/member-switch-runs/{id}/commands`, with `commandId`,
 `expectedRevision` and `action`. There is no second unfenced raw advance endpoint.
 Legacy raw handoff preparation/reconciliation cannot bypass managed-run admission.
@@ -141,12 +141,17 @@ non-idempotent interruption boundary. Pure ranking code is not that qualificatio
 
 ## Rollout and limits
 
-The candidate requires a coordinated backend/Companion/UI update and the forward
-migration `20260906_010000_add_member_switch_control`. Beta is not the shared DB
-migration owner; no migration was run on operational data. Stop old automation
-clients/tabs before any future rollout. Existing direct Companion clients are not
-magically fenced by the new backend's DB. Missing capability or catalog mismatch
-blocks the new path before membership mutation rather than falling back.
+The candidate requires a coordinated backend/Companion/UI update and the two
+pre-existing local extension tables, `member_switch_control_records` and
+`member_switch_command_receipts`. The beta.9 rebase deliberately does not carry
+the historical local Alembic branch that first created those tables; the official
+beta.9 migration graph remains authoritative. A deployment must therefore verify
+that the retained extension tables and their data survive the upstream migration,
+and must fail closed if they are absent rather than inventing a second migration
+owner. Beta is not the shared DB migration owner. Stop old automation clients/tabs
+before any future rollout. Existing direct Companion clients are not magically
+fenced by the new backend's DB. Missing capability or catalog mismatch blocks the
+new path before membership mutation rather than falling back.
 
 Old in-flight runs, browser IDs, quarantined auth, existing catalog overlays,
 actual Docker-to-Mac transport, real OAuth, Safari/WebKit, native-AOT publication,

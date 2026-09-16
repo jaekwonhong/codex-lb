@@ -60,8 +60,11 @@ max_items = 5
 # backlog; 95 -> 96 thread_cache_identity_mode (a fleet-wide behaviour switch an
 # operator must be able to roll back without a deploy, so it needs a dashboard
 # home; the environment leg exists only so an operator locked out of the
-# dashboard can still pin the mode at boot, and it is a fallback, never a seed).
-max = 96
+# dashboard can still pin the mode at boot, and it is a fallback, never a seed);
+# 96 -> 99 beta.9 local overlay retains oauth_import_dir,
+# companion_account_pool_url and runtime_enabled_model_source_ids as explicit T1
+# deployment inputs rather than inferred defaults.
+max = 99
 
 [root_files]
 # Complete allowlist of tracked repository-root entries (files and

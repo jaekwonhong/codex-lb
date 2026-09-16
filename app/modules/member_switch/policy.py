@@ -19,7 +19,6 @@ _KNOWN_OWNER_PREFLIGHT_FAILURES = frozenset(
 )
 
 
-
 def require_operation_identity(identity: Identity, operation_id: str, operation: Operation) -> None:
     if (
         operation.operation_id != operation_id

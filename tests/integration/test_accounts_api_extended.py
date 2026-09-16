@@ -97,11 +97,7 @@ async def test_accounts_list_exposes_stored_chatgpt_user_id(async_client, db_set
     response = await async_client.get("/api/accounts")
 
     assert response.status_code == 200
-    matching = [
-        entry
-        for entry in response.json()["accounts"]
-        if entry["accountId"] == account.id
-    ]
+    matching = [entry for entry in response.json()["accounts"] if entry["accountId"] == account.id]
     assert len(matching) == 1
     assert matching[0]["chatgptUserId"] == "user-F35N1VBxC5M3BC4LQHhamB8a"
 

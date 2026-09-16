@@ -3,12 +3,12 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import math
 import time
 from collections.abc import Awaitable, Callable, Collection, Coroutine, Hashable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Final, Mapping, Protocol, cast
+from uuid import uuid4
 
 from app.core import usage as usage_core
 from app.core.auth.refresh import RefreshError
@@ -25,6 +25,18 @@ from app.core.plan_types import ACCOUNT_PLAN_TYPES, coerce_account_plan_type, no
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
 from app.core.usage.models import AdditionalRateLimitPayload, UsagePayload, UsageWindow
 from app.core.usage.refresh_policy import USAGE_REFRESH_INTERVAL_SECONDS
+from app.core.usage.weekly_observation import (
+    FiveHourWindowObservation,
+    RotationUsageObservation,
+    UsageAccountIdentity,
+    UsageFetchProvenance,
+    WeeklyUsageObservation,
+    WeeklyWindowObservation,
+    five_hour_window_from_payload,
+    weekly_window_from_payload,
+)
+from app.core.usage.window_metadata import reset_at_epoch as _reset_at
+from app.core.usage.window_metadata import window_minutes as _window_minutes
 from app.core.utils.request_id import get_request_id
 from app.core.utils.shared_future import wait_on_shared_future
 from app.core.utils.time import utcnow
@@ -136,6 +148,28 @@ class AccountsRepositoryWithStatusComparePort(AccountsRepositoryPort, Protocol):
 class AccountRefreshResult:
     usage_written: bool
     fetch_succeeded: bool = True
+    fetch_provenance: UsageFetchProvenance | None = None
+    five_hour_window: FiveHourWindowObservation | None = None
+    weekly_window: WeeklyWindowObservation | None = None
+
+    @property
+    def weekly_observation(self) -> WeeklyUsageObservation:
+        return WeeklyUsageObservation(
+            fetch_succeeded=self.fetch_succeeded,
+            usage_written=self.usage_written,
+            provenance=self.fetch_provenance,
+            window=self.weekly_window,
+        )
+
+    @property
+    def rotation_usage_observation(self) -> RotationUsageObservation:
+        return RotationUsageObservation(
+            fetch_succeeded=self.fetch_succeeded,
+            usage_written=self.usage_written,
+            provenance=self.fetch_provenance,
+            five_hour_window=self.five_hour_window,
+            weekly_window=self.weekly_window,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -415,16 +449,47 @@ class UsageUpdater:
         access_token_override: str | None = None,
     ) -> AccountRefreshResult:
         """Refresh one account and expose whether the upstream fetch completed."""
+        return await self._force_refresh_result(
+            account,
+            lambda: self._refresh_account(
+                account,
+                usage_account_id=account.chatgpt_account_id,
+                access_token_override=access_token_override,
+            ),
+        )
+
+    async def force_weekly_observation(self, account: Account) -> WeeklyUsageObservation:
+        """Fetch Weekly evidence without producing legacy member-rotation events.
+
+        The caller resolves the current member's unique credential slot. Assess
+        the returned evidence against that independently resolved identity at
+        the decision boundary, including after any reset-credit reconciliation.
+        """
+        return (await self.force_rotation_usage_observation(account)).weekly_observation
+
+    async def force_rotation_usage_observation(self, account: Account) -> RotationUsageObservation:
+        """Fetch one receipt carrying same-response 5H and Weekly evidence."""
+        result = await self._force_refresh_result(
+            account,
+            lambda: self._refresh_account(
+                account,
+                usage_account_id=account.chatgpt_account_id,
+                record_rotation_observation=False,
+            ),
+        )
+        return result.rotation_usage_observation
+
+    async def _force_refresh_result(
+        self,
+        account: Account,
+        refresh: Callable[[], Awaitable[AccountRefreshResult]],
+    ) -> AccountRefreshResult:
         if account.status in (AccountStatus.REAUTH_REQUIRED, AccountStatus.DEACTIVATED):
             return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
         try:
             result = await _USAGE_REFRESH_SINGLEFLIGHT.run(
                 account.id,
-                lambda: self._refresh_account(
-                    account,
-                    usage_account_id=account.chatgpt_account_id,
-                    access_token_override=access_token_override,
-                ),
+                refresh,
                 join_existing=False,
             )
             await self._sync_account_from_repo(account)
@@ -479,7 +544,7 @@ class UsageUpdater:
                 now=utcnow(),
                 interval_seconds=interval_seconds,
             ):
-                return AccountRefreshResult(usage_written=False)
+                return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
         return await self._refresh_account(
             account,
             usage_account_id=usage_account_id,
@@ -592,8 +657,12 @@ class UsageUpdater:
         *,
         usage_account_id: str | None,
         access_token_override: str | None = None,
+        record_rotation_observation: bool = True,
     ) -> AccountRefreshResult:
         access_token = access_token_override or self._encryptor.decrypt(account.access_token_encrypted)
+        fetch_identity = usage_account_identity(account)
+        fetch_workspace_id = _clean_optional(account.workspace_id)
+        fetch_started_at = datetime.now(timezone.utc)
         payload: UsagePayload | None = None
         try:
             route = await _resolve_upstream_route_for_account(account, operation="usage_refresh")
@@ -627,6 +696,10 @@ class UsageUpdater:
                 _mark_usage_refresh_auth_cooldown(account.id, exc.status_code)
                 return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
             access_token = self._encryptor.decrypt(account.access_token_encrypted)
+            usage_account_id = account.chatgpt_account_id
+            fetch_identity = usage_account_identity(account)
+            fetch_workspace_id = _clean_optional(account.workspace_id)
+            fetch_started_at = datetime.now(timezone.utc)
             try:
                 route = await _resolve_upstream_route_for_account(account, operation="usage_refresh")
                 payload = await fetch_usage(
@@ -652,6 +725,20 @@ class UsageUpdater:
 
         if payload is None:
             return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
+
+        observed_at = datetime.now(timezone.utc)
+        fetch_provenance: UsageFetchProvenance | None = UsageFetchProvenance(
+            fetch_id=uuid4().hex,
+            identity=fetch_identity,
+            requested_workspace_account_id=usage_account_id,
+            account_workspace_id=fetch_workspace_id,
+            payload_workspace_id=_clean_optional(payload.workspace_id),
+            credential_source="stored" if access_token_override is None else "override",
+            started_at=fetch_started_at,
+            observed_at=observed_at,
+        )
+        five_hour_window = five_hour_window_from_payload(payload, observed_at=observed_at)
+        weekly_window = weekly_window_from_payload(payload, observed_at=observed_at)
 
         if await _payload_mismatches_account_slot(account, payload):
             logger.warning(
@@ -730,7 +817,12 @@ class UsageUpdater:
         rate_limit = payload.rate_limit
         if rate_limit is None:
             additional_synced = self._additional_usage_repo is not None and payload.additional_rate_limits is not None
-            return AccountRefreshResult(usage_written=additional_synced)
+            return AccountRefreshResult(
+                usage_written=additional_synced,
+                fetch_provenance=fetch_provenance,
+                five_hour_window=five_hour_window,
+                weekly_window=weekly_window,
+            )
         # Treat both None and empty rate_limit (both windows absent) as
         # additional-only to avoid falling through to window processing.
         normalized_windows = usage_core.normalize_rate_limit_windows(
@@ -745,10 +837,20 @@ class UsageUpdater:
                 additional_synced = (
                     self._additional_usage_repo is not None and payload.additional_rate_limits is not None
                 )
-                return AccountRefreshResult(usage_written=additional_synced)
+                return AccountRefreshResult(
+                    usage_written=additional_synced,
+                    fetch_provenance=fetch_provenance,
+                    five_hour_window=five_hour_window,
+                    weekly_window=weekly_window,
+                )
         if primary is None and secondary is None and monthly is None:
             additional_synced = self._additional_usage_repo is not None and payload.additional_rate_limits is not None
-            return AccountRefreshResult(usage_written=additional_synced)
+            return AccountRefreshResult(
+                usage_written=additional_synced,
+                fetch_provenance=fetch_provenance,
+                five_hour_window=five_hour_window,
+                weekly_window=weekly_window,
+            )
         credits_has, credits_unlimited, credits_balance = _credits_snapshot(payload)
         snapshot_windows: list[UsageWindowWrite] = []
 
@@ -794,7 +896,7 @@ class UsageUpdater:
         )
         usage_written = any(_usage_entry_written(entry) for entry in entries)
         long_remaining = self._long_remaining_percent(primary, secondary, monthly)
-        if long_remaining is not None:
+        if record_rotation_observation and long_remaining is not None:
             needs_confirmation = await observe_successful_usage(
                 account,
                 long_remaining,
@@ -806,8 +908,19 @@ class UsageUpdater:
                     usage_account_id=usage_account_id,
                     access_token=access_token,
                 )
+                # This legacy path made another fetch without returning its
+                # payload. The earlier receipt cannot represent the final state.
+                # P1 uses force_weekly_observation(), which bypasses this hook.
+                fetch_provenance = None
+                five_hour_window = None
+                weekly_window = None
         await self._recover_quota_status_from_usage(account, primary=primary, secondary=secondary, monthly=monthly)
-        return AccountRefreshResult(usage_written=usage_written)
+        return AccountRefreshResult(
+            usage_written=usage_written,
+            fetch_provenance=fetch_provenance,
+            five_hour_window=five_hour_window,
+            weekly_window=weekly_window,
+        )
 
     @staticmethod
     def _long_remaining_percent(
@@ -1467,22 +1580,18 @@ def _parse_credits_balance(value: str | int | float | None) -> float | None:
     return None
 
 
-def _window_minutes(limit_seconds: int | None) -> int | None:
-    if not limit_seconds or limit_seconds <= 0:
-        return None
-    return max(1, math.ceil(limit_seconds / 60))
+def usage_account_identity(account: Account) -> UsageAccountIdentity:
+    """Snapshot the credential slot without retaining tokens or mutable ORM state."""
+    return UsageAccountIdentity(
+        account_id=account.id,
+        workspace_account_id=account.chatgpt_account_id,
+        user_id=account.chatgpt_user_id,
+        email=account.email,
+    )
 
 
 def _now_epoch() -> int:
     return int(utcnow().replace(tzinfo=timezone.utc).timestamp())
-
-
-def _reset_at(reset_at: int | None, reset_after_seconds: int | None, now_epoch: int) -> int | None:
-    if reset_at is not None:
-        return int(reset_at)
-    if reset_after_seconds is None:
-        return None
-    return now_epoch + max(0, int(reset_after_seconds))
 
 
 # Bare HTTP status codes from the usage endpoint are ambiguous and do not prove

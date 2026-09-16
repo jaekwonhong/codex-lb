@@ -16,18 +16,21 @@ Resetting an OAuth screen only invalidates local consumers. It does not claim to
 cancel a request already accepted by the server. Late responses cannot complete
 a different flow or create new timers after the consumer is gone.
 
-Full-suite follow-up: legacy bootstrap deliberately supports pre-created schema
-and old revision identifiers. Integration places the member-control compatibility
-handling in the application migration runner, not in the already-merged migration.
-The original revision bytes and graph are unchanged. See the owning
-`lifecycle-integration-closure` change for exact-boundary validation and transaction
-requirements. Direct raw Alembic replay of a pre-materialized schema is not adopted
-automatically; operators use the application migration command.
+Full-suite follow-up: the beta.9 rebase drops the historical local member-control
+Alembic branch entirely. The official upstream revision graph is authoritative;
+`member_switch_control_records` and `member_switch_command_receipts` are retained
+local extension tables outside that graph. The application drift checker ignores
+their missing-table `add_table` diffs rather than creating or stamping a local
+revision. Release qualification separately verifies the retained tables and data
+before member-switch can be enabled. See the owning `lifecycle-integration-closure`
+change for that exact boundary.
 
-The existing local overlay adds exactly two settings to upstream's 131-field
-budget: oauth_import_dir and companion_account_pool_url. Both remain optional
-(None) by default. Their paths/trust endpoints differ between Docker and native
-installations; deriving or hardcoding them would accidentally authorize an import
-root or peer. Retain those existing knobs, document them, and account for this
-exact two-field extension without adding unused budget. No settings are introduced
-by this review.
+The existing local overlay adds exactly three T1 settings to the beta.9 upstream
+configuration surface: `oauth_import_dir`, `companion_account_pool_url`, and
+`runtime_enabled_model_source_ids`. The first two remain optional (`None`) by
+default; the runtime-enabled source list defaults to the empty string and is the
+per-process rollout fence for Model Sources intentionally disabled in the shared
+DB. Their import root, trusted Companion endpoint, and process-local source scope
+must remain explicit deployment inputs rather than inferred values. The generated
+reference therefore exposes 99 total settings and documents all three local knobs.
+No additional setting is introduced by this review.

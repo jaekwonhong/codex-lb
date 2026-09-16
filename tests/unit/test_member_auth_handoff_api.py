@@ -7,7 +7,8 @@ from typing import Any, cast
 import pytest
 from fastapi.responses import JSONResponse
 
-from app.core.auth.dependencies import require_dashboard_write_access
+from app.core.auth.dashboard_access import Permission
+from app.core.auth.dependencies import require_dashboard_permission
 from app.core.exceptions import DashboardPermissionError
 from app.main import create_app
 from app.modules.member_auth_handoff import api as handoff_api
@@ -59,9 +60,12 @@ async def test_usage_route_returns_typed_catalog_response() -> None:
         )
     )
 
-    response = await handoff_api.get_catalog_member_usage(
-        _write_access=None,
-        context=cast(Any, SimpleNamespace(service=service)),
+    response = cast(
+        dict[str, Any],
+        await handoff_api.get_catalog_member_usage(
+            _write_access=None,
+            context=cast(Any, SimpleNamespace(service=service)),
+        ),
     )
 
     assert response["members"][0]["remainingPercent"] == 42.0
@@ -177,11 +181,12 @@ async def test_handoff_status_refuses_read_only_guest(app_instance, async_client
             code="read_only_access",
         )
 
-    app_instance.dependency_overrides[require_dashboard_write_access] = _guest_refused
+    accounts_write = require_dashboard_permission(Permission.ACCOUNTS_WRITE)
+    app_instance.dependency_overrides[accounts_write] = _guest_refused
     try:
         response = await async_client.get("/api/member-auth-handoffs/handoff-1")
     finally:
-        app_instance.dependency_overrides.pop(require_dashboard_write_access, None)
+        app_instance.dependency_overrides.pop(accounts_write, None)
 
     assert response.status_code == 403
 
@@ -207,7 +212,7 @@ async def test_status_get_never_constructs_the_mutating_context():
     app.include_router(handoff_api.router)
     reader = SimpleNamespace(get_status=AsyncMock(return_value=None))
     app.dependency_overrides[validate_dashboard_session] = lambda: None
-    app.dependency_overrides[require_dashboard_write_access] = lambda: None
+    app.dependency_overrides[require_dashboard_permission(Permission.ACCOUNTS_WRITE)] = lambda: None
     app.dependency_overrides[get_member_auth_handoff_read_context] = lambda: SimpleNamespace(service=reader)
 
     def forbidden():

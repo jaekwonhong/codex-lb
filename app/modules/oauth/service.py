@@ -503,9 +503,7 @@ class OauthService:
                 chatgpt_user_id=request.expected_chatgpt_user_id,
                 chatgpt_account_id=request.expected_chatgpt_account_id,
             )
-            if request.expected_email
-            and request.expected_chatgpt_user_id
-            and request.expected_chatgpt_account_id
+            if request.expected_email and request.expected_chatgpt_user_id and request.expected_chatgpt_account_id
             else None
         )
         if not force_method and not intended_account_id:
@@ -1042,8 +1040,8 @@ class OauthService:
             else None
         )
         routing_policy_override = (
-            "burn_first" if burn_first_enabled else "normal"
-        ) if burn_first_enabled is not None else None
+            ("burn_first" if burn_first_enabled else "normal") if burn_first_enabled is not None else None
+        )
 
         account = Account(
             id=intended_account_id or account_id,

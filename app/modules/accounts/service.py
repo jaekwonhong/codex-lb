@@ -76,6 +76,7 @@ from app.modules.proxy.account_cache import (
     mark_account_routing_unavailable,
     propagate_account_routing_change,
 )
+from app.modules.rate_limit_reset_credits.redeem_coordination import RedeemClaimTimeoutError
 from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_credits_store
 from app.modules.usage.additional_quota_keys import (
     get_additional_display_label_for_quota_key,
@@ -355,9 +356,22 @@ class AccountsService:
 
         primary_before, secondary_before = await self._latest_usage_percents(account_id)
         status_before = account.status.value
-        upstream_response, account = await self._consume_usage_reset_credit(
-            account, redeem_request_id=redeem_request_id
-        )
+        # Import lazily to avoid the accounts -> dependencies -> reset-credit
+        # API import cycle at module load time.  The serializer itself is the
+        # shared per-local-account authority used by the other reset surfaces.
+        from app.modules.rate_limit_reset_credits.api import serialize_reset_credit_redeem
+
+        try:
+            async with get_background_session() as lock_session:
+                async with serialize_reset_credit_redeem(account_id, session=lock_session):
+                    upstream_response, account = await self._consume_usage_reset_credit(
+                        account,
+                        redeem_request_id=redeem_request_id,
+                    )
+        except RedeemClaimTimeoutError as exc:
+            raise AccountUsageResetConsumeUnavailableError(
+                "Another reset credit redemption is already in progress for this account"
+            ) from exc
         if upstream_response.code in ("reset", "already_redeemed", "no_credit", "nothing_to_reset"):
             await get_rate_limit_reset_credits_store().invalidate(account_id)
 
@@ -519,9 +533,7 @@ class AccountsService:
         if self._import_identity_resolver is not None and raw_account_id:
             catalog_identity = await self._import_identity_resolver(raw_account_id, email)
             token_user_matches = (
-                chatgpt_user_id is None
-                or catalog_identity is None
-                or chatgpt_user_id == catalog_identity.user_id
+                chatgpt_user_id is None or catalog_identity is None or chatgpt_user_id == catalog_identity.user_id
             )
             if catalog_identity is not None and token_user_matches:
                 catalog_identity_applied = True
@@ -529,9 +541,7 @@ class AccountsService:
                 if catalog_identity.workspace_label and is_personal_workspace_label(workspace_label):
                     workspace_label = catalog_identity.workspace_label
                 if catalog_identity.burn_first_enabled is not None:
-                    routing_policy_override = (
-                        "burn_first" if catalog_identity.burn_first_enabled else "normal"
-                    )
+                    routing_policy_override = "burn_first" if catalog_identity.burn_first_enabled else "normal"
         if raw_account_id and routing_policy_override is None:
             burn_first_enabled = await fetch_companion_workspace_burn_first(
                 get_settings().companion_account_pool_url,

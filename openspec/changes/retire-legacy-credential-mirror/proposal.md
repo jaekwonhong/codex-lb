@@ -53,4 +53,4 @@ So the instruction is: **drain old first** — blue/green with the old colour st
 - `frontend/src/features/settings/components/access/{people-row-actions,access-people-tab}.tsx`, `frontend/src/features/access/hooks.ts`, `frontend/src/features/auth/components/login-form.tsx`, `frontend/src/i18n/locales/{en,ko,zh-CN}.json`, `frontend/src/test/mocks/handlers.ts`
 - `docs/authentication.md`, `docs/sso.md`, `docs/deployment/kubernetes.md`, `docs/troubleshooting.md`
 - Tests under `tests/unit`, `tests/integration` and `frontend/src/**/*.test.tsx`
-- **No new environment variable, no `Settings` field, no settings-tier entry, no `.env.example` line, no nav item, no new dashboard route.** `.env.example` stays 47 lines and `[settings_fields]` stays 95; the guard is a ledger check with no knob.
+- **No new environment variable, no `Settings` field, no settings-tier entry, no `.env.example` line, no nav item, no new dashboard route.** `.env.example` stays 47 lines; at this change's 95-field authoring baseline, `[settings_fields]` is unchanged. The guard is a ledger check with no knob.

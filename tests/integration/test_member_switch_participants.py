@@ -25,7 +25,8 @@ from sqlalchemy import event
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.dependencies as dependencies
-from app.core.auth.dependencies import require_dashboard_write_access, validate_dashboard_session
+from app.core.auth.dashboard_access import Permission
+from app.core.auth.dependencies import require_dashboard_permission, validate_dashboard_session
 from app.db.models import Account, AccountStatus, Base
 from app.db.session import get_session
 from app.modules.member_auth_handoff.api import router as auth_router
@@ -171,6 +172,9 @@ class SyntheticWire:
         lose = self.lose == path
 
         class Response:
+            def __init__(self, response_status: int) -> None:
+                self.status = response_status
+
             async def __aenter__(self):
                 return self
 
@@ -187,9 +191,7 @@ class SyntheticWire:
                 return copy.deepcopy(payload)
 
         owner = self
-        result = Response()
-        result.status = status
-        return result
+        return Response(status)
 
 
 class SyntheticOAuth:
@@ -338,7 +340,7 @@ async def integration(tmp_path, monkeypatch):
     app.add_exception_handler(ControlConflict, handle_control_conflict)
     app.dependency_overrides[get_session] = request_session
     app.dependency_overrides[validate_dashboard_session] = lambda: None
-    app.dependency_overrides[require_dashboard_write_access] = lambda: None
+    app.dependency_overrides[require_dashboard_permission(Permission.ACCOUNTS_WRITE)] = lambda: None
     try:
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app, raise_app_exceptions=False), base_url="http://synthetic.test"

@@ -200,6 +200,7 @@ export function ModelSourcesSettings({ disabled = false }: ModelSourcesSettingsP
           void deleteMutation.mutateAsync(target.id).then(() => deleteDialog.hide()).catch(() => undefined);
         }}
       >
+        {deleteDialog.data ? <p className="break-all text-sm">{deleteDialog.data.name}</p> : null}
         {deleteMutation.error ? <div role="alert"><AlertMessage variant="error">{getErrorMessageOrNull(deleteMutation.error)}</AlertMessage>
           <p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p></div> : null}
       </ConfirmDialog>

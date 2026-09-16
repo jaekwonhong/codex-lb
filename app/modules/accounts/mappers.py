@@ -260,6 +260,7 @@ def _account_to_summary(
     return AccountSummary(
         account_id=account.id,
         chatgpt_account_id=None if redact_identity else account.chatgpt_account_id,
+        chatgpt_user_id=None if redact_identity else account.chatgpt_user_id,
         email=email,
         alias=account.alias,
         display_name=account.alias or email,

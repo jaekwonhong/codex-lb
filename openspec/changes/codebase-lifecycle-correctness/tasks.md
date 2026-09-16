@@ -8,7 +8,7 @@
 - [x] Forward the missing background repository argument.
 - [x] Fence ordinary OAuth UI lifecycle consumers.
 - [x] Prevent failed Companion account-pool saves from leaking tentative identities or settings.
-- [x] Preserve compatible control tables on migration replay and reject malformed definitions.
+- [x] Preserve retained member-control extension tables outside upstream Alembic and fail release admission on missing or malformed definitions.
 - [x] Synchronize generated settings documentation and the justified existing local field budget.
 
 ## 3. Qualify
@@ -23,4 +23,6 @@ with that error; qualification is WARN, not unconditional full-suite PASS.
 
 Integrated frozen-input run: 8,864 passed, 105 skipped, no failures or errors.
 The old lock was not reproduced; this is not a claim to have fixed its root cause.
-Migration repair now uses the product runner and preserves all 220 merged revision files.
+The beta.9 integration keeps the upstream Alembic graph authoritative; retained
+member-control tables and data are qualified separately, with no local revision
+replayed, stamped or fabricated.

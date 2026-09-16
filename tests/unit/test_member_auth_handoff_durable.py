@@ -148,6 +148,7 @@ async def test_advance_uses_a_new_parent_command_and_replays_only_stored_receipt
     original_status = oauth.oauth_status
     oauth.oauth_status = AsyncMock(side_effect=original_status)
     result = await service.advance(prepared.handoff_id, managed_run_id=parent.id)
+    assert result is not None
     rebuilt = DurableMemberAuthHandoffService(repo, oauth, controls=MemberSwitchControlRepository(sessions))
     assert await rebuilt.advance(prepared.handoff_id, managed_run_id=parent.id) == result
     assert result.state == "oauth_pending" and result.pending_action is None

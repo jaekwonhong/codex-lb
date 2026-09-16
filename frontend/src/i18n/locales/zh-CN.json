@@ -1,4 +1,7 @@
 {
+  "common.confirmation.unavailable": "无法确认目标或写入权限。请取消并刷新列表后再继续。",
+  "common.confirmation.failureNotice": "请求结果尚未确认，未自动重试。再次操作前请先核对当前状态。",
+  "accounts.page.retryLoad": "重试加载账户",
   "accounts.actions.disableWarmup": "禁用 Warm-up",
   "accounts.actions.enableWarmup": "启用 Warm-up",
   "accounts.actions.forceProbe": "强制探测",

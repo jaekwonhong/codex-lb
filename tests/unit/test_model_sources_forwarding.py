@@ -536,6 +536,103 @@ async def _collect(body: AsyncIterator[bytes]) -> list[bytes]:
     return [chunk async for chunk in body]
 
 
+_DGX_SOURCE_ID = "src_69bc4887d69740979f6a0beaca37eefb"
+_DGX_MODEL = "qwen3.8-flash-next"
+
+
+def _dgx_replay_payload() -> dict[str, JsonValue]:
+    return {
+        "model": _DGX_MODEL,
+        "input": [
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "summary": [{"type": "summary_text", "text": "keep"}],
+                "encrypted_content": "opaque-provider-state",
+            },
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hello"}]},
+            {"type": "compaction", "encrypted_content": "keep-compaction-state"},
+        ],
+    }
+
+
+def test_dgx_responses_payload_strips_only_reasoning_encrypted_content_without_mutating_input() -> None:
+    payload = _dgx_replay_payload()
+    original = json.loads(json.dumps(payload))
+
+    adapted = forwarding_module._dgx_responses_payload(
+        _responses_source(source_id=_DGX_SOURCE_ID),
+        payload,
+    )
+
+    assert adapted is not payload
+    assert payload == original
+    items = cast(list[object], adapted["input"])
+    assert items[0] == {
+        "type": "reasoning",
+        "id": "rs_1",
+        "summary": [{"type": "summary_text", "text": "keep"}],
+    }
+    assert items[1] == original["input"][1]
+    assert items[2] == original["input"][2]
+
+
+@pytest.mark.parametrize(
+    ("source_id", "model"),
+    [
+        ("src_other", _DGX_MODEL),
+        (_DGX_SOURCE_ID, "other-model"),
+    ],
+)
+def test_dgx_responses_payload_is_exact_noop_outside_qualified_source_model(source_id: str, model: str) -> None:
+    payload = _dgx_replay_payload()
+    payload["model"] = model
+
+    adapted = forwarding_module._dgx_responses_payload(_responses_source(source_id=source_id), payload)
+
+    assert adapted is payload
+    reasoning = cast(list[dict[str, object]], payload["input"])[0]
+    assert reasoning["encrypted_content"] == "opaque-provider-state"
+
+
+@pytest.mark.asyncio
+async def test_forward_responses_posts_dgx_adapted_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = _dgx_replay_payload()
+    response_body = {"id": "resp_dgx", "output": [], "usage": {"input_tokens": 1, "output_tokens": 1}}
+    session, _context, lease = _install_session(monkeypatch, _FakeResponse(json_body=response_body))
+
+    result = await forwarding_module.forward_responses(
+        _responses_source(source_id=_DGX_SOURCE_ID),
+        payload,
+    )
+
+    posted = cast(dict[str, JsonValue], session.calls[0]["json"])
+    posted_items = cast(list[dict[str, object]], posted["input"])
+    assert "encrypted_content" not in posted_items[0]
+    assert cast(list[dict[str, object]], payload["input"])[0]["encrypted_content"] == "opaque-provider-state"
+    assert result.payload == response_body
+    assert lease.released == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_posts_dgx_adapted_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = _dgx_replay_payload()
+    first = _sse({"type": "response.created", "response": {"id": "resp_dgx_stream"}})
+    session, _context, lease = _install_session(monkeypatch, _FakeResponse(content=_FakeContent(first, [])))
+
+    stream = await forwarding_module.stream_responses(
+        _responses_source(source_id=_DGX_SOURCE_ID),
+        payload,
+    )
+    posted = cast(dict[str, JsonValue], session.calls[0]["json"])
+    posted_items = cast(list[dict[str, object]], posted["input"])
+    assert "encrypted_content" not in posted_items[0]
+    assert cast(list[dict[str, object]], payload["input"])[0]["encrypted_content"] == "opaque-provider-state"
+
+    await stream.aclose()
+    assert lease.released == 1
+
+
 # -- classification -----------------------------------------------------------
 
 

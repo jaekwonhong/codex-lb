@@ -626,8 +626,8 @@ class AuthManager:
             else None
         )
         routing_policy_override = (
-            "burn_first" if burn_first_enabled else "normal"
-        ) if burn_first_enabled is not None else None
+            ("burn_first" if burn_first_enabled else "normal") if burn_first_enabled is not None else None
+        )
         routing_policy_changed = (
             routing_policy_override is not None
             and account.routing_policy != "preserve"

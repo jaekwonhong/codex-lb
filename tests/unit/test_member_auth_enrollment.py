@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime, timezone
+from typing import Any, cast
 from uuid import uuid4
 
 import httpx
@@ -10,9 +11,11 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from pydantic import ValidationError
+from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.core.auth.dependencies import require_dashboard_write_access, validate_dashboard_session
+from app.core.auth.dashboard_access import Permission
+from app.core.auth.dependencies import require_dashboard_permission, validate_dashboard_session
 from app.db.models import Account, MemberSwitchCommandReceipt, MemberSwitchControlRecord
 from app.dependencies import (
     get_member_auth_enrollment_command_service,
@@ -20,6 +23,7 @@ from app.dependencies import (
     get_member_switch_controls,
 )
 from app.modules.member_auth_handoff.schemas import (
+    AuthObservationState,
     MemberAuthHandoffResponse,
     WorkspaceAuthObservationMember,
     WorkspaceAuthObservationResponse,
@@ -138,7 +142,7 @@ class EnrollmentCompanion:
                     user_id=self.current_user_id,
                     preset_id="target",
                     classification="managed",
-                )
+                ),
             ],
         )
 
@@ -207,8 +211,8 @@ class EnrollmentCompanion:
 class EnrollmentAuth:
     def __init__(self, controls: MemberSwitchControlRepository) -> None:
         self.controls = controls
-        self.state = "absent"
-        self.owner_state = "absent"
+        self.state: AuthObservationState = "absent"
+        self.owner_state: AuthObservationState = "absent"
         self.last_preset_id = "target"
         self.prepare_requests = []
         self.snapshot: MemberAuthHandoffResponse | None = None
@@ -264,10 +268,11 @@ class EnrollmentAuth:
             ],
         )
 
-    async def prepare(self, request, *, managed_run_id=None):
+    async def prepare(self, request, *, managed_run_id: str | None = None):
         self.prepare_calls += 1
         self.prepare_requests.append(request)
         self.last_preset_id = request.preset_id
+        assert managed_run_id is not None
         parent = await self.controls.get(managed_run_id)
         assert parent is not None
         self.snapshot = MemberAuthHandoffResponse(
@@ -291,8 +296,9 @@ class EnrollmentAuth:
             raise ControlConflict("synthetic_prepare_reply_lost")
         return self.snapshot
 
-    async def advance(self, handoff_id, *, managed_run_id=None):
+    async def advance(self, handoff_id, *, managed_run_id: str | None = None):
         assert self.snapshot is not None and handoff_id == self.snapshot.handoff_id
+        assert managed_run_id is not None
         parent = await self.controls.get(managed_run_id)
         assert parent is not None
         self.advance_calls += 1
@@ -345,14 +351,14 @@ class EnrollmentPostProbe:
 async def enrollment_context(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'enrollment.sqlite'}")
     async with engine.begin() as connection:
-        await connection.run_sync(Account.__table__.create)
-        await connection.run_sync(MemberSwitchControlRecord.__table__.create)
-        await connection.run_sync(MemberSwitchCommandReceipt.__table__.create)
+        await connection.run_sync(cast(Table, Account.__table__).create)
+        await connection.run_sync(cast(Table, MemberSwitchControlRecord.__table__).create)
+        await connection.run_sync(cast(Table, MemberSwitchCommandReceipt.__table__).create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     controls = MemberSwitchControlRepository(sessions)
     companion = EnrollmentCompanion()
     auth = EnrollmentAuth(controls)
-    service = MemberAuthEnrollmentService(controls, companion, auth)
+    service = MemberAuthEnrollmentService(controls, cast(Any, companion), auth)
     yield service, controls, companion, auth
     await engine.dispose()
 
@@ -361,15 +367,15 @@ async def enrollment_context(tmp_path):
 async def enrollment_probe_context(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'enrollment-probe.sqlite'}")
     async with engine.begin() as connection:
-        await connection.run_sync(Account.__table__.create)
-        await connection.run_sync(MemberSwitchControlRecord.__table__.create)
-        await connection.run_sync(MemberSwitchCommandReceipt.__table__.create)
+        await connection.run_sync(cast(Table, Account.__table__).create)
+        await connection.run_sync(cast(Table, MemberSwitchControlRecord.__table__).create)
+        await connection.run_sync(cast(Table, MemberSwitchCommandReceipt.__table__).create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     controls = MemberSwitchControlRepository(sessions)
     companion = EnrollmentCompanion()
     auth = EnrollmentAuth(controls)
     post_probe = EnrollmentPostProbe()
-    service = MemberAuthEnrollmentService(controls, companion, auth, post_probe)
+    service = MemberAuthEnrollmentService(controls, cast(Any, companion), auth, post_probe)
     yield service, controls, companion, auth, post_probe
     await engine.dispose()
 
@@ -533,9 +539,7 @@ async def test_reconcile_lost_finish_persists_exact_auth_account(enrollment_cont
     auth.bound_catalog = False
     record = await controls.get(view.id)
     assert record is not None
-    finish = AuthEnrollmentCommandRequest(
-        command_id=uuid4(), expected_revision=view.revision, action="finish"
-    )
+    finish = AuthEnrollmentCommandRequest(command_id=uuid4(), expected_revision=view.revision, action="finish")
     claimed, execute = await controls.claim(
         record,
         str(finish.command_id),
@@ -547,9 +551,7 @@ async def test_reconcile_lost_finish_persists_exact_auth_account(enrollment_cont
 
     completed = await service.command(
         view.id,
-        AuthEnrollmentCommandRequest(
-            command_id=uuid4(), expected_revision=claimed.revision, action="reconcile"
-        ),
+        AuthEnrollmentCommandRequest(command_id=uuid4(), expected_revision=claimed.revision, action="reconcile"),
     )
 
     assert completed.phase == "completed" and completed.auth_state == "completed"
@@ -585,15 +587,15 @@ class LockObservingPostProbe(EnrollmentPostProbe):
 async def test_terminal_lock_is_released_before_server_post_probe(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'probe-lock-order.sqlite'}")
     async with engine.begin() as connection:
-        await connection.run_sync(Account.__table__.create)
-        await connection.run_sync(MemberSwitchControlRecord.__table__.create)
-        await connection.run_sync(MemberSwitchCommandReceipt.__table__.create)
+        await connection.run_sync(cast(Table, Account.__table__).create)
+        await connection.run_sync(cast(Table, MemberSwitchControlRecord.__table__).create)
+        await connection.run_sync(cast(Table, MemberSwitchCommandReceipt.__table__).create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     controls = MemberSwitchControlRepository(sessions)
     companion = EnrollmentCompanion()
     auth = EnrollmentAuth(controls)
     post_probe = LockObservingPostProbe(controls)
-    service = MemberAuthEnrollmentService(controls, companion, auth, post_probe)
+    service = MemberAuthEnrollmentService(controls, cast(Any, companion), auth, post_probe)
     try:
         completed = await service.create_and_auto_complete(create_request())
         assert completed.phase == "completed"
@@ -621,9 +623,7 @@ async def test_post_probe_foreign_lease_wait_is_bounded(enrollment_probe_context
     confirmed = await advance_to_auth_confirmed(service)
     completed = await service.command(
         confirmed.id,
-        AuthEnrollmentCommandRequest(
-            command_id=uuid4(), expected_revision=confirmed.revision, action="finish"
-        ),
+        AuthEnrollmentCommandRequest(command_id=uuid4(), expected_revision=confirmed.revision, action="finish"),
         run_post_probe=False,
     )
     record = await controls.get(completed.id)
@@ -649,16 +649,12 @@ async def test_post_probe_foreign_lease_wait_is_bounded(enrollment_probe_context
     assert await controls.active() is None
 
 
-async def test_post_probe_claim_conflict_wait_is_bounded_without_hot_spin(
-    enrollment_probe_context, monkeypatch
-):
+async def test_post_probe_claim_conflict_wait_is_bounded_without_hot_spin(enrollment_probe_context, monkeypatch):
     service, controls, _, _, post_probe = enrollment_probe_context
     confirmed = await advance_to_auth_confirmed(service)
     completed = await service.command(
         confirmed.id,
-        AuthEnrollmentCommandRequest(
-            command_id=uuid4(), expected_revision=confirmed.revision, action="finish"
-        ),
+        AuthEnrollmentCommandRequest(command_id=uuid4(), expected_revision=confirmed.revision, action="finish"),
         run_post_probe=False,
     )
     original_save = controls.save
@@ -689,15 +685,15 @@ async def test_post_probe_claim_conflict_wait_is_bounded_without_hot_spin(
 async def test_concurrent_terminal_requests_share_one_post_probe(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'probe-concurrency.sqlite'}")
     async with engine.begin() as connection:
-        await connection.run_sync(Account.__table__.create)
-        await connection.run_sync(MemberSwitchControlRecord.__table__.create)
-        await connection.run_sync(MemberSwitchCommandReceipt.__table__.create)
+        await connection.run_sync(cast(Table, Account.__table__).create)
+        await connection.run_sync(cast(Table, MemberSwitchControlRecord.__table__).create)
+        await connection.run_sync(cast(Table, MemberSwitchCommandReceipt.__table__).create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     controls = MemberSwitchControlRepository(sessions)
     companion = EnrollmentCompanion()
     auth = EnrollmentAuth(controls)
     post_probe = BlockingEnrollmentPostProbe()
-    service = MemberAuthEnrollmentService(controls, companion, auth, post_probe)
+    service = MemberAuthEnrollmentService(controls, cast(Any, companion), auth, post_probe)
     try:
         confirmed = await advance_to_auth_confirmed(service)
         first = asyncio.create_task(command(service, confirmed, "finish"))
@@ -721,15 +717,15 @@ async def test_concurrent_terminal_requests_share_one_post_probe(tmp_path):
 async def test_expired_probe_owner_is_settled_unknown_without_second_probe(tmp_path, monkeypatch):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'probe-stale-owner.sqlite'}")
     async with engine.begin() as connection:
-        await connection.run_sync(Account.__table__.create)
-        await connection.run_sync(MemberSwitchControlRecord.__table__.create)
-        await connection.run_sync(MemberSwitchCommandReceipt.__table__.create)
+        await connection.run_sync(cast(Table, Account.__table__).create)
+        await connection.run_sync(cast(Table, MemberSwitchControlRecord.__table__).create)
+        await connection.run_sync(cast(Table, MemberSwitchCommandReceipt.__table__).create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     controls = MemberSwitchControlRepository(sessions)
     companion = EnrollmentCompanion()
     auth = EnrollmentAuth(controls)
     post_probe = BlockingEnrollmentPostProbe()
-    service = MemberAuthEnrollmentService(controls, companion, auth, post_probe)
+    service = MemberAuthEnrollmentService(controls, cast(Any, companion), auth, post_probe)
     monkeypatch.setattr("app.modules.member_switch.auth_enrollment._POST_PROBE_STALE_SECONDS", 0.03)
     monkeypatch.setattr("app.modules.member_switch.auth_enrollment._POST_PROBE_WAIT_SECONDS", 0.2)
     monkeypatch.setattr("app.modules.member_switch.auth_enrollment._POST_PROBE_POLL_SECONDS", 0.01)
@@ -1166,7 +1162,7 @@ async def test_auth_enrollment_auto_route_returns_server_post_probe(enrollment_p
     app.include_router(router)
     app.add_exception_handler(ControlConflict, handle_control_conflict)
     app.dependency_overrides[validate_dashboard_session] = lambda: None
-    app.dependency_overrides[require_dashboard_write_access] = lambda: None
+    app.dependency_overrides[require_dashboard_permission(Permission.ACCOUNTS_WRITE)] = lambda: None
     app.dependency_overrides[get_member_switch_controls] = lambda: controls
     app.dependency_overrides[get_member_auth_enrollment_service] = lambda: service
     app.dependency_overrides[get_member_auth_enrollment_command_service] = lambda: service
@@ -1207,7 +1203,7 @@ async def test_auth_enrollment_auto_routes_complete_and_resume(enrollment_contex
     app.include_router(router)
     app.add_exception_handler(ControlConflict, handle_control_conflict)
     app.dependency_overrides[validate_dashboard_session] = lambda: None
-    app.dependency_overrides[require_dashboard_write_access] = lambda: None
+    app.dependency_overrides[require_dashboard_permission(Permission.ACCOUNTS_WRITE)] = lambda: None
     app.dependency_overrides[get_member_switch_controls] = lambda: controls
     app.dependency_overrides[get_member_auth_enrollment_service] = lambda: service
     app.dependency_overrides[get_member_auth_enrollment_command_service] = lambda: service
@@ -1240,7 +1236,7 @@ async def test_auth_enrollment_routes_restore_only_through_enrollment_surface(en
     app.include_router(router)
     app.add_exception_handler(ControlConflict, handle_control_conflict)
     app.dependency_overrides[validate_dashboard_session] = lambda: None
-    app.dependency_overrides[require_dashboard_write_access] = lambda: None
+    app.dependency_overrides[require_dashboard_permission(Permission.ACCOUNTS_WRITE)] = lambda: None
     app.dependency_overrides[get_member_switch_controls] = lambda: controls
     app.dependency_overrides[get_member_auth_enrollment_service] = lambda: service
     app.dependency_overrides[get_member_auth_enrollment_command_service] = lambda: service

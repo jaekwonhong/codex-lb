@@ -90,6 +90,8 @@ EXPECTED_REQUIREMENTS: dict[tuple[str, str], PermissionRequirement] = {
     ("POST", "/api/oauth/complete"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
     ("POST", "/api/oauth/manual-callback"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
     ("POST", "/api/accounts/import"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("GET", "/api/accounts/import/local-files"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("POST", "/api/accounts/import/local"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
     ("PATCH", "/api/accounts/{account_id}"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
     ("DELETE", "/api/accounts/{account_id}"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
     ("POST", "/api/accounts/{account_id}/pause"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
@@ -98,10 +100,50 @@ EXPECTED_REQUIREMENTS: dict[tuple[str, str], PermissionRequirement] = {
     ("PUT", "/api/accounts/{account_id}/alias"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
     ("PUT", "/api/accounts/{account_id}/limit-warmup"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
     ("PUT", "/api/accounts/{account_id}/routing-policy"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("PUT", "/api/accounts/workspaces/{workspace_account_id}/burn-first"): PermissionRequirement(
+        Permission.ACCOUNTS_WRITE
+    ),
     ("POST", "/api/accounts/{account_id}/usage-reset-credits/consume"): PermissionRequirement(
         Permission.ACCOUNTS_WRITE
     ),
     ("POST", "/api/accounts/{account_id}/rate-limit-reset-credits/consume"): PermissionRequirement(
+        Permission.ACCOUNTS_WRITE
+    ),
+    # Local managed member/OAuth lifecycle. Reads intentionally stay behind
+    # accounts:write because these surfaces expose raw member/owner/auth identity.
+    ("POST", "/api/member-auth-handoffs/rotation-events/claim"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("POST", "/api/member-auth-handoffs/rotation-events/{event_id}/settle"): PermissionRequirement(
+        Permission.ACCOUNTS_WRITE
+    ),
+    ("POST", "/api/member-auth-handoffs"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("GET", "/api/member-auth-handoffs/usage"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("GET", "/api/member-auth-handoffs/workspaces/{workspace_id}/observation"): PermissionRequirement(
+        Permission.ACCOUNTS_WRITE
+    ),
+    ("POST", "/api/member-auth-handoffs/reconciliation-actions"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("POST", "/api/member-auth-handoffs/catalog-members"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("GET", "/api/member-auth-handoffs/{handoff_id}"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("GET", "/api/member-switch-runs/catalog"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("POST", "/api/member-switch-runs/catalog/refresh"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("GET", "/api/member-switch-runs/active"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("GET", "/api/member-switch-runs/admission"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("GET", "/api/member-switch-runs/oauth-enrollments/active"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("POST", "/api/member-switch-runs/oauth-enrollments/auto"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("POST", "/api/member-switch-runs/oauth-enrollments/{enrollment_id}/auto"): PermissionRequirement(
+        Permission.ACCOUNTS_WRITE
+    ),
+    ("GET", "/api/member-switch-runs/oauth-enrollments/{enrollment_id}"): PermissionRequirement(
+        Permission.ACCOUNTS_WRITE
+    ),
+    ("POST", "/api/member-switch-runs/oauth-enrollments"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("POST", "/api/member-switch-runs/oauth-enrollments/{enrollment_id}/commands"): PermissionRequirement(
+        Permission.ACCOUNTS_WRITE
+    ),
+    ("GET", "/api/member-switch-runs/{run_id}"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("POST", "/api/member-switch-runs"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("POST", "/api/member-switch-runs/{run_id}/commands"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("GET", "/api/member-rotation/operator"): PermissionRequirement(Permission.ACCOUNTS_WRITE),
+    ("PUT", "/api/member-rotation/operator/workspaces/{workspace_id}/intent"): PermissionRequirement(
         Permission.ACCOUNTS_WRITE
     ),
     # Account management and the roles read API (PR-1c): users:manage throughout.
@@ -258,6 +300,16 @@ def test_sensitive_routes_declare_their_permission(app_instance: FastAPI) -> Non
         if expected not in actual[(method, path)]
     }
     assert mismatched == {}, f"routes whose permission requirement changed: {mismatched}"
+
+
+def test_local_member_routes_do_not_use_coarse_write_alias(app_instance: FastAPI) -> None:
+    local_prefixes = ("/api/member-switch-runs", "/api/member-auth-handoffs", "/api/member-rotation/operator")
+    coarse = [
+        f"{method} {path}"
+        for method, path, route in _dashboard_routes(app_instance)
+        if path.startswith(local_prefixes) and _route_auth(route).write_alias_gate
+    ]
+    assert coarse == [], f"local member routes still use the coarse dashboard write alias: {coarse}"
 
 
 def test_step_up_gated_mutations_are_exactly_the_declared_set(app_instance: FastAPI) -> None:

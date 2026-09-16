@@ -1,4 +1,7 @@
 {
+  "common.confirmation.unavailable": "The target or write access is no longer confirmed. Cancel and refresh the list before continuing.",
+  "common.confirmation.failureNotice": "The request was not confirmed. It was not retried automatically; verify the current state before retrying.",
+  "accounts.page.retryLoad": "Retry account loading",
   "accounts.actions.disableWarmup": "Disable Warmup",
   "accounts.actions.enableWarmup": "Enable Warmup",
   "accounts.actions.forceProbe": "Force probe",

@@ -1,28 +1,31 @@
 ## ADDED Requirements
 
-### Requirement: Legacy control-schema adoption preserves migration history
+### Requirement: Local control schema remains outside the upstream migration graph
 
-The application migration runner SHALL leave merged migration files unchanged.
-When the member-control revision is pending and its tables already exist, it SHALL
-execute all missing predecessor revisions normally, validate the frozen control and
-receipt schema and receipt references, create only missing counterparts, and record
-only that revision in the same transaction. It SHALL NOT infer a complete database
-schema from the presence of control tables or skip unrelated migrations.
+The application migration runner SHALL use the unmodified upstream migration graph
+and SHALL NOT add, stamp, merge or replay a local member-control revision. The
+`member_switch_control_records` and `member_switch_command_receipts` tables are local
+extension state owned outside that graph. Schema-drift validation MAY ignore the
+corresponding missing-table `add_table` diffs so an upstream migration does not
+invent a second owner for those tables, but release qualification SHALL separately
+verify that both retained tables and their data are present before member-switch is
+enabled.
 
 #### Scenario: A legacy database has compatible retained controls
-- **WHEN** the requested upgrade crosses the member-control revision and compatible control tables already exist
-- **THEN** the application runner preserves their rows and completes all predecessor migrations before acknowledging that revision
-- **AND** subsequent revisions execute normally
+- **WHEN** a database with compatible retained local control tables is upgraded through the upstream beta.9 graph
+- **THEN** the application runner leaves those tables and rows outside Alembic ownership
+- **AND** all upstream revisions execute normally without stamping a local control revision
 
-#### Scenario: Existing state is incompatible
-- **WHEN** a control table has an incompatible column, constraint, default or receipt reference
-- **THEN** the compatibility path rejects it before creating a missing counterpart
-- **AND** does not acknowledge the control revision
+#### Scenario: Required retained extension state is absent
+- **WHEN** either local control table is absent during release qualification
+- **THEN** the deployment is blocked from enabling member-switch
+- **AND** the migration runner does not create or stamp a replacement local revision
 
 #### Scenario: Fresh database
 - **WHEN** neither control table exists
-- **THEN** the application runner uses the unchanged original migration
+- **THEN** the upstream migration runner completes only the upstream graph
+- **AND** this local member-switch capability remains unqualified until its extension schema is provisioned by a separately qualified owner
 
-#### Scenario: Upgrade stops before member control
-- **WHEN** the target revision precedes member control
-- **THEN** this compatibility path does not create, acknowledge or alter member-control state
+#### Scenario: Upstream target changes
+- **WHEN** the requested upstream target revision changes
+- **THEN** local extension-table presence never changes the upstream revision lineage or causes unrelated migrations to be skipped

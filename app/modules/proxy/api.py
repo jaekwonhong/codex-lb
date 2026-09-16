@@ -250,7 +250,9 @@ from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.model_sources.selection import (
     allowed_source_ids_for_api_key,
     effective_model_for_api_key,
+    runtime_enabled_source_ids_for_api_key,
     select_responses_model_source,
+    source_scoped_model_requires_source,
 )
 from app.modules.proxy import affinity as proxy_affinity_module
 from app.modules.proxy import images_service as images_service_module
@@ -355,7 +357,7 @@ from app.modules.proxy.types import (
     RateLimitWindowSnapshotData,
 )
 from app.modules.rate_limit_reset_credits.api import serialize_reset_credit_redeem
-from app.modules.rate_limit_reset_credits.redeem_coordination import RedeemClaimTimeoutError
+from app.modules.rate_limit_reset_credits.redeem_coordination import RedeemClaimTimeoutError, pin_redeem_request
 from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_credits_store
 from app.modules.request_logs.repository import RequestLogsRepository
 from app.modules.usage.mappers import usage_history_to_window_row
@@ -1237,6 +1239,20 @@ async def responses(
             native_codex_heartbeat=native_codex_heartbeat,
             context=context,
         )
+    if source_scoped_model_requires_source(
+        responses_payload.model,
+        api_key,
+        raw_model=raw_source_model,
+    ):
+        return _logged_error_json_response(
+            request,
+            503,
+            openai_error(
+                "model_source_unavailable",
+                f"Assigned model source for '{responses_payload.model}' is unavailable",
+                error_type="upstream_error",
+            ),
+        )
 
     if not backend_non_streaming_requested:
         response = await _stream_responses(
@@ -1441,6 +1457,20 @@ async def v1_responses(
             rate_limit_headers=rate_limit_headers,
             pre_normalization_effort=pre_normalization_effort,
             context=context,
+        )
+    if source_scoped_model_requires_source(
+        responses_payload.model,
+        api_key,
+        raw_model=raw_source_model,
+    ):
+        return _logged_error_json_response(
+            request,
+            503,
+            openai_error(
+                "model_source_unavailable",
+                f"Assigned model source for '{responses_payload.model}' is unavailable",
+                error_type="upstream_error",
+            ),
         )
     if responses_payload.stream:
         response = await _stream_responses(
@@ -1983,11 +2013,21 @@ async def v1_redeem_reset_credit(
             )
             if credit is None:
                 raise HTTPException(status_code=409, detail="Requested reset credit is unavailable")
+            # Persist an effect-request boundary before forwarding the
+            # non-idempotent upstream consume. Dashboard/rotation redemption
+            # already uses this durable ledger; the direct v1 endpoint must
+            # leave the same pre-effect authority so a reset-credit effect can
+            # never occur without a committed local record.
+            redeem_request_id = str(uuid4())
+            pinned_credit_id = await pin_redeem_request(account_id, redeem_request_id, credit.id)
+            if pinned_credit_id != credit.id:
+                raise RuntimeError("reset credit durable pin identity mismatch")
             try:
                 result = await consume_reset_credit(
                     access_token,
                     redeem_credentials.chatgpt_account_id,
                     credit.id,
+                    redeem_request_id=redeem_request_id,
                     route=route,
                     allow_direct_egress=route is None,
                 )
@@ -4055,8 +4095,19 @@ async def _list_enabled_source_catalog_models(
     *,
     require_responses: bool = False,
 ) -> list[UpstreamModel]:
+    runtime_enabled_source_ids = runtime_enabled_source_ids_for_api_key(api_key)
     async with get_background_session() as session:
-        sources = await ModelSourcesRepository(session).list_enabled_sources()
+        repository = ModelSourcesRepository(session)
+        sources = await repository.list_enabled_sources()
+        if runtime_enabled_source_ids:
+            existing_ids = {source.id for source in sources}
+            for source_id in sorted(runtime_enabled_source_ids):
+                if source_id in existing_ids:
+                    continue
+                source = await repository.get_by_id(source_id)
+                if source is not None:
+                    sources.append(source)
+                    existing_ids.add(source_id)
         # ``close_session`` rolls back the read transaction, which would
         # expire the loaded rows; detach them so their attributes stay
         # readable after this session boundary.
@@ -4066,7 +4117,10 @@ async def _list_enabled_source_catalog_models(
     assigned_source_ids = _allowed_source_ids_for_api_key(api_key)
     if assigned_source_ids is not None:
         sources = [source for source in sources if source.id in assigned_source_ids]
-    return source_models_to_upstream_models(sources)
+    return source_models_to_upstream_models(
+        sources,
+        runtime_enabled_source_ids=runtime_enabled_source_ids,
+    )
 
 
 def _dump_v1_models_response(response: ModelListResponse) -> dict[str, JsonValue]:
@@ -5185,6 +5239,9 @@ async def _source_responses_response(
         raise
     try:
         source_payload = _shape_source_responses_payload(payload, source, api_key=api_key)
+        forwarded_reasoning = source_payload.get("reasoning")
+        forwarded_effort = forwarded_reasoning.get("effort") if is_json_mapping(forwarded_reasoning) else None
+        owner.reasoning_effort = forwarded_effort if isinstance(forwarded_effort, str) else None
         if payload.stream:
             await open_with_disconnect_watch(request, owner, _open_owned_source_stream(owner, source_payload))
             stream = owner.stream
@@ -5557,6 +5614,9 @@ async def _source_chat_completion_response(
         source_payload,
         allow_reasoning=source_model_supports_reasoning(source, model),
     )
+    forwarded_reasoning = source_payload.get("reasoning")
+    forwarded_effort = forwarded_reasoning.get("effort") if is_json_mapping(forwarded_reasoning) else None
+    logged_reasoning_effort = forwarded_effort if isinstance(forwarded_effort, str) else None
 
     if payload.stream:
         stream_options = source_payload.get("stream_options")
@@ -5574,6 +5634,7 @@ async def _source_chat_completion_response(
                 api_key=api_key,
                 model=model,
                 status="error",
+                reasoning_effort=logged_reasoning_effort,
                 error_code=_source_error_code(exc.payload),
                 error_message=_source_error_message(exc.payload),
                 upstream_status_code=exc.upstream_status_code,
@@ -5595,6 +5656,7 @@ async def _source_chat_completion_response(
                     api_key=api_key,
                     model=model,
                     status="cancelled",
+                    reasoning_effort=logged_reasoning_effort,
                     error_code="client_disconnected",
                     error_message="client disconnected during source stream setup",
                 )
@@ -5622,6 +5684,7 @@ async def _source_chat_completion_response(
                 usage_holder=stream.usage_holder,
                 upstream_status_code=stream.upstream_status_code,
                 rate_limit_headers=rate_limit_headers,
+                reasoning_effort=logged_reasoning_effort,
             )
         # The settlement generator owns the outcome once Starlette iterates the
         # body; the transport owner covers the one await before that (the
@@ -5637,6 +5700,7 @@ async def _source_chat_completion_response(
                 api_key=api_key,
                 model=model,
                 reservation=reservation,
+                reasoning_effort=logged_reasoning_effort,
             ),
         )
         body = _source_chat_stream_with_settlement(
@@ -5649,6 +5713,7 @@ async def _source_chat_completion_response(
             model=model,
             reservation=reservation,
             owner=owner,
+            reasoning_effort=logged_reasoning_effort,
         )
         return SourceStreamingResponse(
             body,
@@ -5666,6 +5731,7 @@ async def _source_chat_completion_response(
             api_key=api_key,
             model=model,
             status="error",
+            reasoning_effort=logged_reasoning_effort,
             error_code=_source_error_code(exc.payload),
             error_message=_source_error_message(exc.payload),
             upstream_status_code=exc.upstream_status_code,
@@ -5687,6 +5753,7 @@ async def _source_chat_completion_response(
                 api_key=api_key,
                 model=model,
                 status="cancelled",
+                reasoning_effort=logged_reasoning_effort,
                 error_code="client_disconnected",
                 error_message="client disconnected during source request setup",
             )
@@ -5717,6 +5784,7 @@ async def _source_chat_completion_response(
             api_key=api_key,
             model=model,
             status="error",
+            reasoning_effort=logged_reasoning_effort,
             error_code="usage_unavailable",
             error_message="source response missing usage",
             upstream_status_code=result.upstream_status_code,
@@ -5736,6 +5804,7 @@ async def _source_chat_completion_response(
                 status="cancelled",
                 usage=result.usage,
                 timings=result.timings,
+                reasoning_effort=logged_reasoning_effort,
                 error_code="client_disconnected",
                 error_message="client disconnected during source usage settlement",
                 upstream_status_code=result.upstream_status_code,
@@ -5750,6 +5819,7 @@ async def _source_chat_completion_response(
                 api_key=api_key,
                 model=model,
                 status="error",
+                reasoning_effort=logged_reasoning_effort,
                 error_code="usage_settlement_failed",
                 error_message="source usage settlement failed",
                 upstream_status_code=result.upstream_status_code,
@@ -5772,6 +5842,7 @@ async def _source_chat_completion_response(
             status="success",
             usage=result.usage,
             timings=result.timings,
+            reasoning_effort=logged_reasoning_effort,
             upstream_status_code=result.upstream_status_code,
         )
     )
@@ -5791,6 +5862,7 @@ async def _buffered_limited_source_chat_stream_response(
     usage_holder: SourceUsageHolder,
     upstream_status_code: int,
     rate_limit_headers: Mapping[str, str],
+    reasoning_effort: str | None = None,
 ) -> Response:
     chunks: list[bytes] = []
     total_bytes = 0
@@ -5823,6 +5895,7 @@ async def _buffered_limited_source_chat_stream_response(
                 api_key=api_key,
                 model=model,
                 status="error",
+                reasoning_effort=reasoning_effort,
                 error_code="source_stream_buffer_limit_exceeded",
                 error_message="source stream buffer limit exceeded",
             )
@@ -5851,6 +5924,7 @@ async def _buffered_limited_source_chat_stream_response(
                 status="cancelled",
                 usage=usage_holder.usage,
                 timings=usage_holder.timings,
+                reasoning_effort=reasoning_effort,
                 error_code="client_disconnected",
                 error_message="client disconnected during source stream buffering",
             )
@@ -5878,6 +5952,7 @@ async def _buffered_limited_source_chat_stream_response(
             api_key=api_key,
             model=model,
             status="error",
+            reasoning_effort=reasoning_effort,
             error_code=_source_error_code(exc.payload),
             error_message=_source_error_message(exc.payload),
             upstream_status_code=exc.upstream_status_code,
@@ -5896,6 +5971,7 @@ async def _buffered_limited_source_chat_stream_response(
             api_key=api_key,
             model=model,
             status="error",
+            reasoning_effort=reasoning_effort,
             error_code="model_source_stream_error",
             error_message=exc.__class__.__name__,
         )
@@ -5914,6 +5990,7 @@ async def _buffered_limited_source_chat_stream_response(
             api_key=api_key,
             model=model,
             status="error",
+            reasoning_effort=reasoning_effort,
             error_code="usage_unavailable",
             error_message="source stream missing usage",
         )
@@ -5932,6 +6009,7 @@ async def _buffered_limited_source_chat_stream_response(
                 status="cancelled",
                 usage=usage_holder.usage,
                 timings=usage_holder.timings,
+                reasoning_effort=reasoning_effort,
                 error_code="client_disconnected",
                 error_message="client disconnected during source stream usage settlement",
             )
@@ -5945,6 +6023,7 @@ async def _buffered_limited_source_chat_stream_response(
                 api_key=api_key,
                 model=model,
                 status="error",
+                reasoning_effort=reasoning_effort,
                 error_code="usage_settlement_failed",
                 error_message="source usage settlement failed",
             )
@@ -5966,6 +6045,7 @@ async def _buffered_limited_source_chat_stream_response(
             status="success",
             usage=usage_holder.usage,
             timings=usage_holder.timings,
+            reasoning_effort=reasoning_effort,
         )
     )
     if log_deferred_cancellation:
@@ -6154,6 +6234,7 @@ async def _source_chat_stream_with_settlement(
     model: str,
     reservation: ApiKeyUsageReservationData | None,
     owner: SourceChatStreamOwner | None = None,
+    reasoning_effort: str | None = None,
 ) -> AsyncIterator[_SourceStreamChunkT]:
     if owner is not None:
         # From here on this generator owns the outcome (reservation and row)
@@ -6241,6 +6322,7 @@ async def _source_chat_stream_with_settlement(
                 status=status,
                 usage=usage_holder.usage,
                 timings=usage_holder.timings,
+                reasoning_effort=reasoning_effort,
                 error_code=error_code,
                 error_message=error_message,
                 upstream_status_code=row_upstream_status_code,
@@ -6255,6 +6337,7 @@ async def _abandon_source_chat_stream_before_body(
     api_key: ApiKeyData | None,
     model: str,
     reservation: ApiKeyUsageReservationData | None,
+    reasoning_effort: str | None = None,
 ) -> None:
     """A chat stream body that never started: release the reservation and record the abandoned attempt.
 
@@ -6279,6 +6362,7 @@ async def _abandon_source_chat_stream_before_body(
         api_key=api_key,
         model=model,
         status="cancelled",
+        reasoning_effort=reasoning_effort,
         error_code=ABANDON_CLIENT_DISCONNECTED_BEFORE_BODY,
         error_message="client disconnected before the source stream body started",
     )
@@ -7376,16 +7460,41 @@ async def codex_consume_rate_limit_reset_credit(
             ),
         )
 
-    upstream_response = await _consume_rate_limit_reset_credit_for_request(
-        request,
-        redeem_request_id=redeem_request_id,
-    )
+    async with _serialize_codex_usage_reset_credit_redeem(request):
+        upstream_response = await _consume_rate_limit_reset_credit_for_request(
+            request,
+            redeem_request_id=redeem_request_id,
+        )
     account_id = _request_state_str(request, "codex_usage_identity_account_id")
     if account_id is not None:
         await get_rate_limit_reset_credits_store().invalidate(account_id)
     if upstream_response.code in {"reset", "already_redeemed"}:
         await _force_refresh_codex_usage_identity_account(request)
     return ConsumeRateLimitResetCreditResponse.model_validate(upstream_response.model_dump())
+
+
+@asynccontextmanager
+async def _serialize_codex_usage_reset_credit_redeem(request: Request) -> AsyncIterator[None]:
+    """Serialize the generic Codex reset consume without changing its upstream semantics.
+
+    This surface deliberately lets upstream choose the reset credit and therefore
+    has no authoritative pre-consume ``credit_id`` to persist in the explicit
+    credit ledger.  It must still participate in the same per-local-account
+    serializer as every other reset path so the Q2 PostgreSQL reset fence can
+    prevent the upstream effect without fabricating a credit identity.
+    """
+    account_id = _request_state_str(request, "codex_usage_identity_account_id")
+    if account_id is None:
+        raise ProxyAuthError("ChatGPT authentication required for usage limit reset credits")
+    try:
+        async with get_background_session() as session:
+            async with serialize_reset_credit_redeem(account_id, session=session):
+                yield
+    except RedeemClaimTimeoutError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Another reset credit redemption is already in progress for this account",
+        ) from exc
 
 
 async def _consume_rate_limit_reset_credit_for_request(
@@ -8777,12 +8886,14 @@ async def _log_source_chat_completion(
     status: str,
     usage: SourceUsage | None = None,
     timings: SourceTimings | None = None,
+    reasoning_effort: str | None = None,
     cost_usd_override: float | None = None,
     error_code: str | None = None,
     error_message: str | None = None,
     upstream_status_code: int | None = None,
 ) -> None:
     conversation_id = _request_log_client_fields(request.headers)[2]
+    session_id = proxy_affinity_module._owner_lookup_session_id_from_headers(request.headers)
     try:
         async with get_background_session() as session:
             await RequestLogsRepository(session).add_log(
@@ -8795,6 +8906,9 @@ async def _log_source_chat_completion(
                 input_tokens=usage.input_tokens if usage is not None else None,
                 output_tokens=usage.output_tokens if usage is not None else None,
                 cached_input_tokens=usage.cached_input_tokens if usage is not None else None,
+                reasoning_tokens=usage.reasoning_tokens if usage is not None else None,
+                reasoning_effort=reasoning_effort,
+                session_id=session_id,
                 cost_usd=(
                     cost_usd_override if cost_usd_override is not None else _source_usage_cost_usd(source, model, usage)
                 ),

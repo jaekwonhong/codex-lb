@@ -6,7 +6,8 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
-from app.core.auth.dependencies import require_dashboard_write_access, validate_dashboard_session
+from app.core.auth.dashboard_access import Permission
+from app.core.auth.dependencies import require_dashboard_permission, validate_dashboard_session
 from app.dependencies import get_member_switch_companion, get_member_switch_controls, get_member_switch_service
 from app.modules.member_switch.api import handle_control_conflict, router
 from app.modules.member_switch.repository import ControlConflict
@@ -21,7 +22,7 @@ def make_app(context):
     app.include_router(router)
     app.add_exception_handler(ControlConflict, handle_control_conflict)
     app.dependency_overrides[validate_dashboard_session] = lambda: None
-    app.dependency_overrides[require_dashboard_write_access] = lambda: None
+    app.dependency_overrides[require_dashboard_permission(Permission.ACCOUNTS_WRITE)] = lambda: None
     app.dependency_overrides[get_member_switch_controls] = lambda: controls
     app.dependency_overrides[get_member_switch_service] = lambda: service
     app.dependency_overrides[get_member_switch_companion] = lambda: companion
@@ -98,7 +99,7 @@ async def test_write_access_is_required_before_control_or_companion_calls(contex
     def deny():
         raise HTTPException(status_code=403, detail="read_only")
 
-    app.dependency_overrides[require_dashboard_write_access] = deny
+    app.dependency_overrides[require_dashboard_permission(Permission.ACCOUNTS_WRITE)] = deny
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         assert (await client.get("/api/member-switch-runs/active")).status_code == 403
         assert (await client.get("/api/member-switch-runs/catalog")).status_code == 403

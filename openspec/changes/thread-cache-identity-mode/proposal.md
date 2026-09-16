@@ -134,6 +134,6 @@ does not claim total isolation.
 - Schema: two nullable columns (`dashboard_settings.thread_cache_identity_mode`,
   `api_keys.thread_cache_identity_override`), one migration, no backfill. An
   upgrade introduces no decision and changes no behaviour.
-- Configuration: one new `Settings` field, `[settings_fields].max` 96 -> 97.
+- Configuration: one new `Settings` field; at this change's authoring baseline, `[settings_fields].max` moved 96 -> 97.
 - Runtime: in `shared` mode every helper returns before touching anything, so
   the request path is unchanged and the golden-snapshot tests pin that.

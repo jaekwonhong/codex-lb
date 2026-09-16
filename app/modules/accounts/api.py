@@ -239,12 +239,12 @@ async def import_account(
             max_bytes=ACCOUNT_IMPORT_MULTIPART_POLICY.max_file_bytes,
             param="auth_json",
         )
-    return await _import_account_raw(request, raw, context)
+    return await _import_account_raw(request, raw, context, principal)
 
 
 @router.get("/import/local-files", response_model=LocalOAuthFilesResponse)
 async def list_local_oauth_import_files(
-    _write_access=Depends(require_dashboard_write_access),
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
 ) -> LocalOAuthFilesResponse:
     available, files = list_local_oauth_files(get_settings().oauth_import_dir)
     return LocalOAuthFilesResponse(
@@ -257,20 +257,21 @@ async def list_local_oauth_import_files(
 async def import_local_oauth_file(
     request: Request,
     payload: LocalOAuthImportRequest,
-    _write_access=Depends(require_dashboard_write_access),
+    principal: DashboardPrincipal = Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
     context: AccountsContext = Depends(get_accounts_context),
 ) -> AccountImportResponse:
     try:
         raw = read_local_oauth_file(get_settings().oauth_import_dir, payload.filename)
     except LocalOAuthImportError as exc:
         raise DashboardBadRequestError(str(exc), code=exc.code) from exc
-    return await _import_account_raw(request, raw, context)
+    return await _import_account_raw(request, raw, context, principal)
 
 
 async def _import_account_raw(
     request: Request,
     raw: bytes,
     context: AccountsContext,
+    principal: DashboardPrincipal,
 ) -> AccountImportResponse:
     try:
         response = await context.service.import_account(raw)
@@ -349,6 +350,7 @@ async def probe_account(
             account_id=account_id,
             model=requested_model,
             actor_ip=request.client.host if request.client else None,
+            emit_audit=False,
         )
     except AccountNotProbableError as exc:
         raise DashboardConflictError(str(exc), code="account_not_probable") from exc
@@ -359,26 +361,6 @@ async def probe_account(
         ) from exc
     if result is None:
         raise DashboardNotFoundError("Account not found", code="account_not_found")
-    probe_succeeded = 200 <= result.probe_status_code < 300
-    if not probe_succeeded or result.usage_refresh_ready_for_probe_settlement():
-        try:
-            await get_proxy_service_for_app(request.app).record_account_probe_result(
-                account_id=result.account_id,
-                http_status=result.probe_status_code,
-            )
-        except Exception:
-            logger.exception(
-                "Force Probe advisory settlement failed account_id=%s probe_status_code=%s",
-                result.account_id,
-                result.probe_status_code,
-            )
-    else:
-        logger.warning(
-            "Force Probe success skipped advisory settlement before successful usage refresh fetch "
-            "account_id=%s probe_status_code=%s",
-            result.account_id,
-            result.probe_status_code,
-        )
     AuditService.log_async(
         "account_probed",
         actor_ip=request.client.host if request.client else None,
@@ -460,7 +442,7 @@ async def update_account_routing_policy(
 async def update_workspace_burn_first(
     workspace_account_id: UUID,
     payload: WorkspaceRoutingPolicyUpdateRequest,
-    _write_access=Depends(require_dashboard_write_access),
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
     context: AccountsContext = Depends(get_accounts_context),
 ) -> WorkspaceRoutingPolicyUpdateResponse:
     result = await context.service.apply_workspace_routing_policy(

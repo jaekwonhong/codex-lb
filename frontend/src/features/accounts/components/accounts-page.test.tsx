@@ -79,6 +79,12 @@ vi.mock("@/features/member-switch/components/member-switch-panel", () => ({
   ),
 }));
 
+vi.mock("@/features/member-rotation/components/member-rotation-panel", () => ({
+  MemberRotationPanel: ({ readOnly }: { readOnly: boolean }) => (
+    <section aria-label="Member rotation panel" data-read-only={readOnly} />
+  ),
+}));
+
 const { useAccounts } = await import("@/features/accounts/hooks/use-accounts");
 const mockedUseAccounts = useAccounts as unknown as ReturnType<typeof vi.fn>;
 const { useUpstreamProxyAdmin } = await import("@/features/settings/hooks/use-settings");
@@ -88,6 +94,7 @@ function mockAccountsQuery(accounts: AccountSummary[]) {
   mockedUseAccounts.mockReturnValue({
     accountsQuery: { data: accounts, error: null, refetch: vi.fn() },
     importMutation: idleMutation(),
+    localImportMutation: idleMutation(),
     pauseMutation: idleMutation(),
     resumeMutation: idleMutation(),
     probeMutation: idleMutation(),

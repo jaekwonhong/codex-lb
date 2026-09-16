@@ -178,6 +178,7 @@ def _store_request_usage_summaries(
         _request_usage_summary_cache.pop(oldest, None)
     _request_usage_summary_cache[key] = (summaries, time.monotonic() + ttl_seconds)
 
+
 @dataclass(frozen=True, slots=True)
 class WorkspaceRoutingPolicyResult:
     workspace_account_id: str
@@ -1072,7 +1073,6 @@ class AccountsRepository:
             normal_count=counts.get("normal", 0),
             preserve_count=counts.get("preserve", 0),
         )
-
 
     async def begin_delete(self, account_id: str, *, delete_history: bool = False) -> bool:
         """Mark an account for background deletion; commits in milliseconds.

@@ -199,7 +199,7 @@ export function MemberSwitchPanel({
         </Button>
       </div>
     </div>
-    {readOnly ? <p className="mt-4 text-sm">관리자만 멤버 전환과 OAuth 등록을 조회·실행할 수 있습니다.</p> : null}
+    {readOnly ? <p className="mt-4 text-sm">계정 관리 권한이 있어야 멤버 전환과 OAuth 등록을 조회·실행할 수 있습니다.</p> : null}
     {busy ? <p role="status" className="mt-4 flex items-center gap-2 text-sm"><Spinner size="sm" />
       {busy === "oauth_enrollment_auto"
         ? oauthAutoProgressLabel(runtime.autoProgress)

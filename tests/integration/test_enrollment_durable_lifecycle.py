@@ -52,6 +52,7 @@ async def prepare_enrollment(integration, monkeypatch):
 
             return Observation()
         if method == "POST" and path == "/oauth-enrollment-browser/open":
+
             class EgoBrowser:
                 status = 200
 
@@ -75,6 +76,7 @@ async def prepare_enrollment(integration, monkeypatch):
 
             return EgoBrowser()
         if method == "POST" and path == "/oauth-enrollment-browser/profile-status":
+
             class EgoProfile:
                 status = 200
 

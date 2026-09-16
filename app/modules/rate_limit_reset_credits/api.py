@@ -112,6 +112,7 @@ class _RedeemResetCreditOutcome:
     response: ConsumeResetCreditResponseSchema
     available_count_before: int
     available_count_after: int
+    credit_id: str | None = None
 
 
 class ResetCreditRedeemRequestAlreadyPinned(Exception):
@@ -221,6 +222,7 @@ async def _redeem_soonest_reset_credit(
     resolve_route: ResolveRouteFn | None = None,
     redeem_request_id: str | None = None,
     skip_if_redeem_request_pinned: bool = False,
+    allow_fresh_discovery: bool = False,
     expected_credit_id: str | None = None,
     expected_credit_expires_at: datetime | None = None,
 ) -> _RedeemResetCreditOutcome:
@@ -241,6 +243,7 @@ async def _redeem_soonest_reset_credit(
                 resolve_route=resolve_route,
                 redeem_request_id=redeem_request_id,
                 skip_if_redeem_request_pinned=skip_if_redeem_request_pinned,
+                allow_fresh_discovery=allow_fresh_discovery,
                 expected_credit_id=expected_credit_id,
                 expected_credit_expires_at=expected_credit_expires_at,
             )
@@ -322,6 +325,7 @@ async def _redeem_soonest_reset_credit_locked(
     resolve_route: ResolveRouteFn | None,
     redeem_request_id: str | None,
     skip_if_redeem_request_pinned: bool,
+    allow_fresh_discovery: bool,
     expected_credit_id: str | None,
     expected_credit_expires_at: datetime | None,
 ) -> _RedeemResetCreditOutcome:
@@ -349,7 +353,7 @@ async def _redeem_soonest_reset_credit_locked(
             redeem_request_id=redeem_request_id,
             credit_id=pending_credit_id,
         )
-    if cached_credit is None and pending_credit_id is None:
+    if cached_credit is None and pending_credit_id is None and not allow_fresh_discovery:
         raise DashboardConflictError("No available reset credit", code="no_available_reset_credit")
 
     access_token = encryptor.decrypt(redeem_account.access_token_encrypted)
@@ -439,6 +443,7 @@ async def _redeem_soonest_reset_credit_locked(
         ),
         available_count_before=credits_response.available_count,
         available_count_after=available_count_after,
+        credit_id=credit_id,
     )
 
 

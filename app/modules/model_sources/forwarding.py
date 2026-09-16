@@ -381,6 +381,31 @@ async def stream_chat_completion(
     )
 
 
+def _dgx_responses_payload(source: ModelSource, payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Adapt opaque reasoning replay only for the qualified DGX deployment.
+
+    Codex can replay reasoning encrypted by a previous provider when switching
+    models. vLLM cannot decrypt it and rejects even otherwise valid history.
+    Preserve plaintext reasoning, summaries, messages, tools, and compaction;
+    remove only the unsupported field without mutating the caller's history.
+    Other model sources may support encrypted reasoning and must retain it.
+    """
+    if source.id != "src_69bc4887d69740979f6a0beaca37eefb" or payload.get("model") != "qwen3.8-flash-next":
+        return payload
+    items = payload.get("input")
+    if not isinstance(items, list):
+        return payload
+    adapted: list[JsonValue] = []
+    changed = False
+    for item in items:
+        if isinstance(item, dict) and item.get("type") == "reasoning" and "encrypted_content" in item:
+            adapted.append({key: value for key, value in item.items() if key != "encrypted_content"})
+            changed = True
+        else:
+            adapted.append(item)
+    return {**payload, "input": adapted} if changed else payload
+
+
 async def forward_responses(
     source: ModelSource,
     payload: dict[str, JsonValue],
@@ -388,6 +413,7 @@ async def forward_responses(
     encryptor: TokenEncryptor | None = None,
     recode_credential_failures: bool = True,
 ) -> SourceResponsesCompletion:
+    payload = _dgx_responses_payload(source, payload)
     try:
         async with lease_model_source_session() as session:
             # Non-stream generations legitimately spend minutes before the
@@ -508,6 +534,7 @@ async def stream_responses(
     scheduler: Scheduler = REAL_SCHEDULER,
     clock: Clock = REAL_CLOCK,
 ) -> SourceResponsesStream:
+    payload = _dgx_responses_payload(source, payload)
     usage_holder = SourceUsageHolder()
     usage_parser = SourceStreamUsageParser(usage_holder, response_shape="responses")
     stack, response, first_chunk = await _open_source_stream(

@@ -89,6 +89,7 @@ async def test_admitted_membership_failure_cannot_be_finished_as_a_reset(context
 
 async def test_partial_target_collision_blocks_old_auth_deletion():
     request = prepare_request()
+    assert request.removed_email is not None
     repo = FakeRepository(
         [account("old-local", request.removed_email, request.workspace_account_id, AccountStatus.ACTIVE)]
     )
@@ -101,5 +102,6 @@ async def test_partial_target_collision_blocks_old_auth_deletion():
     repo.accounts.extend([target, collision])
     oauth.status = "success"
     result = await service.advance(prepared.handoff_id)
+    assert result is not None
     assert result.error_code == "ambiguous_target_auth"
     assert repo.deleted == []

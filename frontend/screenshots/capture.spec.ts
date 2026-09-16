@@ -13,6 +13,7 @@ import {
   overview,
   requestLogs,
   resetCreditSnapshots,
+  rotationOperator,
   settings,
   upstreamProxyAdmin,
   unauthenticatedSession,
@@ -81,6 +82,7 @@ async function interceptApi(
       return fulfill(route, createConversationDetails({ conversationId: "conv_abc" }));
     }
     if (p === "/api/accounts") return fulfill(route, { accounts: accountList });
+    if (p === "/api/member-rotation/operator") return fulfill(route, rotationOperator);
     const trendsMatch = p.match(/^\/api\/accounts\/([^/]+)\/trends$/);
     if (trendsMatch) {
       const trends = accountTrends[trendsMatch[1]];
@@ -133,6 +135,7 @@ async function capture(
     fullPage?: boolean;
     session?: SessionOverride;
     waitFor?: string;
+    element?: string;
     beforeScreenshot?: (page: Page) => Promise<void>;
   },
 ) {
@@ -174,12 +177,16 @@ async function capture(
     });
   }
 
-  await page.screenshot({
+  const screenshotOptions = {
     path: path.join(SCREENSHOT_DIR, opts.file),
-    type: "jpeg",
+    type: "jpeg" as const,
     quality: 90,
-    fullPage: opts.fullPage ?? false,
-  });
+  };
+  if (opts.element) {
+    await page.locator(opts.element).screenshot(screenshotOptions);
+  } else {
+    await page.screenshot({ ...screenshotOptions, fullPage: opts.fullPage ?? false });
+  }
 }
 
 // ── Scenes ──
@@ -231,6 +238,16 @@ test("accounts — light", async ({ page }) => {
 
 test("accounts — dark", async ({ page }) => {
   await capture(page, { file: "accounts-dark.jpg", theme: "dark", route: "/accounts" });
+});
+
+test("accounts — member rotation operator", async ({ page }) => {
+  await capture(page, {
+    file: "accounts-member-rotation.jpg",
+    theme: "light",
+    route: "/accounts",
+    waitFor: '[data-testid="member-rotation-operator-panel"]',
+    element: '[data-testid="member-rotation-operator-panel"]',
+  });
 });
 
 test("accounts list keeps many rows in an internal scroll region", async ({ page }) => {

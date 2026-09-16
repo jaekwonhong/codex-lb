@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
 from app.core.openai.model_registry import ModelRegistryExport, ReasoningLevel, UpstreamModel, get_model_registry
 from app.core.types import JsonValue
+from app.modules.model_sources import selection as source_selection
 from app.modules.proxy import api as proxy_api
 
 pytestmark = pytest.mark.integration
@@ -468,6 +470,69 @@ async def test_v1_models_filters_openai_compatible_sources_by_api_key_assignment
     assert after_delete.status_code == 200
     ids_after_delete = {item["id"] for item in after_delete.json()["data"]}
     assert "vllm-hidden" not in ids_after_delete
+
+
+@pytest.mark.asyncio
+async def test_runtime_enabled_disabled_source_catalog_requires_scoped_assignment(async_client, monkeypatch):
+    visible_source_id = await _create_model_source(
+        async_client,
+        name="runtime-visible",
+        model="runtime-visible-model",
+        supports_responses=True,
+    )
+    hidden_source_id = await _create_model_source(
+        async_client,
+        name="runtime-hidden",
+        model="runtime-hidden-model",
+        supports_responses=True,
+    )
+    settings = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert settings.status_code == 200
+    scoped_key = await async_client.post(
+        "/api/api-keys/",
+        json={"name": "runtime-scoped-key", "assignedSourceIds": [visible_source_id]},
+    )
+    assert scoped_key.status_code == 200
+    unscoped_key = await async_client.post("/api/api-keys/", json={"name": "runtime-unscoped-key"})
+    assert unscoped_key.status_code == 200
+
+    for source_id in (visible_source_id, hidden_source_id):
+        disabled = await async_client.patch(f"/api/model-sources/{source_id}", json={"isEnabled": False})
+        assert disabled.status_code == 200
+        assert disabled.json()["isEnabled"] is False
+
+    monkeypatch.setattr(
+        source_selection,
+        "get_settings",
+        lambda: SimpleNamespace(
+            runtime_enabled_model_source_ids=f"{visible_source_id},{hidden_source_id}",
+        ),
+    )
+
+    async def listed_ids(path: str, key: str) -> set[str]:
+        response = await async_client.get(path, headers={"Authorization": f"Bearer {key}"})
+        assert response.status_code == 200
+        payload = response.json()
+        if path == "/v1/models":
+            return {entry["id"] for entry in payload["data"]}
+        return {entry["slug"] for entry in payload["models"]}
+
+    for path in ("/v1/models", "/backend-api/codex/models"):
+        scoped_ids = await listed_ids(path, scoped_key.json()["key"])
+        assert "runtime-visible-model" in scoped_ids
+        assert "runtime-hidden-model" not in scoped_ids
+
+        unscoped_ids = await listed_ids(path, unscoped_key.json()["key"])
+        assert "runtime-visible-model" not in unscoped_ids
+        assert "runtime-hidden-model" not in unscoped_ids
 
 
 @pytest.mark.asyncio

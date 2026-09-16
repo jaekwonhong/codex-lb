@@ -48,9 +48,7 @@ class MemberAuthCatalogOverlayRepository:
             payload = json.loads(self._path.read_text(encoding="utf-8"))
             catalog_file = _CustomMemberAuthCatalogFile.model_validate(payload)
             if catalog_file.schema_version != _CATALOG_SCHEMA_VERSION:
-                raise ValueError(
-                    f"Unsupported member auth catalog schema: {catalog_file.schema_version}"
-                )
+                raise ValueError(f"Unsupported member auth catalog schema: {catalog_file.schema_version}")
             return catalog_file.members
 
     def save(self, members: tuple[CustomMemberAuthCatalogRecord, ...]) -> None:

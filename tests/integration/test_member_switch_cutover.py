@@ -67,7 +67,9 @@ async def test_unreadable_orphan_handoff_blocks_new_work_without_repair(integrat
     response = await create_response(integration)
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "stored_handoff_review_required"
-    assert (await controls.get("handoff:orphan")).payload == "{broken"
+    retained = await controls.get("handoff:orphan")
+    assert retained is not None
+    assert retained.payload == "{broken"
     assert integration.wire.calls == []
 
 

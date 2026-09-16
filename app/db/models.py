@@ -251,6 +251,162 @@ class UsageHistory(Base):
     credits_balance: Mapped[float | None] = mapped_column(Float, nullable=True)
 
 
+class MemberRotationQuotaOperation(Base):
+    """Durable local replacement accounting, independent of billing telemetry."""
+
+    __tablename__ = "member_rotation_quota_operations"
+    __table_args__ = (
+        CheckConstraint(
+            "remove_effect IN ('not_attempted', 'unknown', 'confirmed', 'authoritative_non_effect')",
+            name="ck_member_rotation_quota_remove_effect",
+        ),
+        CheckConstraint(
+            "invite_effect IN ('not_attempted', 'unknown', 'confirmed', 'authoritative_non_effect')",
+            name="ck_member_rotation_quota_invite_effect",
+        ),
+        UniqueConstraint("rotation_event_id", name="uq_member_rotation_quota_rotation_event"),
+        Index(
+            "ix_member_rotation_quota_workspace_reserved",
+            "workspace_account_id",
+            "reserved_at",
+        ),
+        Index(
+            "ix_member_rotation_quota_workspace_requested",
+            "workspace_account_id",
+            "requested_at",
+        ),
+    )
+
+    operation_id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_id: Mapped[str] = mapped_column(String, nullable=False)
+    workspace_account_id: Mapped[str] = mapped_column(String, nullable=False)
+    rotation_event_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    initial_admission_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    reserved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    remove_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    remove_effect: Mapped[str] = mapped_column(
+        String(32), default="not_attempted", server_default="not_attempted", nullable=False
+    )
+    remove_effect_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    invite_requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    invite_effect: Mapped[str] = mapped_column(
+        String(32), default="not_attempted", server_default="not_attempted", nullable=False
+    )
+    invite_effect_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    reservation_released_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class MemberRotationWorkspaceControl(Base):
+    """Operator-owned automatic-rotation intent; it carries no effect authority."""
+
+    __tablename__ = "member_rotation_workspace_controls"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_account_id",
+            name="uq_member_rotation_workspace_control_workspace_account",
+        ),
+        CheckConstraint("version >= 1", name="ck_member_rotation_workspace_control_version"),
+    )
+
+    workspace_id: Mapped[str] = mapped_column(String, primary_key=True)
+    workspace_account_id: Mapped[str] = mapped_column(String, nullable=False)
+    automatic_rotation_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default=false(),
+        nullable=False,
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1, server_default=text("1"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        server_default=func.now(),
+        nullable=False,
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class WorkspaceMemberUsageResetInvalidation(Base):
+    """Evidence that historical display reset schedules were invalidated at a fixed cutoff."""
+
+    __tablename__ = "workspace_member_usage_reset_invalidations"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cutoff_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    affected_count: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), server_default=func.now(), nullable=False
+    )
+
+
+class WorkspaceMemberFinalUsageSnapshot(Base):
+    """Immutable final member-window evidence retained beyond account or membership lifetime."""
+
+    __tablename__ = "workspace_member_final_usage_snapshots"
+    __table_args__ = (
+        CheckConstraint(
+            "logical_window IN ('5h', 'weekly')",
+            name="ck_workspace_member_final_usage_snapshot_logical_window",
+        ),
+        UniqueConstraint(
+            "workspace_account_id",
+            "user_id",
+            "membership_epoch",
+            "logical_window",
+            name="uq_workspace_member_final_usage_snapshot_epoch_window",
+        ),
+        Index(
+            "ix_workspace_member_final_usage_snapshot_history",
+            "workspace_account_id",
+            "user_id",
+            "observed_at",
+        ),
+        Index(
+            "ix_workspace_member_final_usage_snapshot_reset_invalidation",
+            "reset_invalidation_id",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    workspace_id: Mapped[str] = mapped_column(String, nullable=False)
+    workspace_account_id: Mapped[str] = mapped_column(String, nullable=False)
+    account_id: Mapped[str] = mapped_column(String, nullable=False)
+    preset_id: Mapped[str] = mapped_column(String, nullable=False)
+    email: Mapped[str] = mapped_column(String, nullable=False)
+    user_id: Mapped[str] = mapped_column(String, nullable=False)
+    membership_epoch: Mapped[str] = mapped_column(String, nullable=False)
+    logical_window: Mapped[str] = mapped_column(String(16), nullable=False)
+    source_window: Mapped[str] = mapped_column(String, nullable=False)
+    used_percent: Mapped[float] = mapped_column(Float, nullable=False)
+    reset_at: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    window_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    fetch_provenance: Mapped[str] = mapped_column(String, nullable=False)
+    fetch_succeeded: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    usage_written: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    retained_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), server_default=func.now(), nullable=False
+    )
+    reset_invalidation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workspace_member_usage_reset_invalidations.id", ondelete="RESTRICT"),
+        nullable=True,
+    )
+
+
 class AccountUsageRollup(Base):
     """Folded lifetime request-usage sums per account.
 

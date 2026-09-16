@@ -1284,6 +1284,7 @@ class _TokenCasMissRepo(_DummyRepo):
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool:
         self.update_attempts.append(expected_refresh_token_encrypted)
         stored = self._latest.refresh_token_encrypted
@@ -1460,6 +1461,7 @@ class _TokenCasAlwaysMissRepo(_DummyRepo):
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool:
         self.update_attempts.append(expected_refresh_token_encrypted)
         if expected_refresh_token_encrypted is None:
@@ -1545,6 +1547,7 @@ class _TokenCasPeerRotationAtExhaustionRepo(_DummyRepo):
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool:
         self.update_attempts.append(expected_refresh_token_encrypted)
         if expected_refresh_token_encrypted is None:
@@ -1873,6 +1876,7 @@ class _TokenCasStabilizesOnSecondFinalAttemptRepo(_DummyRepo):
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool:
         self.update_attempts.append(expected_refresh_token_encrypted)
         if expected_refresh_token_encrypted is None:
@@ -2030,6 +2034,7 @@ class _TokenCasLandsOnFinalGuardedPersistRepo(_DummyRepo):
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool:
         self.update_attempts.append(expected_refresh_token_encrypted)
         if expected_refresh_token_encrypted is not None and expected_refresh_token_encrypted != self._db_ciphertext:
@@ -2161,6 +2166,7 @@ class _TokenCasPeerRotationOnFinalPersistRepo(_DummyRepo):
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool:
         self.update_attempts.append(expected_refresh_token_encrypted)
         if expected_refresh_token_encrypted is not None and expected_refresh_token_encrypted != self._db_ciphertext:
@@ -2310,6 +2316,7 @@ class _TokenCasPeerRotationInReadWriteGapRepo(_DummyRepo):
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool:
         self.update_attempts.append(expected_refresh_token_encrypted)
         if expected_refresh_token_encrypted is not None and expected_refresh_token_encrypted != self._db_ciphertext:
@@ -2433,6 +2440,7 @@ class _TokenCasSamePlaintextInReadWriteGapRepo(_DummyRepo):
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool:
         self.update_attempts.append(expected_refresh_token_encrypted)
         if expected_refresh_token_encrypted is not None and expected_refresh_token_encrypted != self._db_ciphertext:

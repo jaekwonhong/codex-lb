@@ -1,14 +1,15 @@
 # Lifecycle integration closure
 
-Integrate the reviewed lifecycle repairs without changing an already-merged
-migration. Preserve the original review candidate as historical evidence.
+Integrate the reviewed lifecycle repairs while rebasing onto the unmodified beta.9
+upstream migration graph. Preserve the original review candidate as historical
+evidence rather than carrying its local Alembic branch forward.
 
-The application migration runner must handle an already-materialized member-control
-schema at its exact revision boundary. It must execute all predecessor migrations,
-validate the existing tables and retained data, create only missing counterparts,
-and acknowledge only that exact revision inside the same transaction. Empty
-databases continue through the original migration. No production migration is part
-of this integration.
+The application migration runner must leave the two retained member-control tables
+outside Alembic ownership and execute all upstream revisions normally. Release
+qualification must verify that both local extension tables and their retained data
+survive the upstream migration before member-switch is enabled. It must not create,
+stamp, merge or remap a local member-control revision. No production migration is
+part of this integration.
 
 Requalify source, frontend and Companion and investigate the prior broad-suite
 fixture lock without adding retries or suppressing failed assertions.

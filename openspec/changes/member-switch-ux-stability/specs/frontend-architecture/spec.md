@@ -1,9 +1,9 @@
 ## ADDED Requirements
 
 ### Requirement: Member-switch replies belong to one UI lifecycle
-Only the current request in the current mounted write-access lifecycle SHALL publish
+Only the current request in the current mounted `accounts:write` lifecycle SHALL publish
 member-switch UI state or its run locator. Explicit refresh MAY supersede initial
-stored-state restoration. Unmount or loss of write access SHALL cancel local requests
+stored-state restoration. Unmount or loss of `accounts:write` SHALL cancel local requests
 and invalidate their replies, without claiming that the server cancelled an effect.
 
 #### Scenario: Initial restoration finishes after explicit refresh

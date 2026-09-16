@@ -7,7 +7,7 @@ import { AccountsPage } from "@/features/accounts/components/accounts-page";
 import { ApisPage } from "@/features/apis/components/apis-page";
 import { ApiKeysSection } from "@/features/api-keys/components/api-keys-section";
 import { useAuthStore } from "@/features/auth/hooks/use-auth";
-import { createAccountSummary } from "@/test/mocks/factories";
+import { ADMIN_PERMISSIONS, createAccountSummary } from "@/test/mocks/factories";
 import { installMemberSwitchMocks } from "@/test/mocks/member-switch";
 import { server } from "@/test/mocks/server";
 import { renderWithProviders } from "@/test/utils";
@@ -16,7 +16,12 @@ const target = createAccountSummary({ displayName: "Review target", availableRes
 const failed = () => HttpResponse.json({ error: { code: "synthetic_rejected", message: "Synthetic action failed" } }, { status: 503 });
 
 beforeEach(() => {
-  useAuthStore.setState({ canWrite: true });
+  useAuthStore.setState({
+    role: "admin",
+    permissions: ADMIN_PERMISSIONS,
+    canWrite: true,
+    initialized: true,
+  });
   localStorage.clear(); sessionStorage.clear();
   installMemberSwitchMocks();
   server.use(http.get("/api/accounts", () => HttpResponse.json({ accounts: [target] })));
@@ -77,7 +82,11 @@ describe("account confirmation intent", () => {
     server.use(http.delete("/api/accounts/:id", () => { writes++; return failed(); }));
     const { user, dialog, queryClient } = await accountDialog();
     await act(async () => {
-      if (reason === "permission") useAuthStore.setState({ canWrite: false });
+      if (reason === "permission") {
+        useAuthStore.setState({
+          permissions: ADMIN_PERMISSIONS.filter((permission) => permission !== "accounts:write:all"),
+        });
+      }
       else if (reason === "missing target") queryClient.setQueryData(["accounts", "list"], { accounts: [createAccountSummary({ accountId: "other", email: "other@example.com" })] });
       else {
         server.use(http.get("/api/accounts", failed));
@@ -119,10 +128,16 @@ describe("API-key confirmation consumers", () => {
   });
 
   it("keeps API browsing available without exposing enabled write controls to read-only users", async () => {
-    useAuthStore.setState({ canWrite: false });
+    useAuthStore.setState({
+      role: "admin",
+      permissions: ["read", "api_keys:read:all", "dashboard:read:all"],
+      canWrite: false,
+      initialized: true,
+    });
     renderWithProviders(<ApisPage />);
-    expect(await screen.findByRole("button", { name: "Create API Key" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
+    expect(await screen.findByText("Overview")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Create API Key" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Default key" })).toBeVisible();
   });
 });

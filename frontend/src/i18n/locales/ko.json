@@ -1,4 +1,7 @@
 {
+  "common.confirmation.unavailable": "대상 또는 쓰기 권한을 확인할 수 없습니다. 취소하고 목록을 새로고침한 뒤 진행하세요.",
+  "common.confirmation.failureNotice": "요청 결과가 확인되지 않았습니다. 자동 재시도하지 않았으며, 다시 실행하기 전에 현재 상태를 확인하세요.",
+  "accounts.page.retryLoad": "계정 목록 다시 불러오기",
   "accounts.actions.disableWarmup": "Warm-up 끄기",
   "accounts.actions.enableWarmup": "Warm-up 켜기",
   "accounts.actions.forceProbe": "강제 probe",

@@ -1052,8 +1052,15 @@ class RequestLogsRepository:
             resolved_request_id = ensure_request_id(request_id)
             resolved_archive_request_id = (archive_request_id or "").strip() or resolved_request_id
             resolved_plan_type = plan_type
-            if resolved_plan_type is None and account_id:
-                resolved_plan_type = await self._resolve_account_plan_type(account_id)
+            resolved_account_id = account_id
+            resolved_deleted_at: datetime | None = None
+            if account_id and resolved_plan_type is None:
+                account_plan_type = await self._resolve_account_plan_type(account_id)
+                if account_plan_type is None:
+                    resolved_account_id = None
+                    resolved_deleted_at = utcnow()
+                else:
+                    resolved_plan_type = account_plan_type
             resolved_useragent = useragent if not isinstance(useragent, str) or useragent.strip() else None
             resolved_useragent_group = (
                 useragent_group if not isinstance(useragent_group, str) or useragent_group.strip() else None
@@ -1064,7 +1071,7 @@ class RequestLogsRepository:
                 sticky_key_source=sticky_key_source,
                 sticky_kind=sticky_kind,
                 sticky_key_hash=sticky_key_hash,
-                account_id=account_id,
+                account_id=resolved_account_id,
                 model_source_id=model_source_id,
                 model_source_kind=model_source_kind,
                 api_key_id=api_key_id,
@@ -1116,6 +1123,7 @@ class RequestLogsRepository:
                 upstream_proxy_fallback_used=upstream_proxy_fallback_used,
                 upstream_proxy_fail_closed_reason=upstream_proxy_fail_closed_reason,
                 requested_at=requested_at or utcnow(),
+                deleted_at=resolved_deleted_at,
             )
             log.cost_usd = (
                 cost_usd
@@ -1149,6 +1157,34 @@ class RequestLogsRepository:
                 return log
             except sa_exc.ResourceClosedError:
                 return log
+            except sa_exc.IntegrityError:
+                await _safe_rollback(self._session)
+                if account_id is None or await self._account_exists(account_id):
+                    raise
+                # The account vanished after selection/log preparation but
+                # before the FK-protected insert. Preserve the request row as
+                # soft-deleted telemetry rather than turning account cleanup
+                # into a request-path failure.
+                log.account_id = None
+                log.deleted_at = utcnow()
+                retry_values = {key: getattr(log, key) for key in _REQUEST_LOG_INSERT_COLUMN_KEYS}
+                try:
+                    result = typing_cast(
+                        CursorResult[Any],
+                        await self._session.execute(insert(RequestLog).values(retry_values)),
+                    )
+                    inserted_primary_key = result.inserted_primary_key
+                    if inserted_primary_key is not None and inserted_primary_key[0] is not None:
+                        log.id = int(inserted_primary_key[0])
+                        make_transient_to_detached(log)
+                        self._session.add(log)
+                    await self._session.commit()
+                    return log
+                except sa_exc.ResourceClosedError:
+                    return log
+                except BaseException:
+                    await _safe_rollback(self._session)
+                    raise
             except BaseException:
                 await _safe_rollback(self._session)
                 raise
@@ -1479,6 +1515,10 @@ class RequestLogsRepository:
     async def _resolve_account_plan_type(self, account_id: str) -> str | None:
         result = await self._session.execute(select(Account.plan_type).where(Account.id == account_id).limit(1))
         return result.scalar_one_or_none()
+
+    async def _account_exists(self, account_id: str) -> bool:
+        result = await self._session.execute(select(Account.id).where(Account.id == account_id).limit(1))
+        return result.scalar_one_or_none() is not None
 
     async def list_filter_options(
         self,

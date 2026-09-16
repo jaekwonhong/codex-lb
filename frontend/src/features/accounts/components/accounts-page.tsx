@@ -5,8 +5,10 @@ import { useSearchParams } from "react-router-dom";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { AlertMessage } from "@/components/alert-message";
 import { LoadingOverlay } from "@/components/layout/loading-overlay";
+import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useDialogState } from "@/hooks/use-dialog-state";
+import { usePrivacyStore } from "@/hooks/use-privacy";
 import { AccountDetail } from "@/features/accounts/components/account-detail";
 import { AccountList } from "@/features/accounts/components/account-list";
 import { AccountsSkeleton } from "@/features/accounts/components/accounts-skeleton";
@@ -16,6 +18,7 @@ import { AuthExportDialog } from "@/features/accounts/components/auth-export-dia
 import {
   useAccounts,
   useAccountUsageResetCredits,
+  useLocalOAuthImportFiles,
 } from "@/features/accounts/hooks/use-accounts";
 import { invalidateAccountRelatedQueries } from "@/features/accounts/query-invalidation";
 import { queryClient } from "@/lib/query-client";
@@ -27,8 +30,10 @@ import {
 import { useOauth } from "@/features/accounts/hooks/use-oauth";
 import { useSettings, useUpstreamProxyAdmin } from "@/features/settings/hooks/use-settings";
 import { useAccountQuotaDisplayStore } from "@/hooks/use-account-quota-display";
-import type { AccountAuthExportResponse } from "@/features/accounts/schemas";
+import type { AccountAuthExportResponse, AccountSummary } from "@/features/accounts/schemas";
 import { usePermission } from "@/features/auth/hooks/use-auth";
+import { MemberSwitchPanel } from "@/features/member-switch/components/member-switch-panel";
+import { MemberRotationPanel } from "@/features/member-rotation/components/member-rotation-panel";
 import { getErrorMessageOrNull } from "@/utils/errors";
 
 const OauthDialog = lazy(() =>
@@ -45,6 +50,7 @@ export function AccountsPage() {
   const {
     accountsQuery,
     importMutation,
+    localImportMutation,
     pauseMutation,
     resumeMutation,
     setAliasMutation,
@@ -58,6 +64,7 @@ export function AccountsPage() {
   } = useAccounts();
   const { settingsQuery } = useSettings();
   const canWrite = usePermission("accounts:write");
+  const blurred = usePrivacyStore((state) => state.blurred);
   // Upstream-proxy administration is an `ops:write` read on the backend; cached
   // data from an earlier admin session must not be rendered either.
   const canReadUpstreamProxy = usePermission("ops:write");
@@ -67,11 +74,13 @@ export function AccountsPage() {
   const oauth = useOauth();
 
   const importDialog = useDialogState();
+  const localOAuthFilesQuery = useLocalOAuthImportFiles(importDialog.open && canWrite);
   const oauthDialog = useDialogState();
-  const deleteDialog = useDialogState<string>();
+  type AccountActionTarget = Pick<AccountSummary, "accountId" | "email" | "displayName">;
+  const deleteDialog = useDialogState<AccountActionTarget>();
   type ResetCreditDialogTarget = { accountId: string; availableResetCredits: number };
   const resetCreditDialog = useDialogState<ResetCreditDialogTarget>();
-  const usageResetDialog = useDialogState<string>();
+  const usageResetDialog = useDialogState<AccountActionTarget>();
   const exportDialog = useDialogState<AccountAuthExportResponse>();
   const [deleteHistory, setDeleteHistory] = useState(false);
 
@@ -123,6 +132,7 @@ export function AccountsPage() {
 
   const mutationBusy =
     importMutation.isPending ||
+    localImportMutation.isPending ||
     pauseMutation.isPending ||
     resumeMutation.isPending ||
     setAliasMutation.isPending ||
@@ -138,6 +148,7 @@ export function AccountsPage() {
 
   const mutationError =
     getErrorMessageOrNull(importMutation.error) ||
+    getErrorMessageOrNull(localImportMutation.error) ||
     getErrorMessageOrNull(pauseMutation.error) ||
     getErrorMessageOrNull(resumeMutation.error) ||
     getErrorMessageOrNull(setAliasMutation.error) ||
@@ -153,6 +164,16 @@ export function AccountsPage() {
     getErrorMessageOrNull(accountBindingMutation.error) ||
     getErrorMessageOrNull(testEndpointMutation.error);
 
+  const targetAvailable = (target: AccountActionTarget | null) =>
+    !accountsQuery.error && target !== null && accounts.some((account) =>
+      account.accountId === target.accountId && account.email === target.email);
+  const deleteDisabled = !canWrite || mutationBusy || !targetAvailable(deleteDialog.data);
+  const resetDisabled = !canWrite || mutationBusy || !targetAvailable(usageResetDialog.data);
+
+  const handleAuthEnrollmentSettled = (accountId: string | null) => {
+    invalidateAccountRelatedQueries(queryClient, accountId ?? undefined);
+  };
+
   return (
     <div className="animate-fade-in-up space-y-6">
       {/* Page header */}
@@ -167,8 +188,17 @@ export function AccountsPage() {
         <AlertMessage variant="error">{mutationError}</AlertMessage>
       ) : null}
 
+      {accountsQuery.error ? (
+        <div role="alert" className="space-y-3">
+          <AlertMessage variant="error">{getErrorMessageOrNull(accountsQuery.error)}</AlertMessage>
+          <Button variant="outline" disabled={accountsQuery.isFetching} onClick={() => void accountsQuery.refetch()}>
+            {t("accounts.page.retryLoad")}
+          </Button>
+        </div>
+      ) : null}
+
       {!accountsQuery.data ? (
-        <AccountsSkeleton />
+        accountsQuery.error ? null : <AccountsSkeleton />
       ) : (
         <div
           data-testid="accounts-layout"
@@ -207,11 +237,23 @@ export function AccountsPage() {
             onPause={(accountId) => void pauseMutation.mutateAsync(accountId)}
             onResume={(accountId) => void resumeMutation.mutateAsync(accountId)}
             onProbe={(accountId) => void probeMutation.mutateAsync({ accountId })}
-            onResetUsage={(accountId) => usageResetDialog.show(accountId)}
+            onResetUsage={(accountId) => {
+              const target = accounts.find((account) => account.accountId === accountId);
+              if (canWrite && !mutationBusy && target) {
+                usageResetMutation.reset();
+                usageResetDialog.show(target);
+              }
+            }}
             onSetAlias={(accountId, alias) =>
               setAliasMutation.mutateAsync({ accountId, alias })
             }
-            onDelete={(accountId) => deleteDialog.show(accountId)}
+            onDelete={(accountId) => {
+              const target = accounts.find((account) => account.accountId === accountId);
+              if (canWrite && !mutationBusy && target) {
+                deleteMutation.reset();
+                deleteDialog.show(target);
+              }
+            }}
             onReauth={() => {
               setOauthAccountId(selectedAccount?.accountId ?? null);
               oauthDialog.show();
@@ -257,11 +299,25 @@ export function AccountsPage() {
         </div>
       )}
 
+      <MemberRotationPanel readOnly={!canWrite} />
+
+      <MemberSwitchPanel readOnly={!canWrite} onAuthEnrollmentSettled={handleAuthEnrollmentSettled} />
+
       <ImportDialog
         open={importDialog.open}
-        busy={importMutation.isPending}
-        error={getErrorMessageOrNull(importMutation.error)}
+        busy={importMutation.isPending || localImportMutation.isPending}
+        error={
+          getErrorMessageOrNull(importMutation.error) ||
+          getErrorMessageOrNull(localImportMutation.error) ||
+          getErrorMessageOrNull(localOAuthFilesQuery.error)
+        }
+        localFilesAvailable={localOAuthFilesQuery.data?.available ?? false}
+        localFiles={localOAuthFilesQuery.data?.files ?? []}
+        localFilesLoading={localOAuthFilesQuery.isLoading}
         onOpenChange={importDialog.onOpenChange}
+        onImportLocal={async (filename) => {
+          await localImportMutation.mutateAsync(filename);
+        }}
         onImport={async (file) => {
           await importMutation.mutateAsync(file);
         }}
@@ -311,26 +367,47 @@ export function AccountsPage() {
         description={t("accounts.deleteDialog.description")}
         confirmLabel={t("common.actions.delete")}
         cancelLabel={t("common.cancel")}
+        keepOpenOnConfirm
+        pending={deleteMutation.isPending}
+        confirmDisabled={deleteDisabled}
         onOpenChange={(open) => {
           deleteDialog.onOpenChange(open);
           if (!open) setDeleteHistory(false);
         }}
         onConfirm={() => {
-          if (!deleteDialog.data) {
+          if (deleteDisabled || !deleteDialog.data) {
             return;
           }
           void deleteMutation
-            .mutateAsync({ accountId: deleteDialog.data, deleteHistory })
-            .finally(() => {
+            .mutateAsync({ accountId: deleteDialog.data.accountId, deleteHistory })
+            .then(() => {
               deleteDialog.hide();
               setDeleteHistory(false);
-            });
+            })
+            .catch(() => { /* The mutation owns the error; preserve this confirmation. */ });
         }}
       >
+        {deleteDialog.data ? <div className="min-w-0 space-y-1 text-sm">
+          <p className={`break-all ${blurred ? "privacy-blur" : ""}`}>
+            {deleteDialog.data.displayName && deleteDialog.data.displayName !== deleteDialog.data.email
+              ? `${deleteDialog.data.displayName} · `
+              : ""}
+            {deleteDialog.data.email}
+          </p>
+          <code className="block break-all text-xs">{deleteDialog.data.accountId}</code>
+        </div> : null}
+        {!targetAvailable(deleteDialog.data) || !canWrite ? (
+          <p role="alert" className="text-sm text-destructive">{t("common.confirmation.unavailable")}</p>
+        ) : null}
+        {deleteMutation.error ? <div role="alert">
+          <AlertMessage variant="error">{getErrorMessageOrNull(deleteMutation.error)}</AlertMessage>
+          <p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p>
+        </div> : null}
         <div className="flex items-center gap-2">
           <Checkbox
             id="delete-history"
             checked={deleteHistory}
+            disabled={deleteMutation.isPending || !canWrite}
             onCheckedChange={(checked) => setDeleteHistory(checked === true)}
           />
           <label
@@ -348,21 +425,42 @@ export function AccountsPage() {
         description={t("accounts.usageResetDialog.description")}
         confirmLabel={t("common.actions.reset")}
         cancelLabel={t("common.cancel")}
+        keepOpenOnConfirm
+        pending={usageResetMutation.isPending}
+        confirmDisabled={resetDisabled}
         onOpenChange={usageResetDialog.onOpenChange}
         onConfirm={() => {
-          if (!usageResetDialog.data) {
+          if (resetDisabled || !usageResetDialog.data) {
             return;
           }
           void usageResetMutation
-            .mutateAsync({ accountId: usageResetDialog.data })
-            .finally(() => {
+            .mutateAsync({ accountId: usageResetDialog.data.accountId })
+            .then(() => {
               usageResetDialog.hide();
-            });
+            })
+            .catch(() => { /* Keep the target and redemption identity for explicit retry. */ });
         }}
-      />
+      >
+        {usageResetDialog.data ? <div className="min-w-0 space-y-1 text-sm">
+          <p className={`break-all ${blurred ? "privacy-blur" : ""}`}>
+            {usageResetDialog.data.displayName && usageResetDialog.data.displayName !== usageResetDialog.data.email
+              ? `${usageResetDialog.data.displayName} · `
+              : ""}
+            {usageResetDialog.data.email}
+          </p>
+          <code className="block break-all text-xs">{usageResetDialog.data.accountId}</code>
+        </div> : null}
+        {!targetAvailable(usageResetDialog.data) || !canWrite ? (
+          <p role="alert" className="text-sm text-destructive">{t("common.confirmation.unavailable")}</p>
+        ) : null}
+        {usageResetMutation.error ? <div role="alert">
+          <AlertMessage variant="error">{getErrorMessageOrNull(usageResetMutation.error)}</AlertMessage>
+          <p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p>
+        </div> : null}
+      </ConfirmDialog>
 
       <LoadingOverlay
-        visible={!!accountsQuery.data && mutationBusy}
+        visible={!!accountsQuery.data && mutationBusy && !deleteDialog.open && !usageResetDialog.open}
         label={t("accounts.page.updating")}
       />
     </div>

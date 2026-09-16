@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -27,7 +28,7 @@ async def test_post_probe_exposes_successful_usage_refresh_even_when_probe_reque
     accounts = SimpleNamespace(probe_account=AsyncMock(return_value=result))
     settlement = SimpleNamespace(record_account_probe_result=AsyncMock())
     monkeypatch.setattr("app.modules.accounts.probe.AuditService.log_async", lambda *_args, **_kwargs: None)
-    service = MemberAuthPostProbeService(accounts, settlement)
+    service = MemberAuthPostProbeService(cast(Any, accounts), cast(Any, settlement))
 
     diagnostic = await service.probe("account-1")
 

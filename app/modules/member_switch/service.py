@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Protocol
 
@@ -156,9 +157,7 @@ class MemberSwitchService:
                 owner_observations[workspace.id] = None
                 continue
             owners = [member for member in observed.members if member.classification == "owner"]
-            owner_observations[workspace.id] = (
-                (owners[0].email, owners[0].user_id) if len(owners) == 1 else None
-            )
+            owner_observations[workspace.id] = (owners[0].email, owners[0].user_id) if len(owners) == 1 else None
             current = [
                 CurrentMember(email=member.email, user_id=member.user_id)
                 for member in observed.members
@@ -291,11 +290,24 @@ class MemberSwitchService:
         )
 
     async def create(self, request: CreateRunRequest) -> RunView:
+        return await self._create(request, rotation_controller_id=None)
+
+    async def create_rotation_run(self, request: CreateRunRequest, *, rotation_controller_id: str) -> RunView:
+        """Create the ordinary durable run while binding its internal automatic owner."""
+        if not rotation_controller_id.strip():
+            raise ControlConflict("rotation_controller_identity_missing")
+        return await self._create(request, rotation_controller_id=rotation_controller_id)
+
+    async def _create(self, request: CreateRunRequest, *, rotation_controller_id: str | None) -> RunView:
         run_id = str(request.run_id)
         fingerprint = command_fingerprint("create", request.model_dump_json())
         existing = await self.controls.get(run_id)
         if existing:
-            if self._decode(existing).create_request_hash != fingerprint:
+            existing_state = self._decode(existing)
+            if (
+                existing_state.create_request_hash != fingerprint
+                or existing_state.rotation_controller_id != rotation_controller_id
+            ):
                 raise ControlConflict("run_identity_mismatch")
             return self._view(existing)
         await require_new_work_admission(self.controls)
@@ -344,6 +356,7 @@ class MemberSwitchService:
             phase="previewed",
             last_code="preview_requested",
             updated_at=datetime.now(timezone.utc),
+            rotation_controller_id=rotation_controller_id,
         )
         record = await self.controls.create(run_id, "run", state.model_dump_json(), own_scope=True)
         record, _ = await self.controls.claim(record, run_id, "preview", fingerprint, expected_revision=0)
@@ -376,6 +389,92 @@ class MemberSwitchService:
             self.auth.validate_identity(identity, preview.remove_email)
         return await self._save(record, state)
 
+    async def finalize_rotation_membership(
+        self,
+        run_id: str,
+        *,
+        rotation_controller_id: str,
+        command_id: str,
+    ) -> RunView:
+        """Release a settled automatic child run without starting the manual OAuth workflow."""
+        record = await self.controls.get(run_id)
+        if record is None:
+            raise ControlConflict("run_not_found")
+        state = self._decode(record)
+        if state.rotation_controller_id != rotation_controller_id:
+            raise ControlConflict("rotation_controller_identity_mismatch")
+        if state.phase == "completed":
+            return self._view(record)
+        if record.pending_action:
+            if record.pending_action != "finish":
+                raise ControlConflict("outcome_unknown")
+            return await self._reconcile(record, state)
+        if not state.operation_id:
+            raise ControlConflict("operation_missing")
+        operation_id = state.operation_id
+        operation = await self.companion.operation(operation_id)
+        require_operation_identity(state.identity, operation_id, operation)
+        settlement = operation.invitation_settlement
+        if not membership_confirmed(operation) or settlement is None or not settlement.final_membership_confirmed:
+            raise ControlConflict("rotation_membership_not_settled")
+        state = state.model_copy(update={"operation": operation, "phase": "membership_confirmed"})
+        fingerprint = command_fingerprint("finish", f"rotation\n{rotation_controller_id}\n{state.operation_id}")
+        record, execute = await self.controls.claim(
+            record,
+            command_id,
+            "finish",
+            fingerprint,
+            expected_revision=record.revision,
+        )
+        if not execute:
+            return self._view(record)
+        finalized = await self.companion.finalize(operation_id)
+        if not finalized.released:
+            retained = await self.controls.save(
+                record,
+                state.model_copy(
+                    update={
+                        "updated_at": datetime.now(timezone.utc),
+                        "last_code": finalized.code,
+                    }
+                ).model_dump_json(),
+            )
+            return self._view(retained)
+        state = state.model_copy(update={"phase": "completed", "last_code": "run_finalized"})
+        return await self._save(record, state)
+
+    async def finalize_rotation_non_effect(
+        self,
+        run_id: str,
+        *,
+        rotation_controller_id: str,
+    ) -> RunView:
+        """Release an automatic child that authoritatively never started an operation.
+
+        This path is deliberately local-only: no Companion mutation is issued.
+        It exists for a durable ``start`` command whose Companion receipt was
+        ``accepted=false`` with no operation id.
+        """
+        record = await self.controls.get(run_id)
+        if record is None:
+            raise ControlConflict("run_not_found")
+        state = self._decode(record)
+        if state.rotation_controller_id != rotation_controller_id:
+            raise ControlConflict("rotation_controller_identity_mismatch")
+        if state.phase == "completed":
+            return self._view(record)
+        if record.pending_action:
+            raise ControlConflict("outcome_unknown")
+        if (
+            state.phase != "failed"
+            or state.operation_id is not None
+            or state.handoff_id is not None
+            or state.browser_operation_id is not None
+        ):
+            raise ControlConflict("rotation_non_effect_not_proven")
+        state = state.model_copy(update={"phase": "completed", "last_code": state.last_code})
+        return await self._save(record, state)
+
     async def _save(self, record: ControlRecord, state: RunState) -> RunView:
         state = state.model_copy(update={"updated_at": datetime.now(timezone.utc), "participant_request_hash": None})
         saved = await self.controls.save(
@@ -384,10 +483,43 @@ class MemberSwitchService:
         return self._view(saved)
 
     async def command(self, run_id: str, request: CommandRequest) -> RunView:
+        return await self._command(run_id, request, rotation_controller_id=None, pre_effect=None)
+
+    async def command_rotation(
+        self,
+        run_id: str,
+        request: CommandRequest,
+        *,
+        rotation_controller_id: str,
+        pre_effect: Callable[[], Awaitable[None]] | None = None,
+    ) -> RunView:
+        if not rotation_controller_id.strip():
+            raise ControlConflict("rotation_controller_identity_missing")
+        return await self._command(
+            run_id,
+            request,
+            rotation_controller_id=rotation_controller_id,
+            pre_effect=pre_effect,
+        )
+
+    async def _command(
+        self,
+        run_id: str,
+        request: CommandRequest,
+        *,
+        rotation_controller_id: str | None,
+        pre_effect: Callable[[], Awaitable[None]] | None,
+    ) -> RunView:
         record = await self.controls.get(run_id)
         if record is None:
             raise ControlConflict("run_not_found")
         state = self._decode(record)
+        if state.rotation_controller_id != rotation_controller_id:
+            raise ControlConflict(
+                "rotation_run_owned"
+                if state.rotation_controller_id is not None
+                else "rotation_controller_identity_mismatch"
+            )
         if state.control_protocol != CONTROL_PROTOCOL:
             raise ControlConflict("legacy_run_review_required")
         if record.active_scope != GLOBAL_SCOPE and state.phase != "completed":
@@ -458,6 +590,22 @@ class MemberSwitchService:
         action = request.action
         if action == "start":
             assert state.preview is not None and state.preview.preview_token is not None
+            if pre_effect is not None:
+                try:
+                    await pre_effect()
+                except ValueError as exc:
+                    # The hook runs after the durable start claim but before the
+                    # Companion mutation.  A validation failure is therefore an
+                    # authoritative local non-effect and may clear the pending
+                    # command without replaying or contacting Companion.
+                    state = state.model_copy(
+                        update={
+                            "phase": "failed",
+                            "last_code": f"rotation_pre_effect_hook_failed:{exc}",
+                        }
+                    )
+                    await self._save(record, state)
+                    raise ControlConflict("rotation_pre_effect_hook_failed") from exc
             receipt = await self.companion.start(
                 StartRequest(preview_token=state.preview.preview_token, client_flow_id=state.id)
             )

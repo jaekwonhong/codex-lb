@@ -883,6 +883,8 @@ function listFilteredAutomationRuns(url: URL) {
 }
 
 export const handlers = [
+  http.get("/api/member-rotation/operator", () =>
+    HttpResponse.json({ schemaVersion: 1, workspaces: [] })),
   http.get("/api/member-switch-runs/active", () => HttpResponse.json({ run: null })),
   http.get("/api/member-switch-runs/oauth-enrollments/active", () =>
     HttpResponse.json({ enrollment: null })),

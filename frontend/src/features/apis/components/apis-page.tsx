@@ -92,6 +92,11 @@ export function ApisPage() {
 		updateMutation.isPending ||
 		deleteMutation.isPending ||
 		regenerateMutation.isPending;
+	const controlsDisabled = mutationBusy || !canWrite;
+	const deleteAvailable =
+		!apiKeysQuery.error &&
+		deleteDialog.data !== null &&
+		apiKeys.some((key) => key.id === deleteDialog.data?.id);
 
 	const mutationError =
 		getErrorMessageOrNull(createMutation.error) ||
@@ -103,11 +108,13 @@ export function ApisPage() {
 	const pageError = mutationError || (apiKeysQuery.data ? listError : null);
 
 	const handleCreate = async (payload: ApiKeyCreateRequest) => {
+		if (controlsDisabled) throw new Error(t("common.confirmation.unavailable"));
 		const created = await createMutation.mutateAsync(payload);
 		createdDialog.show(created.key);
 	};
 
 	const handleUpdate = async (payload: ApiKeyUpdateRequest) => {
+		if (controlsDisabled) throw new Error(t("common.confirmation.unavailable"));
 		if (!editDialog.data) return;
 		await updateMutation.mutateAsync({ keyId: editDialog.data.id, payload });
 	};
@@ -174,11 +181,11 @@ export function ApisPage() {
 					<div className="grid gap-4 lg:grid-cols-[22rem_minmax(0,1fr)]">
 						<div className="rounded-xl border bg-card p-4">
 							<ApiList
-								apiKeys={apiKeys}
-								selectedKeyId={resolvedSelectedKeyId}
-								onSelect={handleSelectKey}
-								onOpenCreate={() => createDialog.show()}
-								readOnly={!canWrite}
+									apiKeys={apiKeys}
+									selectedKeyId={resolvedSelectedKeyId}
+									onSelect={handleSelectKey}
+									onOpenCreate={() => { if (!controlsDisabled) createDialog.show(); }}
+									readOnly={!canWrite}
 							/>
 						</div>
 
@@ -190,18 +197,25 @@ export function ApisPage() {
 							usage7DayError={usage7DayError}
 							busy={mutationBusy}
 							readOnly={!canWrite}
-							onEdit={(apiKey) => editDialog.show(apiKey)}
-							onToggleActive={(apiKey) => {
-								void updateMutation
+								onEdit={(apiKey) => { if (!controlsDisabled) editDialog.show(apiKey); }}
+								onToggleActive={(apiKey) => {
+									if (controlsDisabled) return;
+									void updateMutation
 									.mutateAsync({
 										keyId: apiKey.id,
 										payload: { isActive: !apiKey.isActive },
 									})
 									.catch(() => null);
 							}}
-							onDelete={(apiKey) => deleteDialog.show(apiKey)}
-							onRegenerate={(apiKey) => {
-								void regenerateMutation
+								onDelete={(apiKey) => {
+									if (!controlsDisabled) {
+										deleteMutation.reset();
+										deleteDialog.show(apiKey);
+									}
+								}}
+								onRegenerate={(apiKey) => {
+									if (controlsDisabled) return;
+									void regenerateMutation
 									.mutateAsync(apiKey.id)
 									.then((result) => {
 										createdDialog.show(result.key);
@@ -240,22 +254,35 @@ export function ApisPage() {
 				open={deleteDialog.open}
 				title={t("apiKeys.deleteDialog.title")}
 				description={t("apiKeys.deleteDialog.description")}
-				confirmLabel={t("common.actions.delete")}
-				onOpenChange={deleteDialog.onOpenChange}
-				onConfirm={() => {
-					if (!deleteDialog.data) return;
-					void deleteMutation
-						.mutateAsync(deleteDialog.data.id)
-						.catch(() => null)
-						.finally(() => {
-							deleteDialog.hide();
-						});
-				}}
-			/>
+					confirmLabel={t("common.actions.delete")}
+					keepOpenOnConfirm
+					pending={deleteMutation.isPending}
+					confirmDisabled={controlsDisabled || !deleteAvailable}
+					onOpenChange={deleteDialog.onOpenChange}
+					onConfirm={() => {
+						if (controlsDisabled || !deleteAvailable || !deleteDialog.data) return;
+						void deleteMutation
+							.mutateAsync(deleteDialog.data.id)
+							.then(() => { deleteDialog.hide(); })
+							.catch(() => { /* Preserve target; mutation state owns the error. */ });
+					}}
+				>
+					{deleteDialog.data ? <div className="min-w-0 space-y-1 text-sm">
+						<p className="break-all">{deleteDialog.data.name} · {deleteDialog.data.keyPrefix}</p>
+						<code className="block break-all text-xs">{deleteDialog.data.id}</code>
+					</div> : null}
+					{!deleteAvailable || !canWrite ? (
+						<p role="alert" className="text-sm text-destructive">{t("common.confirmation.unavailable")}</p>
+					) : null}
+					{deleteMutation.error ? <div role="alert">
+						<AlertMessage variant="error">{getErrorMessageOrNull(deleteMutation.error)}</AlertMessage>
+						<p className="mt-1 text-xs">{t("common.confirmation.failureNotice")}</p>
+					</div> : null}
+				</ConfirmDialog>
 
-			<LoadingOverlay
-				visible={!!apiKeysQuery.data && mutationBusy}
-				label={t("apiKeys.page.updating")}
+				<LoadingOverlay
+					visible={!!apiKeysQuery.data && mutationBusy && !deleteDialog.open}
+					label={t("apiKeys.page.updating")}
 			/>
 		</div>
 	);

@@ -5,6 +5,7 @@ import json
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from tempfile import SpooledTemporaryFile
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -20,6 +21,7 @@ from app.db.models import ApiKeyUsageReservation, RequestLog
 from app.db.session import SessionLocal
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyData, ApiKeysService, ApiKeyUsageReservationData
+from app.modules.model_sources import selection as source_selection
 from tests.integration.model_source_helpers import (
     _AsgiStream,
     _create_model_source,
@@ -960,6 +962,142 @@ async def test_disabled_source_does_not_capture_a_subscription_model_slug(async_
     )
 
     assert response.json()["error"]["code"] == "no_accounts"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/responses", "/backend-api/codex/responses"])
+async def test_runtime_enabled_disabled_responses_source_routes_for_scoped_assigned_key(
+    async_client,
+    source_upstream,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    await _enable_api_key_auth(async_client)
+    captured: dict[str, object] = {}
+
+    async def responses(request: web.Request) -> web.Response:
+        captured.update(await request.json())
+        return web.json_response(
+            {
+                "id": "resp_runtime_enabled",
+                "object": "response",
+                "status": "completed",
+                "model": "runtime-enabled-responses-model",
+                "output": [],
+            }
+        )
+
+    base_url = await source_upstream(responses)
+    model = "runtime-enabled-responses-model"
+    source_id = await _create_model_source(
+        async_client,
+        name="runtime-enabled-responses",
+        model=model,
+        base_url=base_url,
+        supports_responses=True,
+    )
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={"name": "runtime-enabled-responses-key", "assignedSourceIds": [source_id]},
+    )
+    assert created.status_code == 200
+    await _set_source_enabled(async_client, source_id, False)
+    monkeypatch.setattr(
+        source_selection,
+        "get_settings",
+        lambda: SimpleNamespace(runtime_enabled_model_source_ids=source_id),
+    )
+
+    response = await async_client.post(
+        path,
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+        json={"model": model, "input": "hi", "stream": False},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == "resp_runtime_enabled"
+    assert captured["model"] == model
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/responses", "/backend-api/codex/responses"])
+async def test_scoped_source_only_responses_miss_fails_closed_before_subscription(
+    async_client,
+    path: str,
+) -> None:
+    await _enable_api_key_auth(async_client)
+    assigned_source_id = await _create_model_source(
+        async_client,
+        name="source-only-boundary",
+        model="different-source-model",
+        base_url=f"http://127.0.0.1:{_free_port()}/v1",
+        supports_responses=True,
+    )
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={"name": "source-only-boundary-key", "assignedSourceIds": [assigned_source_id]},
+    )
+    assert created.status_code == 200
+    headers = {"Authorization": f"Bearer {created.json()['key']}"}
+
+    response = await async_client.post(
+        path,
+        headers=headers,
+        json={"model": "source-only-missing-model", "input": "hi", "stream": False},
+    )
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "model_source_unavailable"
+
+    subscription_response = await async_client.post(
+        path,
+        headers=headers,
+        json={"model": "gpt-5.6-sol", "input": "hi", "stream": False},
+    )
+    assert subscription_response.status_code == 503
+    assert subscription_response.json()["error"]["code"] == "no_accounts"
+
+
+@pytest.mark.asyncio
+async def test_subscription_no_accounts_does_not_fallback_to_model_source_after_2416(
+    async_client,
+    source_upstream,
+) -> None:
+    await _enable_api_key_auth(async_client)
+    called = False
+
+    async def responses(_request: web.Request) -> web.Response:
+        nonlocal called
+        called = True
+        return web.json_response(
+            {
+                "id": "resp_forbidden_overflow_fallback",
+                "object": "response",
+                "status": "completed",
+                "model": "gpt-5.6-sol",
+                "output": [],
+            }
+        )
+
+    base_url = await source_upstream(responses)
+    await _create_model_source(
+        async_client,
+        name="subscription-shadow-source",
+        model="gpt-5.6-sol",
+        base_url=base_url,
+        supports_responses=True,
+    )
+    created = await async_client.post("/api/api-keys/", json={"name": "subscription-no-overflow-key"})
+    assert created.status_code == 200
+
+    response = await async_client.post(
+        "/v1/responses",
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+        json={"model": "gpt-5.6-sol", "input": "hi", "stream": False},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "no_accounts"
+    assert called is False
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, TypeAlias
 from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
@@ -15,6 +15,11 @@ RECIPIENT_MEMBERSHIP_LIFECYCLE_CAPABILITY = "ego_lite_recipient_membership_lifec
 EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY = "ego_lite_device_auth_automation_v1"
 OWNER_OAUTH_ENROLLMENT_CAPABILITY = "ego_lite_owner_oauth_enrollment_v1"
 AUTH_ENROLLMENT_PROTOCOL = "managed_member_auth_enrollment_v2"
+ROTATION_CONTROLLER_PROTOCOL = "usage_member_rotation_controller_v1"
+P4_TYPED_TELEMETRY_CONTRACT = "member_rotation_typed_telemetry_v1"
+P4_TYPED_TELEMETRY_VERSION = "2.11.47"
+P4_TYPED_TELEMETRY_BINARY_SHA256 = "0f7b665e47f1b2cd4959814afe3ee68fe0aa5cc25a264e295997d3499290f1ce"
+P4_TYPED_TELEMETRY_OPS_COMMIT = "47ac829a23b9811537bcd2d21ae9b8003c9c464a"
 
 
 class AdmissionBlocker(DashboardModel):
@@ -180,6 +185,43 @@ class OperationTraceEntry(DashboardModel):
     status: int | None = None
 
 
+TelemetryPrimitive: TypeAlias = str | bool | int | float | None
+MutationCaptureState: TypeAlias = Literal[
+    "json",
+    "empty_body",
+    "json_parse_failure",
+    "response_not_received",
+    "transport_failure",
+    "body_read_failure",
+    "sanitization_failure",
+    "capture_failure",
+]
+
+
+class MemberMutationResponseObservation(DashboardModel):
+    """P4 sanitized response envelope; dict absence is distinct from JSON null."""
+
+    event: Literal["remove_response", "invite_response"]
+    capture_state: MutationCaptureState
+    http_status: int | None = None
+    fields: dict[str, TelemetryPrimitive] = Field(default_factory=dict)
+
+
+class MemberRemovalObservationResponse(DashboardModel):
+    """Typed server mirror of the P4 remove-only observation result."""
+
+    accepted: bool
+    code: str
+    observation_id: str
+    mutation_sent: bool
+    outcome_unknown: bool
+    immediate_response_ok: bool | None = None
+    http_status: int | None = None
+    removal_confirmed: bool
+    stable_observations: int
+    response_observation: MemberMutationResponseObservation | None = None
+
+
 class InvitationSettlement(DashboardModel):
     invitation_issued: bool
     automatic_observation_attempts: int
@@ -190,6 +232,8 @@ class InvitationSettlement(DashboardModel):
     invitation_attempted: bool = False
     recipient_workspace_refresh_attempts: int = 0
     recipient_workspace_observed: bool = False
+    invite_response_observation: MemberMutationResponseObservation | None = None
+    invitation_non_effect_confirmed: bool = False
 
 
 class Operation(DashboardModel):
@@ -373,6 +417,7 @@ class RunState(DashboardModel):
     browser_operation_id: str | None = None
     browser_flow_id: str | None = None
     participant_request_hash: str | None = None
+    rotation_controller_id: str | None = None
 
 
 class RunView(DashboardModel):
@@ -390,6 +435,81 @@ class RunView(DashboardModel):
     handoff_id: str | None
     auth_state: str | None
     browser_operation_id: str | None
+
+
+class CompanionTypedTelemetryProvenance(DashboardModel):
+    model_config = ConfigDict(extra="forbid")
+    contract: str
+    version: str
+    binary_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    ops_commit: str = Field(pattern=r"^[a-f0-9]{40}$")
+
+    @property
+    def qualified(self) -> bool:
+        return (
+            self.contract == P4_TYPED_TELEMETRY_CONTRACT
+            and self.version == P4_TYPED_TELEMETRY_VERSION
+            and self.binary_sha256 == P4_TYPED_TELEMETRY_BINARY_SHA256
+            and self.ops_commit == P4_TYPED_TELEMETRY_OPS_COMMIT
+        )
+
+
+RotationControllerPhase: TypeAlias = Literal[
+    "foundation_evaluating",
+    "snapshotting_outgoing",
+    "removing",
+    "removal_effect_unknown",
+    "removal_confirmed",
+    "inviting",
+    "invite_effect_unknown",
+    "invite_sent",
+    "waiting_membership",
+    "finalizing",
+    "completed",
+    "needs_attention",
+]
+RotationEffectState: TypeAlias = Literal["not_attempted", "unknown", "confirmed", "authoritative_non_effect"]
+
+
+class RotationControllerState(DashboardModel):
+    model_config = ConfigDict(extra="forbid")
+    control_protocol: Literal["usage_member_rotation_controller_v1"] = ROTATION_CONTROLLER_PROTOCOL
+    id: str
+    evaluation_id: str
+    workspace_id: str
+    workspace_account_id: str
+    outgoing_account_id: str
+    outgoing_preset_id: str | None = None
+    outgoing_email: str
+    outgoing_user_id: str
+    incoming: Identity | None = None
+    foundation_state: str
+    foundation_evidence_ref: str | None = None
+    foundation_admission_ready: bool = False
+    foundation_attention_required: bool = False
+    foundation_weekly_state: Literal["unknown", "available", "exhausted"] = "unknown"
+    foundation_weekly_reason: str | None = None
+    reset_status: str | None = None
+    foundation_quota_code: str | None = None
+    foundation_count_24h: int | None = None
+    foundation_count_168h: int | None = None
+    quota_operation_id: str | None = None
+    membership_epoch: str
+    p4_provenance: CompanionTypedTelemetryProvenance | None = None
+    p4_provenance_verified: bool = False
+    snapshot_committed: bool = False
+    final_snapshot_ids: list[str] = Field(default_factory=list)
+    member_switch_run_id: str
+    member_switch_operation_id: str | None = None
+    start_command_id: str
+    remove_state: RotationEffectState = "not_attempted"
+    invite_state: RotationEffectState = "not_attempted"
+    remove_response_observation: MemberMutationResponseObservation | None = None
+    invite_response_observation: MemberMutationResponseObservation | None = None
+    phase: RotationControllerPhase = "foundation_evaluating"
+    last_code: str
+    terminal_reason: str | None = None
+    updated_at: datetime
 
 
 class ActiveRunResponse(DashboardModel):

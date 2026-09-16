@@ -1,20 +1,19 @@
 # Context
 
-The previous review repaired legacy replay by editing a migration that was already
-merged. That approach is rejected at integration: migration bytes and graph remain
-immutable. A new later migration cannot prevent failure in its earlier predecessor.
-This is therefore an application migration-tool compatibility repair, not a new
-schema migration or permission to stamp arbitrary schemas.
+The previous review introduced a local member-control migration branch. That branch
+is intentionally dropped by the beta.9 rebase: the upstream migration bytes and
+graph remain authoritative, and the retained member-control tables are local
+extension state outside Alembic ownership.
 
-The runner already owns the deployment migration lock and legacy revision remapping.
-The compatibility branch is limited to the exact pending member-control revision,
-and only when one of its tables already exists. All predecessor revisions must run
-normally. At the exact parent boundary, both table contracts and retained receipt
-references are validated before creating any missing table. Creation and recording
-that one revision share a transaction. A later failure can resume at that recorded
-boundary; no table is deleted and no live operation is replayed.
+The runner still owns the deployment migration lock and all upstream migration
+execution. Its local compatibility rule is deliberately narrower: schema-drift
+checking ignores missing-table diffs for `member_switch_control_records` and
+`member_switch_command_receipts` so the upstream runner never invents or stamps a
+second owner for those tables. Release qualification separately verifies that both
+tables and retained data are present before member-switch is enabled. All upstream
+revisions run normally and no live operation is replayed.
 
-Examples: a legacy database with correct control rows keeps those rows; a database
-with a missing uniqueness constraint or orphan command receipt is rejected; a fresh
-database still executes the unchanged original migration. Historical review files
-are never rewritten to claim this alternative was previously validated.
+Examples: the production-lineage database keeps its retained local control rows
+while beta.9 migrations execute; a database missing either extension table is a
+member-switch deployment blocker; and a fresh upstream database completes the
+upstream graph without silently provisioning this local capability.

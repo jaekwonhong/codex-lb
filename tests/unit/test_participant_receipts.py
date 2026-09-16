@@ -46,13 +46,16 @@ async def test_lost_participant_response_recovers_from_exact_receipt_without_rep
         await command(service, run, action)
     restarted = MemberSwitchService(MemberSwitchControlRepository(sessions), companion, auth)
     run = await restarted.get(run.id)
+    assert run is not None
     assert run.phase == "outcome_unknown" and run.allowed_actions == ["reconcile"]
     calls = list(companion.calls)
     recovered = await command(restarted, run, "reconcile")
     assert recovered.phase == phase and recovered.pending_action is None
     expected_read = "reconcile_participant_receipt" if action == "close_browser" else "participant_receipt"
     assert companion.calls == calls + [expected_read]
-    assert (await controls.active()).id == run.id
+    active = await controls.active()
+    assert active is not None
+    assert active.id == run.id
     if action == "prepare_session":
         assert len(auth.calls) == before_auth
         assert "prepare_auth" in recovered.allowed_actions

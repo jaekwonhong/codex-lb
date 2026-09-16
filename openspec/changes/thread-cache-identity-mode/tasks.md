@@ -11,7 +11,7 @@
 ## 2. Configuration
 
 - [x] 2.1 Add the T3 `Settings` field, its `SETTING_TIERS` entry and the
-      `[settings_fields].max` 96 -> 97 ratchet with the why-not-a-default
+      authoring-baseline `[settings_fields].max` 96 -> 97 ratchet with the why-not-a-default
       justification.
 - [x] 2.2 Add the nullable `dashboard_settings` column, seeded NULL, wired
       through the repository, service, schemas and settings API as an

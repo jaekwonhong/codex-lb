@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from sqlalchemy import Table
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db.models import Account, MemberSwitchCommandReceipt, MemberSwitchControlRecord
@@ -288,14 +290,14 @@ class FakeAuth:
 async def context(tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'control.sqlite'}")
     async with engine.begin() as connection:
-        await connection.run_sync(Account.__table__.create)
-        await connection.run_sync(MemberSwitchControlRecord.__table__.create)
-        await connection.run_sync(MemberSwitchCommandReceipt.__table__.create)
+        await connection.run_sync(cast(Table, Account.__table__).create)
+        await connection.run_sync(cast(Table, MemberSwitchControlRecord.__table__).create)
+        await connection.run_sync(cast(Table, MemberSwitchCommandReceipt.__table__).create)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     controls = MemberSwitchControlRepository(sessions)
     companion = FakeCompanion()
     auth = FakeAuth(controls)
-    service = MemberSwitchService(controls, companion, auth)
+    service = MemberSwitchService(controls, cast(Any, companion), cast(Any, auth))
     yield service, controls, companion, auth, sessions
     await engine.dispose()
 
@@ -471,9 +473,7 @@ async def test_new_run_requires_owner_ego_observation_capability_before_persisti
         return catalog.model_copy(
             update={
                 "capabilities": [
-                    item
-                    for item in catalog.capabilities
-                    if item != "ego_lite_owner_membership_observation_v1"
+                    item for item in catalog.capabilities if item != "ego_lite_owner_membership_observation_v1"
                 ]
             }
         )
@@ -496,9 +496,7 @@ async def test_new_run_requires_owner_ego_mutation_capability_before_persisting(
         return catalog.model_copy(
             update={
                 "capabilities": [
-                    item
-                    for item in catalog.capabilities
-                    if item != "ego_lite_owner_membership_mutation_v1"
+                    item for item in catalog.capabilities if item != "ego_lite_owner_membership_mutation_v1"
                 ]
             }
         )
@@ -523,9 +521,7 @@ async def test_start_rechecks_owner_ego_mutation_capability_before_claiming_inte
         return catalog.model_copy(
             update={
                 "capabilities": [
-                    item
-                    for item in catalog.capabilities
-                    if item != "ego_lite_owner_membership_mutation_v1"
+                    item for item in catalog.capabilities if item != "ego_lite_owner_membership_mutation_v1"
                 ]
             }
         )
@@ -547,9 +543,7 @@ async def test_new_run_requires_device_auth_automation_capability_before_persist
         catalog = await original_catalog()
         return catalog.model_copy(
             update={
-                "capabilities": [
-                    item for item in catalog.capabilities if item != "ego_lite_device_auth_automation_v1"
-                ]
+                "capabilities": [item for item in catalog.capabilities if item != "ego_lite_device_auth_automation_v1"]
             }
         )
 
@@ -574,9 +568,7 @@ async def test_prepare_auth_rechecks_device_auth_automation_before_claiming_inte
         catalog = await original_catalog()
         return catalog.model_copy(
             update={
-                "capabilities": [
-                    item for item in catalog.capabilities if item != "ego_lite_device_auth_automation_v1"
-                ]
+                "capabilities": [item for item in catalog.capabilities if item != "ego_lite_device_auth_automation_v1"]
             }
         )
 
@@ -602,9 +594,7 @@ async def test_open_browser_rechecks_device_auth_automation_capability_before_pa
         catalog = await original_catalog()
         return catalog.model_copy(
             update={
-                "capabilities": [
-                    item for item in catalog.capabilities if item != "ego_lite_device_auth_automation_v1"
-                ]
+                "capabilities": [item for item in catalog.capabilities if item != "ego_lite_device_auth_automation_v1"]
             }
         )
 
@@ -626,9 +616,7 @@ async def test_new_run_requires_recipient_ego_lifecycle_capability_before_persis
         return catalog.model_copy(
             update={
                 "capabilities": [
-                    item
-                    for item in catalog.capabilities
-                    if item != "ego_lite_recipient_membership_lifecycle_v1"
+                    item for item in catalog.capabilities if item != "ego_lite_recipient_membership_lifecycle_v1"
                 ]
             }
         )
@@ -653,9 +641,7 @@ async def test_start_rechecks_recipient_ego_lifecycle_capability_before_claiming
         return catalog.model_copy(
             update={
                 "capabilities": [
-                    item
-                    for item in catalog.capabilities
-                    if item != "ego_lite_recipient_membership_lifecycle_v1"
+                    item for item in catalog.capabilities if item != "ego_lite_recipient_membership_lifecycle_v1"
                 ]
             }
         )
@@ -678,9 +664,7 @@ async def test_catalog_refresh_requires_owner_ego_observation_capability_before_
         return catalog.model_copy(
             update={
                 "capabilities": [
-                    item
-                    for item in catalog.capabilities
-                    if item != "ego_lite_owner_membership_observation_v1"
+                    item for item in catalog.capabilities if item != "ego_lite_owner_membership_observation_v1"
                 ]
             }
         )
@@ -728,6 +712,7 @@ async def test_lost_start_reply_recovered_from_receipt_not_replayed(context):
         await command(service, run, "start")
     reconstructed = MemberSwitchService(MemberSwitchControlRepository(sessions), companion, auth)
     run = await reconstructed.get(run.id)
+    assert run is not None
     assert run.phase == "outcome_unknown"
     with pytest.raises(ControlConflict):
         await create_run(reconstructed)
@@ -988,9 +973,14 @@ async def test_session_recheck_stays_blocked_for_live_target_or_terminal_auth(co
     assert "prepare_session" not in run.allowed_actions
 
 
-@pytest.mark.parametrize("code", (
-    "ego_owner_profile_login_required", "ego_owner_identity_mismatch", "ego_owner_identity_unavailable",
-))
+@pytest.mark.parametrize(
+    "code",
+    (
+        "ego_owner_profile_login_required",
+        "ego_owner_identity_mismatch",
+        "ego_owner_identity_unavailable",
+    ),
+)
 async def test_known_owner_preflight_failure_has_explicit_nonreplaying_closeout(context, code):
     service, controls, companion, auth, _ = context
     run = await create_run(service)
@@ -1007,14 +997,25 @@ async def test_known_owner_preflight_failure_has_explicit_nonreplaying_closeout(
     run = await command(service, run, "finish")
     assert run.phase == "completed"
     assert await controls.active() is None
-    assert companion.calls[len(before):] == ["finalize"]
+    assert companion.calls[len(before) :] == ["finalize"]
     assert auth.calls == []
 
 
-@pytest.mark.parametrize("bad_evidence", (
-    "unknown", "missing_start", "gap", "duplicate", "different_terminal", "mutation_stage", "mutation_status",
-    "invitation", "recipient_stage", "missing_result",
-))
+@pytest.mark.parametrize(
+    "bad_evidence",
+    (
+        "unknown",
+        "missing_start",
+        "gap",
+        "duplicate",
+        "different_terminal",
+        "mutation_stage",
+        "mutation_status",
+        "invitation",
+        "recipient_stage",
+        "missing_result",
+    ),
+)
 async def test_owner_preflight_closeout_rejects_unproven_or_posteffect_trace(context, bad_evidence):
     service, controls, companion, _, _ = context
     run = await create_run(service)

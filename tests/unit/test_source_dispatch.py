@@ -256,6 +256,24 @@ async def test_finish_runs_every_step_when_release_raises(recorder: _Recorder) -
 
 
 @pytest.mark.asyncio
+async def test_finish_persists_source_reasoning_metadata(recorder: _Recorder) -> None:
+    owner = _owner(recorder, reasoning_effort="medium")
+    usage = SourceUsage(
+        input_tokens=100,
+        output_tokens=25,
+        cached_input_tokens=20,
+        reasoning_tokens=17,
+    )
+
+    await owner.finish(status="success", usage=usage)
+
+    assert len(recorder.rows) == 1
+    row = recorder.rows[0]
+    assert row["reasoning_tokens"] == 17
+    assert row["reasoning_effort"] == "medium"
+
+
+@pytest.mark.asyncio
 async def test_finish_and_abandon_are_a_single_latch(recorder: _Recorder) -> None:
     bulkhead = SourceBulkhead()
     owner = _owner(recorder, reservation=_reservation(), bulkhead=bulkhead)

@@ -5,8 +5,9 @@ from dataclasses import asdict
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
+from app.core.auth.dashboard_access import Permission
 from app.core.auth.dependencies import (
-    require_dashboard_write_access,
+    require_dashboard_permission,
     set_dashboard_error_format,
     validate_dashboard_session,
 )
@@ -40,7 +41,10 @@ def _no_store(response: Response) -> None:
     response.headers["Cache-Control"] = "no-store"
 
 
-def _reject_legacy_mutation(request: Request, _write_access=Depends(require_dashboard_write_access)) -> None:
+def _reject_legacy_mutation(
+    request: Request,
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
+) -> None:
     if request.method not in {"GET", "HEAD", "OPTIONS"}:
         raise ControlConflict("managed_run_command_required")
 
@@ -59,7 +63,7 @@ router = APIRouter(
 
 @router.post("/rotation-events/claim", response_model=MemberRotationEventClaimResponse)
 async def claim_rotation_event(
-    _write_access=Depends(require_dashboard_write_access),
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
 ) -> MemberRotationEventClaimResponse:
     event = await claim_pending_event()
     return MemberRotationEventClaimResponse(
@@ -75,7 +79,7 @@ async def claim_rotation_event(
 async def settle_rotation_event(
     event_id: str,
     request: MemberRotationEventSettleRequest,
-    _write_access=Depends(require_dashboard_write_access),
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
 ) -> MemberRotationEventSettleResponse:
     return MemberRotationEventSettleResponse(
         accepted=await settle_event(
@@ -89,7 +93,7 @@ async def settle_rotation_event(
 @router.post("", response_model=MemberAuthHandoffResponse)
 async def prepare_handoff(
     request: MemberAuthHandoffPrepareRequest,
-    _write_access=Depends(require_dashboard_write_access),
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
     context: MemberAuthHandoffContext = Depends(get_member_auth_handoff_context),
 ) -> MemberAuthHandoffResponse:
     return await context.service.prepare(request)
@@ -97,7 +101,7 @@ async def prepare_handoff(
 
 @router.get("/usage", response_model=CatalogMemberUsageResponse)
 async def get_catalog_member_usage(
-    _write_access=Depends(require_dashboard_write_access),
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
     context: MemberAuthHandoffContext = Depends(get_member_auth_handoff_context),
 ) -> CatalogMemberUsageResponse:
     return await context.service.list_catalog_member_usage()
@@ -107,7 +111,7 @@ async def get_catalog_member_usage(
 async def get_workspace_auth_observation(
     workspace_id: str,
     workspace_account_id: str,
-    _write_access=Depends(require_dashboard_write_access),
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
     context: MemberAuthHandoffContext = Depends(get_member_auth_handoff_context),
 ) -> WorkspaceAuthObservationResponse:
     return await context.service.observe_workspace_auth(
@@ -119,7 +123,7 @@ async def get_workspace_auth_observation(
 @router.post("/reconciliation-actions", response_model=MemberAuthReconciliationResponse)
 async def reconcile_auth(
     request: MemberAuthReconciliationRequest,
-    _write_access=Depends(require_dashboard_write_access),
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
     context: MemberAuthHandoffContext = Depends(get_member_auth_handoff_context),
 ) -> MemberAuthReconciliationResponse:
     return await context.service.reconcile_auth(request)
@@ -128,7 +132,7 @@ async def reconcile_auth(
 @router.post("/catalog-members", response_model=CatalogMemberRegistrationResponse)
 async def register_catalog_member(
     request: CatalogMemberRegistrationRequest,
-    _write_access=Depends(require_dashboard_write_access),
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
     context: MemberAuthHandoffContext = Depends(get_member_auth_handoff_context),
 ) -> CatalogMemberRegistrationResponse | JSONResponse:
     try:
@@ -143,7 +147,7 @@ async def register_catalog_member(
 @router.get("/{handoff_id}", response_model=MemberAuthHandoffResponse)
 async def get_handoff_status(
     handoff_id: str,
-    _write_access=Depends(require_dashboard_write_access),
+    _write_access=Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
     context: MemberAuthHandoffReadContext = Depends(get_member_auth_handoff_read_context),
 ) -> MemberAuthHandoffResponse | JSONResponse:
     response = await context.service.get_status(handoff_id)

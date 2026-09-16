@@ -38,9 +38,7 @@ def _write_pool(tmp_path, *, accounts=None, groups=None):
                         "WorkspaceAccountId": "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
                         "BurnFirstEnabled": True,
                         "Archived": False,
-                        "Assignments": [
-                            {"AccountId": "account-member", "Included": True, "Order": 0}
-                        ],
+                        "Assignments": [{"AccountId": "account-member", "Included": True, "Order": 0}],
                     }
                 ],
             }
@@ -142,7 +140,9 @@ async def test_companion_pool_http_fetch_uses_beta_origin_and_loopback_host(tmp_
     site = web.TCPSite(runner, "127.0.0.1", 0)
     await site.start()
     assert site._server is not None
-    port = site._server.sockets[0].getsockname()[1]
+    sockets = getattr(site._server, "sockets", None)
+    assert sockets
+    port = sockets[0].getsockname()[1]
     try:
         resolved = await fetch_companion_account_pool_identity(
             f"http://127.0.0.1:{port}/member-switch/v1/account-pool",
@@ -165,14 +165,20 @@ def test_workspace_burn_first_distinguishes_explicit_off_from_unconfigured() -> 
         "burnFirstEnabled": False,
     }
 
-    assert resolve_companion_workspace_burn_first_payload(
-        {"groups": [group]},
-        workspace_account_id=workspace_account_id,
-    ) is False
-    assert resolve_companion_workspace_burn_first_payload(
-        {"groups": [{"workspaceAccountId": workspace_account_id}]},
-        workspace_account_id=workspace_account_id,
-    ) is None
+    assert (
+        resolve_companion_workspace_burn_first_payload(
+            {"groups": [group]},
+            workspace_account_id=workspace_account_id,
+        )
+        is False
+    )
+    assert (
+        resolve_companion_workspace_burn_first_payload(
+            {"groups": [{"workspaceAccountId": workspace_account_id}]},
+            workspace_account_id=workspace_account_id,
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("variant", ["excluded", "not_ready", "ambiguous_group", "ambiguous_account"])

@@ -12,9 +12,11 @@ from app.modules.member_switch.repository import (
 from app.modules.member_switch.schemas import (
     AUTH_ENROLLMENT_PROTOCOL,
     CONTROL_PROTOCOL,
+    ROTATION_CONTROLLER_PROTOCOL,
     AdmissionBlocker,
     AuthEnrollmentState,
     LocalAdmission,
+    RotationControllerState,
     RunState,
 )
 
@@ -140,6 +142,39 @@ async def local_admission(
                         if state.control_protocol != AUTH_ENROLLMENT_PROTOCOL
                         else "auth_enrollment_retained"
                     )
+        elif record.kind == "rotation":
+            try:
+                state = RotationControllerState.model_validate_json(record.payload)
+            except ValidationError:
+                code = "stored_rotation_review_required"
+            else:
+                child = records_by_id.get(state.member_switch_run_id)
+                effect_may_have_crossed = state.phase != "completed" and (
+                    state.remove_state in {"unknown", "confirmed"}
+                    or state.invite_state in {"unknown", "confirmed"}
+                    or state.phase
+                    in {
+                        "removing",
+                        "removal_effect_unknown",
+                        "removal_confirmed",
+                        "inviting",
+                        "invite_effect_unknown",
+                        "invite_sent",
+                        "waiting_membership",
+                        "finalizing",
+                    }
+                )
+                if (
+                    state.id != record.id
+                    or state.control_protocol != ROTATION_CONTROLLER_PROTOCOL
+                    or record.active_scope is not None
+                    or record.pending_action is not None
+                ):
+                    code = "stored_rotation_review_required"
+                elif effect_may_have_crossed and (
+                    child is None or child.kind != "run" or child.active_scope != GLOBAL_SCOPE
+                ):
+                    code = "rotation_effect_owner_missing"
         else:
             code = "unknown_control_record"
         if code:

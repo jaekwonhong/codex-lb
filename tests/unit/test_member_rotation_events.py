@@ -43,12 +43,8 @@ async def test_two_distinct_zero_samples_create_one_claimable_event(tmp_path, mo
     monkeypatch.setattr(rotation_events, "_path", lambda: tmp_path / "events.json")
     first = datetime.now(timezone.utc)
 
-    needs_confirmation = await rotation_events.observe_successful_usage(
-        member_account(), 0, first
-    )
-    await rotation_events.observe_successful_usage(
-        member_account(), 0, first + timedelta(seconds=1)
-    )
+    needs_confirmation = await rotation_events.observe_successful_usage(member_account(), 0, first)
+    await rotation_events.observe_successful_usage(member_account(), 0, first + timedelta(seconds=1))
     claimed = await rotation_events.claim_pending_event()
     duplicate = await rotation_events.claim_pending_event()
 
@@ -58,9 +54,7 @@ async def test_two_distinct_zero_samples_create_one_claimable_event(tmp_path, mo
     assert claimed.preset_id == "cdp-1-thinklet09"
     assert duplicate is None
     assert claimed.claim_token is not None
-    assert await rotation_events.settle_event(
-        claimed.event_id, claimed.claim_token, processed=True
-    )
+    assert await rotation_events.settle_event(claimed.event_id, claimed.claim_token, processed=True)
 
 
 @pytest.mark.asyncio
@@ -113,9 +107,7 @@ async def test_positive_second_sample_clears_zero_evidence(tmp_path, monkeypatch
     first = datetime.now(timezone.utc)
 
     await rotation_events.observe_successful_usage(member_account(), 0, first)
-    await rotation_events.observe_successful_usage(
-        member_account(), 1, first + timedelta(seconds=1)
-    )
+    await rotation_events.observe_successful_usage(member_account(), 1, first + timedelta(seconds=1))
 
     assert await rotation_events.claim_pending_event() is None
 
@@ -136,15 +128,11 @@ async def test_released_claim_can_be_claimed_again_with_a_new_token(tmp_path, mo
     monkeypatch.setattr(rotation_events, "_path", lambda: tmp_path / "events.json")
     first = datetime.now(timezone.utc)
     await rotation_events.observe_successful_usage(member_account(), 0, first)
-    await rotation_events.observe_successful_usage(
-        member_account(), 0, first + timedelta(seconds=1)
-    )
+    await rotation_events.observe_successful_usage(member_account(), 0, first + timedelta(seconds=1))
 
     claimed = await rotation_events.claim_pending_event()
     assert claimed is not None and claimed.claim_token is not None
-    assert await rotation_events.settle_event(
-        claimed.event_id, claimed.claim_token, processed=False
-    )
+    assert await rotation_events.settle_event(claimed.event_id, claimed.claim_token, processed=False)
 
     reclaimed = await rotation_events.claim_pending_event()
     assert reclaimed is not None
@@ -157,26 +145,18 @@ async def test_released_claim_moves_behind_pending_peers(tmp_path, monkeypatch) 
     monkeypatch.setattr(rotation_events, "_path", lambda: tmp_path / "events.json")
     first = datetime.now(timezone.utc)
     await rotation_events.observe_successful_usage(member_account(), 0, first)
-    await rotation_events.observe_successful_usage(
-        member_account(), 0, first + timedelta(seconds=1)
-    )
+    await rotation_events.observe_successful_usage(member_account(), 0, first + timedelta(seconds=1))
     await rotation_events.observe_successful_usage(second_member_account(), 0, first)
-    await rotation_events.observe_successful_usage(
-        second_member_account(), 0, first + timedelta(seconds=1)
-    )
+    await rotation_events.observe_successful_usage(second_member_account(), 0, first + timedelta(seconds=1))
 
     released = await rotation_events.claim_pending_event()
     assert released is not None and released.claim_token is not None
-    assert await rotation_events.settle_event(
-        released.event_id, released.claim_token, processed=False
-    )
+    assert await rotation_events.settle_event(released.event_id, released.claim_token, processed=False)
 
     peer = await rotation_events.claim_pending_event()
     assert peer is not None and peer.claim_token is not None
     assert peer.event_id != released.event_id
-    assert await rotation_events.settle_event(
-        peer.event_id, peer.claim_token, processed=True
-    )
+    assert await rotation_events.settle_event(peer.event_id, peer.claim_token, processed=True)
 
     reclaimed = await rotation_events.claim_pending_event()
     assert reclaimed is not None
@@ -188,30 +168,18 @@ async def test_processed_zero_event_is_not_recreated_until_positive_usage(tmp_pa
     monkeypatch.setattr(rotation_events, "_path", lambda: tmp_path / "events.json")
     first = datetime.now(timezone.utc)
     await rotation_events.observe_successful_usage(member_account(), 0, first)
-    await rotation_events.observe_successful_usage(
-        member_account(), 0, first + timedelta(seconds=1)
-    )
+    await rotation_events.observe_successful_usage(member_account(), 0, first + timedelta(seconds=1))
 
     claimed = await rotation_events.claim_pending_event()
     assert claimed is not None and claimed.claim_token is not None
-    assert await rotation_events.settle_event(
-        claimed.event_id, claimed.claim_token, processed=True
-    )
+    assert await rotation_events.settle_event(claimed.event_id, claimed.claim_token, processed=True)
 
-    await rotation_events.observe_successful_usage(
-        member_account(), 0, first + timedelta(seconds=2)
-    )
+    await rotation_events.observe_successful_usage(member_account(), 0, first + timedelta(seconds=2))
     assert await rotation_events.claim_pending_event() is None
 
-    await rotation_events.observe_successful_usage(
-        member_account(), 1, first + timedelta(seconds=3)
-    )
-    await rotation_events.observe_successful_usage(
-        member_account(), 0, first + timedelta(seconds=4)
-    )
-    await rotation_events.observe_successful_usage(
-        member_account(), 0, first + timedelta(seconds=5)
-    )
+    await rotation_events.observe_successful_usage(member_account(), 1, first + timedelta(seconds=3))
+    await rotation_events.observe_successful_usage(member_account(), 0, first + timedelta(seconds=4))
+    await rotation_events.observe_successful_usage(member_account(), 0, first + timedelta(seconds=5))
 
     next_claim = await rotation_events.claim_pending_event()
     assert next_claim is not None
@@ -223,25 +191,15 @@ async def test_positive_usage_invalidates_a_claimed_event_and_rearms_rotation(tm
     monkeypatch.setattr(rotation_events, "_path", lambda: tmp_path / "events.json")
     first = datetime.now(timezone.utc)
     await rotation_events.observe_successful_usage(member_account(), 0, first)
-    await rotation_events.observe_successful_usage(
-        member_account(), 0, first + timedelta(seconds=1)
-    )
+    await rotation_events.observe_successful_usage(member_account(), 0, first + timedelta(seconds=1))
     claimed = await rotation_events.claim_pending_event()
     assert claimed is not None and claimed.claim_token is not None
 
-    await rotation_events.observe_successful_usage(
-        member_account(), 1, first + timedelta(seconds=2)
-    )
+    await rotation_events.observe_successful_usage(member_account(), 1, first + timedelta(seconds=2))
 
-    assert not await rotation_events.settle_event(
-        claimed.event_id, claimed.claim_token, processed=True
-    )
-    await rotation_events.observe_successful_usage(
-        member_account(), 0, first + timedelta(seconds=3)
-    )
-    await rotation_events.observe_successful_usage(
-        member_account(), 0, first + timedelta(seconds=4)
-    )
+    assert not await rotation_events.settle_event(claimed.event_id, claimed.claim_token, processed=True)
+    await rotation_events.observe_successful_usage(member_account(), 0, first + timedelta(seconds=3))
+    await rotation_events.observe_successful_usage(member_account(), 0, first + timedelta(seconds=4))
     next_claim = await rotation_events.claim_pending_event()
     assert next_claim is not None
     assert next_claim.event_id != claimed.event_id

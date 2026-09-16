@@ -2923,6 +2923,7 @@ class StubAccountsRepository:
         workspace_id: str | None = None,
         workspace_label: str | None = None,
         seat_type: str | None = None,
+        routing_policy_override: str | None = None,
     ) -> bool:
         # The usage updater never rotates token material through its accounts
         # repo (that path lives in AuthManager). Present only to satisfy the

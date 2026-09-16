@@ -1,4 +1,5 @@
 """C#-generated preflight traces are the cross-language permission inputs."""
+
 import json
 from pathlib import Path
 

@@ -20,6 +20,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
+import app.db.migrate as migrate_module
 import app.db.session as session_module
 from app.db.models import Account, AccountStatus, Base
 from app.db.sqlite_utils import (
@@ -781,6 +782,118 @@ async def test_init_db_fails_when_startup_migrations_are_disabled_but_schema_is_
     )
 
     with pytest.raises(RuntimeError, match="database schema is behind Alembic head"):
+        await session_module.init_db()
+
+
+@pytest.mark.asyncio
+async def test_init_db_postgres_requires_local_extensions_before_readiness(monkeypatch) -> None:
+    head = "20260910_000000_request_logs_missing_cost_index"
+
+    def _inspect_migration_state(_: str) -> _FakeMigrationState:
+        return _FakeMigrationState(
+            current_revision=head,
+            head_revision=head,
+            has_alembic_version_table=True,
+            has_legacy_migrations_table=False,
+            needs_upgrade=False,
+        )
+
+    monkeypatch.setattr(
+        session_module,
+        "_settings",
+        _FakeSettings(
+            database_url="postgresql+asyncpg://user@localhost/codexlb",
+            database_migrate_on_startup=False,
+            database_migrations_fail_fast=False,
+        ),
+    )
+    monkeypatch.setattr(
+        session_module,
+        "_load_migration_entrypoints",
+        lambda: (
+            _inspect_migration_state,
+            lambda _: (_ for _ in ()).throw(AssertionError("startup migrations should stay disabled")),
+            lambda _: (),
+        ),
+    )
+    monkeypatch.setattr(
+        migrate_module,
+        "check_local_extension_schema",
+        lambda _: ("missing_local_extension_table:member_rotation_workspace_controls",),
+    )
+
+    with pytest.raises(RuntimeError, match="Required local extension schema is unavailable or drifted"):
+        await session_module.init_db()
+
+
+@pytest.mark.asyncio
+async def test_init_db_postgres_accepts_exact_head_and_local_extensions(monkeypatch) -> None:
+    head = "20260910_000000_request_logs_missing_cost_index"
+
+    monkeypatch.setattr(
+        session_module,
+        "_settings",
+        _FakeSettings(
+            database_url="postgresql+asyncpg://user@localhost/codexlb",
+            database_migrate_on_startup=False,
+        ),
+    )
+    monkeypatch.setattr(
+        session_module,
+        "_load_migration_entrypoints",
+        lambda: (
+            lambda _: _FakeMigrationState(
+                current_revision=head,
+                head_revision=head,
+                has_alembic_version_table=True,
+                has_legacy_migrations_table=False,
+                needs_upgrade=False,
+            ),
+            lambda _: (_ for _ in ()).throw(AssertionError("startup migrations should stay disabled")),
+            lambda _: (),
+        ),
+    )
+    monkeypatch.setattr(migrate_module, "check_local_extension_schema", lambda _: ())
+
+    await session_module.init_db()
+
+
+@pytest.mark.asyncio
+async def test_init_db_postgres_local_extension_failure_is_fatal_when_migration_fail_fast_disabled(monkeypatch) -> None:
+    async def _run_startup_migrations(_: str) -> _FakeMigrationRunResult:
+        return _FakeMigrationRunResult()
+
+    monkeypatch.setattr(
+        session_module,
+        "_settings",
+        _FakeSettings(
+            database_url="postgresql+asyncpg://user@localhost/codexlb",
+            database_migrate_on_startup=True,
+            database_migrations_fail_fast=False,
+        ),
+    )
+    monkeypatch.setattr(
+        session_module,
+        "_load_migration_entrypoints",
+        lambda: (
+            lambda _: _FakeMigrationState(
+                current_revision="20260910_000000_request_logs_missing_cost_index",
+                head_revision="20260910_000000_request_logs_missing_cost_index",
+                has_alembic_version_table=True,
+                has_legacy_migrations_table=False,
+                needs_upgrade=False,
+            ),
+            _run_startup_migrations,
+            lambda _: (),
+        ),
+    )
+    monkeypatch.setattr(
+        migrate_module,
+        "check_local_extension_schema",
+        lambda _: ("local_extension_indexes:member_rotation_quota_operations",),
+    )
+
+    with pytest.raises(RuntimeError, match="Required local extension schema is unavailable or drifted"):
         await session_module.init_db()
 
 

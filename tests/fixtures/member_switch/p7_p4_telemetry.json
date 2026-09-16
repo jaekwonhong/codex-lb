@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "observations": [
+    {"operation": "remove", "case": "number", "capture_state": "parsed", "value_present": true, "value": 7},
+    {"operation": "remove", "case": "boolean", "capture_state": "parsed", "value_present": true, "value": true},
+    {"operation": "remove", "case": "string", "capture_state": "parsed", "value_present": true, "value": "known_code"},
+    {"operation": "remove", "case": "explicit_null", "capture_state": "parsed", "value_present": true, "value": null},
+    {"operation": "remove", "case": "absent", "capture_state": "parsed", "value_present": false},
+    {"operation": "remove", "case": "empty_body", "capture_state": "empty_body", "value_present": false},
+    {"operation": "remove", "case": "parse_failed", "capture_state": "parse_failed", "value_present": false},
+    {"operation": "remove", "case": "response_not_received", "capture_state": "response_not_received", "value_present": false},
+    {"operation": "remove", "case": "transport_failure", "capture_state": "transport_failure", "value_present": false},
+    {"operation": "remove", "case": "sensitive_nested_dynamic", "capture_state": "parsed", "value_present": false, "sensitive_values_retained": false},
+    {"operation": "invite", "case": "number", "capture_state": "parsed", "value_present": true, "value": 7},
+    {"operation": "invite", "case": "boolean", "capture_state": "parsed", "value_present": true, "value": true},
+    {"operation": "invite", "case": "string", "capture_state": "parsed", "value_present": true, "value": "known_code"},
+    {"operation": "invite", "case": "explicit_null", "capture_state": "parsed", "value_present": true, "value": null},
+    {"operation": "invite", "case": "absent", "capture_state": "parsed", "value_present": false},
+    {"operation": "invite", "case": "empty_body", "capture_state": "empty_body", "value_present": false},
+    {"operation": "invite", "case": "parse_failed", "capture_state": "parse_failed", "value_present": false},
+    {"operation": "invite", "case": "response_not_received", "capture_state": "response_not_received", "value_present": false},
+    {"operation": "invite", "case": "transport_failure", "capture_state": "transport_failure", "value_present": false},
+    {"operation": "invite", "case": "sensitive_nested_dynamic", "capture_state": "parsed", "value_present": false, "sensitive_values_retained": false}
+  ]
+}

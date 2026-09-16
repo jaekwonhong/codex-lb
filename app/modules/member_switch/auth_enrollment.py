@@ -90,11 +90,13 @@ _AUTO_OAUTH_MAX_ADVANCE_ATTEMPTS = 30
 _POST_PROBE_STALE_SECONDS = 90.0
 _POST_PROBE_WAIT_SECONDS = 90.0
 _POST_PROBE_POLL_SECONDS = 0.1
-_AUTO_BROWSER_CONTINUE_CODES = frozenset({
-    "authorization_complete",
-    "ego_device_auth_code_submitted",
-    "ego_device_auth_code_submission_unconfirmed",
-})
+_AUTO_BROWSER_CONTINUE_CODES = frozenset(
+    {
+        "authorization_complete",
+        "ego_device_auth_code_submitted",
+        "ego_device_auth_code_submission_unconfirmed",
+    }
+)
 
 
 class MemberAuthEnrollmentService:
@@ -684,9 +686,7 @@ class MemberAuthEnrollmentService:
             try:
                 next_view = await self.command(
                     enrollment_id,
-                    AuthEnrollmentCommandRequest(
-                        command_id=uuid4(), expected_revision=view.revision, action=action
-                    ),
+                    AuthEnrollmentCommandRequest(command_id=uuid4(), expected_revision=view.revision, action=action),
                     run_post_probe=False,
                 )
             except ControlConflict:
@@ -697,8 +697,7 @@ class MemberAuthEnrollmentService:
                 raise
 
             if action == "open_auth_browser" and (
-                next_view.phase != "auth_browser_opened"
-                or next_view.last_code not in _AUTO_BROWSER_CONTINUE_CODES
+                next_view.phase != "auth_browser_opened" or next_view.last_code not in _AUTO_BROWSER_CONTINUE_CODES
             ):
                 return next_view
             if action == "advance_auth" and next_view.phase == "auth_browser_opened":
@@ -811,11 +810,7 @@ class MemberAuthEnrollmentService:
             )
         if not browser.accepted:
             return state.model_copy(update={"last_code": browser.code})
-        if (
-            not browser.profile_id
-            or browser.task_space_id is None
-            or browser.ownership != "agentDelegatedToUser"
-        ):
+        if not browser.profile_id or browser.task_space_id is None or browser.ownership != "agentDelegatedToUser":
             raise ControlConflict("ego_browser_response_invalid")
         return state.model_copy(
             update={

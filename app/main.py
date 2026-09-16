@@ -107,6 +107,7 @@ from app.modules.firewall import api as firewall_api
 from app.modules.fleet import api as fleet_api
 from app.modules.health import api as health_api
 from app.modules.member_auth_handoff import api as member_auth_handoff_api
+from app.modules.member_rotation_operator import api as member_rotation_operator_api
 from app.modules.member_switch import api as member_switch_api
 from app.modules.model_sources import api as model_sources_api
 from app.modules.oauth import api as oauth_api
@@ -1054,6 +1055,7 @@ def create_app() -> FastAPI:
     app.include_router(oauth_api.router)
     app.include_router(member_auth_handoff_api.router)
     app.include_router(member_switch_api.router)
+    app.include_router(member_rotation_operator_api.router)
     app.include_router(dashboard_auth_api.router)
     app.include_router(dashboard_users_api.router)
     app.include_router(dashboard_roles_api.router)

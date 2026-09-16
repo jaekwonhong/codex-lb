@@ -505,6 +505,98 @@ export const unauthenticatedSession = createDashboardAuthSession({
 
 export const settings = createDashboardSettings();
 
+export const rotationOperator = {
+  schemaVersion: 1,
+  workspaces: [
+    {
+      workspaceId: "cdp-1",
+      workspaceAccountId: "4865cea4-fb0b-41f3-917c-b226b2acdfb0",
+      workspaceName: "workspace-1",
+      ownerEmail: "owner@example.com",
+      automaticRotationEnabled: false,
+      controlVersion: 0,
+      currentMember: {
+        presetId: "cdp-1-current",
+        email: "current.member@example.com",
+        userId: "user-Current123",
+      },
+      weeklyUsage: { state: "exhausted", reason: null },
+      fiveHourUsage: {
+        state: "observed",
+        usedPercent: 82.4,
+        resetAt: 1_799_999_999,
+        observedAt: "2026-09-13T11:55:00Z",
+      },
+      resetCredit: { state: "resolution_required", detail: null },
+      quota: {
+        count24h: 2,
+        limit24h: 3,
+        count168h: 5,
+        limit168h: 7,
+        countBasis: "observed_local",
+        historyComplete: false,
+        coverageStartedAt: "2026-09-10T00:00:00Z",
+      },
+      foundation: {
+        state: "reset_required",
+        admissionReady: false,
+        attentionRequired: false,
+        weeklyState: "exhausted",
+        weeklyReason: null,
+        resetStatus: null,
+        quotaCode: null,
+        count24h: null,
+        count168h: null,
+      },
+      controller: {
+        status: "idle",
+        reason: "awaiting_reset_resolution",
+        removeEffect: null,
+        inviteEffect: null,
+        invitationIssued: false,
+        membershipConfirmed: false,
+        companionStatus: "ok",
+      },
+      nextCandidate: {
+        presetId: "cdp-1-next",
+        email: "next.member@example.com",
+        userId: "user-Next123",
+      },
+      blockerCodes: [],
+      history: [
+        {
+          email: "removed.member@example.com",
+          userId: "user-Removed123",
+          presetId: "cdp-1-removed",
+          membershipEpoch: "epoch-1",
+          removedAt: "2026-09-12T09:30:00Z",
+          retainedAt: "2026-09-12T09:29:58Z",
+          fiveHour: {
+            logicalWindow: "5h",
+            sourceWindow: "primary",
+            usedPercent: 97.5,
+            originalResetAt: 1_799_999_999,
+            effectiveResetAt: null,
+            observedAt: "2026-09-12T09:29:50Z",
+            retainedAt: "2026-09-12T09:29:58Z",
+            resetScheduleInvalidated: true,
+          },
+          weekly: {
+            logicalWindow: "weekly",
+            sourceWindow: "secondary",
+            usedPercent: 100,
+            originalResetAt: 1_800_500_000,
+            effectiveResetAt: null,
+            observedAt: "2026-09-12T09:29:50Z",
+            retainedAt: "2026-09-12T09:29:58Z",
+            resetScheduleInvalidated: true,
+          },
+        },
+      ],
+    },
+  ],
+} as const;
+
 export const upstreamProxyAdmin = createUpstreamProxyAdmin({
   endpoints: [],
   pools: [],

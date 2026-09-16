@@ -886,7 +886,6 @@ class LoadBalancer:
                     relative_availability_power=relative_availability_power,
                     relative_availability_top_k=relative_availability_top_k,
                     required_account_id=required_account_id,
-                    # Unresolved owner-bearing continuity is not fresh routing.
                     require_unambiguous_account=require_unambiguous_account,
                     budget_threshold_pct=budget_threshold_pct,
                     secondary_budget_threshold_pct=secondary_budget_threshold_pct,
@@ -1734,15 +1733,9 @@ class LoadBalancer:
                 persisted = await self._persist_state(repos.accounts, account, state)
             if persisted and account.blocked_at is not None:
                 try:
-                    await observe_quota_exceeded(
-                        account,
-                        datetime.fromtimestamp(float(account.blocked_at), tz=timezone.utc),
-                    )
+                    await observe_quota_exceeded(account, datetime.fromtimestamp(account.blocked_at, timezone.utc))
                 except Exception:
-                    logger.exception(
-                        "Failed to persist automatic member rotation event after quota exhaustion",
-                        extra={"account_id": account.id},
-                    )
+                    logger.exception("Rotation event persistence failed", extra={"account_id": account.id})
             self._selection_inputs_cache.invalidate()
 
     async def mark_permanent_failure(self, account: Account, error_code: str) -> bool:

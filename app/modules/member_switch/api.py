@@ -5,8 +5,9 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Request, Response
 from fastapi.responses import JSONResponse
 
+from app.core.auth.dashboard_access import Permission
 from app.core.auth.dependencies import (
-    require_dashboard_write_access,
+    require_dashboard_permission,
     set_dashboard_error_format,
     validate_dashboard_session,
 )
@@ -47,7 +48,7 @@ router = APIRouter(
     dependencies=[
         Depends(validate_dashboard_session),
         Depends(set_dashboard_error_format),
-        Depends(require_dashboard_write_access),
+        Depends(require_dashboard_permission(Permission.ACCOUNTS_WRITE)),
         Depends(_no_store),
     ],
 )

@@ -1,5 +1,6 @@
-- [x] Restore the immutable merged member-control migration.
-- [x] Add bounded legacy-replay handling in the migration runner and public-path tests.
+- [x] Drop the historical local member-control Alembic branch from the beta.9 rebase.
+- [x] Keep the two retained member-control tables outside upstream Alembic ownership and schema-drift creation.
+- [x] Require migration rehearsal to verify retained extension tables/data before member-switch enablement.
 - [x] Recheck lifecycle regressions and the broad-suite fixture boundary.
 - [x] Record integrated evidence and exact candidate identities separately from deployment.
 

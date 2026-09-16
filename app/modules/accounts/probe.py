@@ -22,6 +22,7 @@ async def run_account_force_probe(
     model: str | None = None,
     actor_ip: str | None = None,
     trigger: str = "dashboard_manual",
+    emit_audit: bool = True,
 ) -> AccountProbeResponse | None:
     """Run the canonical Force Probe and its advisory settlement/audit side effects."""
     result = await service.probe_account(account_id, model=model)
@@ -62,14 +63,15 @@ async def run_account_force_probe(
         result.account_status_after,
     )
 
-    AuditService.log_async(
-        "account_probed",
-        actor_ip=actor_ip,
-        details={
-            "account_id": result.account_id,
-            "probe_status_code": result.probe_status_code,
-            "model": model,
-            "trigger": trigger,
-        },
-    )
+    if emit_audit:
+        AuditService.log_async(
+            "account_probed",
+            actor_ip=actor_ip,
+            details={
+                "account_id": result.account_id,
+                "probe_status_code": result.probe_status_code,
+                "model": model,
+                "trigger": trigger,
+            },
+        )
     return result

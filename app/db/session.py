@@ -1187,6 +1187,14 @@ async def _init_db() -> None:
             logger.error(message)
             raise RuntimeError(message)
 
+        if database_url.startswith("postgresql+"):
+            from app.db.migrate import check_local_extension_schema
+
+            local_extension_drift = await to_thread.run_sync(lambda: check_local_extension_schema(database_url))
+            if local_extension_drift:
+                details = "; ".join(local_extension_drift)
+                raise RuntimeError(f"Required local extension schema is unavailable or drifted: {details}")
+
         logger.info("Startup database migration is disabled and database schema is current")
         return
 
@@ -1233,6 +1241,18 @@ async def _init_db() -> None:
         logger.exception("Failed to apply database migrations")
         if _settings.database_migrations_fail_fast:
             raise
+
+    # Required PostgreSQL local extensions are a runtime compatibility fence,
+    # not an optional migration convenience. They must fail startup even when
+    # DATABASE_MIGRATIONS_FAIL_FAST=false caused an Alembic failure to be logged
+    # rather than raised above.
+    if database_url.startswith("postgresql+"):
+        from app.db.migrate import check_local_extension_schema
+
+        local_extension_drift = await to_thread.run_sync(lambda: check_local_extension_schema(database_url))
+        if local_extension_drift:
+            details = "; ".join(local_extension_drift)
+            raise RuntimeError(f"Required local extension schema is unavailable or drifted: {details}")
 
 
 async def init_db() -> None:

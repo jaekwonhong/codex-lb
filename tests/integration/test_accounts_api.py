@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from contextlib import asynccontextmanager
 from copy import copy
 from datetime import datetime
 
@@ -14,6 +15,7 @@ from app.core.crypto import TokenEncryptor
 from app.core.usage.models import UsagePayload
 from app.db.models import Account, AccountStatus
 from app.db.session import SessionLocal
+from app.modules.rate_limit_reset_credits.redeem_coordination import RedeemClaimTimeoutError
 from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_credits_store
 
 pytestmark = pytest.mark.integration
@@ -216,8 +218,19 @@ async def test_account_usage_reset_consume_consumes_credit_and_refreshes(async_c
     assert response.status_code == 200
 
     consume_calls: list[dict[str, object]] = []
+    serializer_events: list[tuple[str, str]] = []
+
+    @asynccontextmanager
+    async def stub_serialize_reset_credit_redeem(account_id: str, *, session):
+        assert session is not None
+        serializer_events.append(("enter", account_id))
+        try:
+            yield
+        finally:
+            serializer_events.append(("exit", account_id))
 
     async def stub_consume_rate_limit_reset_credit(**kwargs: object) -> ConsumeRateLimitResetCreditResponse:
+        assert serializer_events == [("enter", expected_account_id)]
         consume_calls.append(kwargs)
         return ConsumeRateLimitResetCreditResponse.model_validate({"code": "reset", "windows_reset": 2})
 
@@ -234,6 +247,10 @@ async def test_account_usage_reset_consume_consumes_credit_and_refreshes(async_c
     monkeypatch.setattr(
         "app.modules.accounts.service.consume_rate_limit_reset_credit",
         stub_consume_rate_limit_reset_credit,
+    )
+    monkeypatch.setattr(
+        "app.modules.rate_limit_reset_credits.api.serialize_reset_credit_redeem",
+        stub_serialize_reset_credit_redeem,
     )
     monkeypatch.setattr("app.modules.accounts.service.UsageUpdater", StubUsageUpdater)
     await get_rate_limit_reset_credits_store().set(expected_account_id, _reset_credit_snapshot("credit-dashboard"))
@@ -252,8 +269,64 @@ async def test_account_usage_reset_consume_consumes_credit_and_refreshes(async_c
     assert call["redeem_request_id"]
     assert call["route"] is None
     assert call["allow_direct_egress"] is True
+    assert serializer_events == [
+        ("enter", expected_account_id),
+        ("exit", expected_account_id),
+    ]
     assert refreshed_account_ids == [expected_account_id]
     assert get_rate_limit_reset_credits_store().get(expected_account_id) is None
+
+
+@pytest.mark.asyncio
+async def test_account_usage_reset_consume_fails_closed_before_upstream_when_serializer_is_contended(
+    async_client,
+    monkeypatch,
+):
+    email = "reset-consume-contended-dashboard@example.com"
+    raw_account_id = "acc_reset_consume_contended_dashboard"
+    payload = {
+        "email": email,
+        "chatgpt_account_id": raw_account_id,
+        "https://api.openai.com/auth": {"chatgpt_plan_type": "plus"},
+    }
+    auth_json = {
+        "tokens": {
+            "idToken": _encode_jwt(payload),
+            "accessToken": "access-reset-consume-contended-dashboard",
+            "refreshToken": "refresh-reset-consume-contended-dashboard",
+            "accountId": raw_account_id,
+        },
+    }
+    expected_account_id = generate_unique_account_id(raw_account_id, email)
+    files = {"auth_json": ("auth.json", json.dumps(auth_json), "application/json")}
+    response = await async_client.post("/api/accounts/import", files=files)
+    assert response.status_code == 200
+
+    @asynccontextmanager
+    async def contended_serializer(account_id: str, *, session):
+        assert account_id == expected_account_id
+        assert session is not None
+        raise RedeemClaimTimeoutError("claim held")
+        yield  # pragma: no cover
+
+    async def should_not_consume(**_: object) -> ConsumeRateLimitResetCreditResponse:
+        raise AssertionError("upstream consume must not run before reset serializer admission")
+
+    monkeypatch.setattr(
+        "app.modules.rate_limit_reset_credits.api.serialize_reset_credit_redeem",
+        contended_serializer,
+    )
+    monkeypatch.setattr(
+        "app.modules.accounts.service.consume_rate_limit_reset_credit",
+        should_not_consume,
+    )
+
+    reset = await async_client.post(f"/api/accounts/{expected_account_id}/usage-reset-credits/consume")
+
+    assert reset.status_code == 409
+    body = reset.json()["error"]
+    assert body["code"] == "account_usage_reset_consume_unavailable"
+    assert body["message"] == "Another reset credit redemption is already in progress for this account"
 
 
 @pytest.mark.asyncio

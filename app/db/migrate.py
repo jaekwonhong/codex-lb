@@ -22,6 +22,7 @@ from anyio import to_thread
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy import exc as sa_exc
 from sqlalchemy.engine import Connection
+from sqlalchemy.sql import sqltypes
 
 from app.core.config.settings import get_settings
 from app.db.alembic.revision_ids import LEGACY_MIGRATION_TO_NEW_REVISION, OLD_TO_NEW_REVISION_MAP, REVISION_ID_PATTERN
@@ -35,6 +36,16 @@ _ALEMBIC_VERSION_TABLE = "alembic_version"
 _ALEMBIC_VERSION_COLUMN = "version_num"
 _LEGACY_MIGRATIONS_TABLE = "schema_migrations"
 _RUNTIME_SENTINELS_TABLE = "runtime_sentinels"
+_LOCAL_EXTENSION_TABLES = frozenset(
+    {
+        "member_switch_control_records",
+        "member_switch_command_receipts",
+        "member_rotation_quota_operations",
+        "member_rotation_workspace_controls",
+        "workspace_member_usage_reset_invalidations",
+        "workspace_member_final_usage_snapshots",
+    }
+)
 _REQUIRED_TABLES_FOR_LEGACY_STAMP = frozenset(
     {
         "accounts",
@@ -605,15 +616,36 @@ def _unwrap_schema_drift_diff(diff: object) -> object:
     return diff
 
 
+def _schema_drift_table_name(diff: object) -> str | None:
+    diff = _unwrap_schema_drift_diff(diff)
+    if not isinstance(diff, tuple) or not diff:
+        return None
+
+    kind = diff[0]
+    if kind in {"add_table", "remove_table"} and len(diff) >= 2:
+        table_name = getattr(diff[1], "name", None)
+        return str(table_name) if table_name is not None else None
+    if kind in {"add_index", "remove_index", "add_constraint", "remove_constraint"} and len(diff) >= 2:
+        table = getattr(diff[1], "table", None)
+        table_name = getattr(table, "name", None)
+        return str(table_name) if table_name is not None else None
+    if isinstance(kind, str) and kind.startswith("modify_") and len(diff) >= 3:
+        return str(diff[2])
+    return None
+
+
 def _is_ignored_schema_drift(connection: Connection, diff: object) -> bool:
     diff = _unwrap_schema_drift_diff(diff)
     if not isinstance(diff, tuple) or not diff:
         return False
 
-    if diff[0] == "add_table" and len(diff) >= 2:
-        table_name = getattr(diff[1], "name", None)
-        if table_name in _LOCAL_EXTENSION_TABLES:
-            return True
+    # Local extension tables deliberately live outside the shared Alembic
+    # lineage. Exclude every autogenerate diff owned by those tables here and
+    # enforce their complete physical contract independently at runtime via
+    # ``check_local_extension_schema``. Ignoring only ``add_table`` leaves the
+    # indexes attached to an absent extension table as false-positive drift.
+    if _schema_drift_table_name(diff) in _LOCAL_EXTENSION_TABLES:
+        return True
 
     if diff[0] == "remove_column" and len(diff) >= 4:
         column = diff[3]
@@ -677,6 +709,541 @@ def check_schema_drift(database_url: str) -> tuple[str, ...]:
         manual_diffs = _manual_schema_drift_diffs(connection)
 
     return tuple(_stable_diff_repr(diff) for diff in diffs) + manual_diffs
+
+
+_LOCAL_EXTENSION_CONSTRAINTS = frozenset(
+    {
+        (
+            "member_rotation_quota_operations",
+            "c",
+            "ck_member_rotation_quota_invite_effect",
+            "CHECK (((invite_effect)::text = ANY ((ARRAY['not_attempted'::character varying, "
+            "'unknown'::character varying, 'confirmed'::character varying, "
+            "'authoritative_non_effect'::character varying])::text[])))",
+            True,
+            False,
+            False,
+        ),
+        (
+            "member_rotation_quota_operations",
+            "c",
+            "ck_member_rotation_quota_remove_effect",
+            "CHECK (((remove_effect)::text = ANY ((ARRAY['not_attempted'::character varying, "
+            "'unknown'::character varying, 'confirmed'::character varying, "
+            "'authoritative_non_effect'::character varying])::text[])))",
+            True,
+            False,
+            False,
+        ),
+        (
+            "member_rotation_quota_operations",
+            "p",
+            "member_rotation_quota_operations_pkey",
+            "PRIMARY KEY (operation_id)",
+            True,
+            False,
+            False,
+        ),
+        (
+            "member_rotation_quota_operations",
+            "u",
+            "uq_member_rotation_quota_rotation_event",
+            "UNIQUE (rotation_event_id)",
+            True,
+            False,
+            False,
+        ),
+        (
+            "member_rotation_workspace_controls",
+            "c",
+            "ck_member_rotation_workspace_control_version",
+            "CHECK ((version >= 1))",
+            True,
+            False,
+            False,
+        ),
+        (
+            "member_rotation_workspace_controls",
+            "p",
+            "member_rotation_workspace_controls_pkey",
+            "PRIMARY KEY (workspace_id)",
+            True,
+            False,
+            False,
+        ),
+        (
+            "member_rotation_workspace_controls",
+            "u",
+            "uq_member_rotation_workspace_control_workspace_account",
+            "UNIQUE (workspace_account_id)",
+            True,
+            False,
+            False,
+        ),
+        (
+            "member_switch_command_receipts",
+            "f",
+            "member_switch_command_receipts_record_id_fkey",
+            "FOREIGN KEY (record_id) REFERENCES member_switch_control_records(id)",
+            True,
+            False,
+            False,
+        ),
+        (
+            "member_switch_command_receipts",
+            "p",
+            "member_switch_command_receipts_pkey",
+            "PRIMARY KEY (record_id, command_id)",
+            True,
+            False,
+            False,
+        ),
+        (
+            "member_switch_control_records",
+            "c",
+            "ck_member_switch_revision",
+            "CHECK ((revision >= 0))",
+            True,
+            False,
+            False,
+        ),
+        (
+            "member_switch_control_records",
+            "p",
+            "member_switch_control_records_pkey",
+            "PRIMARY KEY (id)",
+            True,
+            False,
+            False,
+        ),
+        (
+            "member_switch_control_records",
+            "u",
+            "member_switch_control_records_active_scope_key",
+            "UNIQUE (active_scope)",
+            True,
+            False,
+            False,
+        ),
+        (
+            "workspace_member_final_usage_snapshots",
+            "c",
+            "ck_workspace_member_final_usage_snapshot_logical_window",
+            "CHECK (((logical_window)::text = ANY ((ARRAY['5h'::character varying, "
+            "'weekly'::character varying])::text[])))",
+            True,
+            False,
+            False,
+        ),
+        (
+            "workspace_member_final_usage_snapshots",
+            "f",
+            "fk_rotation_final_usage_reset_invalidation",
+            "FOREIGN KEY (reset_invalidation_id) REFERENCES "
+            "workspace_member_usage_reset_invalidations(id) ON DELETE RESTRICT",
+            True,
+            False,
+            False,
+        ),
+        (
+            "workspace_member_final_usage_snapshots",
+            "p",
+            "workspace_member_final_usage_snapshots_pkey",
+            "PRIMARY KEY (id)",
+            True,
+            False,
+            False,
+        ),
+        (
+            "workspace_member_final_usage_snapshots",
+            "u",
+            "uq_workspace_member_final_usage_snapshot_epoch_window",
+            "UNIQUE (workspace_account_id, user_id, membership_epoch, logical_window)",
+            True,
+            False,
+            False,
+        ),
+        (
+            "workspace_member_usage_reset_invalidations",
+            "p",
+            "workspace_member_usage_reset_invalidations_pkey",
+            "PRIMARY KEY (id)",
+            True,
+            False,
+            False,
+        ),
+    }
+)
+
+_LOCAL_EXTENSION_STANDALONE_INDEXES = frozenset(
+    {
+        (
+            "member_rotation_quota_operations",
+            "ix_member_rotation_quota_workspace_requested",
+            "btree",
+            "CREATE INDEX ix_member_rotation_quota_workspace_requested ON public.member_rotation_quota_operations "
+            "USING btree (workspace_account_id, requested_at)",
+            False,
+            True,
+            True,
+        ),
+        (
+            "member_rotation_quota_operations",
+            "ix_member_rotation_quota_workspace_reserved",
+            "btree",
+            "CREATE INDEX ix_member_rotation_quota_workspace_reserved ON public.member_rotation_quota_operations "
+            "USING btree (workspace_account_id, reserved_at)",
+            False,
+            True,
+            True,
+        ),
+        (
+            "workspace_member_final_usage_snapshots",
+            "ix_workspace_member_final_usage_snapshot_history",
+            "btree",
+            "CREATE INDEX ix_workspace_member_final_usage_snapshot_history ON "
+            "public.workspace_member_final_usage_snapshots "
+            "USING btree (workspace_account_id, user_id, observed_at)",
+            False,
+            True,
+            True,
+        ),
+        (
+            "workspace_member_final_usage_snapshots",
+            "ix_workspace_member_final_usage_snapshot_reset_invalidation",
+            "btree",
+            "CREATE INDEX ix_workspace_member_final_usage_snapshot_reset_invalidation ON "
+            "public.workspace_member_final_usage_snapshots "
+            "USING btree (reset_invalidation_id)",
+            False,
+            True,
+            True,
+        ),
+    }
+)
+
+
+def _normalize_postgresql_default(value: object | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    while len(normalized) >= 2 and normalized.startswith("(") and normalized.endswith(")"):
+        normalized = normalized[1:-1].strip()
+    if normalized.startswith("'"):
+        literal: list[str] = []
+        index = 1
+        while index < len(normalized):
+            if normalized[index] != "'":
+                literal.append(normalized[index])
+                index += 1
+                continue
+            if index + 1 < len(normalized) and normalized[index + 1] == "'":
+                literal.append("'")
+                index += 2
+                continue
+            remainder = normalized[index + 1 :].strip()
+            if not remainder or re.fullmatch(
+                r"(?:::\s*(?:character\s+varying|varchar|text|boolean|smallint|integer|bigint)(?:\[\])?\s*)+",
+                remainder,
+                flags=re.IGNORECASE,
+            ):
+                return "".join(literal)
+            break
+    collapsed = " ".join(normalized.split())
+    if collapsed.casefold() in {"false", "true", "now()"}:
+        return collapsed.casefold()
+    return collapsed
+
+
+def _expected_postgresql_default(column: object, connection: Connection) -> str | None:
+    server_default = getattr(column, "server_default", None)
+    if server_default is None:
+        return None
+    argument = server_default.arg
+    if isinstance(argument, str):
+        return _normalize_postgresql_default(argument)
+    return _normalize_postgresql_default(argument.compile(dialect=connection.dialect))
+
+
+def _expected_postgresql_format_type(column: object) -> str:
+    column_type = getattr(column, "type", None)
+    if isinstance(column_type, sqltypes.Text):
+        return "text"
+    if isinstance(column_type, sqltypes.String):
+        return "character varying" if column_type.length is None else f"character varying({column_type.length})"
+    if isinstance(column_type, sqltypes.DateTime):
+        return "timestamp with time zone" if column_type.timezone else "timestamp without time zone"
+    if isinstance(column_type, sqltypes.BigInteger):
+        return "bigint"
+    if isinstance(column_type, sqltypes.Integer):
+        return "integer"
+    if isinstance(column_type, sqltypes.Float):
+        return "double precision"
+    if isinstance(column_type, sqltypes.Boolean):
+        return "boolean"
+    raise RuntimeError(f"Unsupported local-extension PostgreSQL type: {column_type!r}")
+
+
+def _expected_postgresql_collation(column: object) -> str | None:
+    column_type = getattr(column, "type", None)
+    if isinstance(column_type, sqltypes.String):
+        return "pg_catalog.default"
+    return None
+
+
+def check_local_extension_schema(database_url: str) -> tuple[str, ...]:
+    """Validate the complete PostgreSQL local-extension physical contract.
+
+    Local extensions deliberately sit outside Alembic, so the ordinary drift
+    check ignores a missing extension table. Production Beta must still fail
+    closed on every start/restart if an operator forgot to provision it or if
+    its columns/defaults/constraints/indexes drifted. The host-side PostgreSQL
+    gate remains an independent operational admission authority; runtime does
+    not depend on that host process having run immediately before startup.
+    """
+
+    config = _build_alembic_config(database_url)
+    sync_database_url = _required_sqlalchemy_url(config)
+    with _sync_connection(sync_database_url) as connection:
+        if connection.dialect.name != "postgresql":
+            return ()
+        inspector = inspect(connection)
+        diffs: list[str] = []
+        present_tables: set[str] = set()
+        for table_name in sorted(_LOCAL_EXTENSION_TABLES):
+            if not inspector.has_table(table_name):
+                diffs.append(f"missing_local_extension_table:{table_name}")
+                continue
+            present_tables.add(table_name)
+            expected = Base.metadata.tables[table_name]
+            actual_columns = connection.execute(
+                text(
+                    """
+                    SELECT a.attname, format_type(a.atttypid, a.atttypmod), NOT a.attnotnull,
+                           pg_get_expr(d.adbin, d.adrelid), a.attidentity, a.attgenerated,
+                           CASE WHEN a.attcollation = 0 THEN NULL ELSE nc.nspname || '.' || co.collname END
+                    FROM pg_class c
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    JOIN pg_attribute a ON a.attrelid = c.oid
+                    LEFT JOIN pg_attrdef d ON d.adrelid = c.oid AND d.adnum = a.attnum
+                    LEFT JOIN pg_collation co ON co.oid = a.attcollation
+                    LEFT JOIN pg_namespace nc ON nc.oid = co.collnamespace
+                    WHERE n.nspname = 'public'
+                      AND c.relkind = 'r'
+                      AND c.relname = :table_name
+                      AND a.attnum > 0
+                      AND NOT a.attisdropped
+                    ORDER BY a.attnum
+                    """
+                ),
+                {"table_name": table_name},
+            ).fetchall()
+            actual_column_contract = [
+                (
+                    str(row[0]),
+                    str(row[1]),
+                    bool(row[2]),
+                    _normalize_postgresql_default(row[3]),
+                    str(row[4]),
+                    str(row[5]),
+                    None if row[6] is None else str(row[6]),
+                )
+                for row in actual_columns
+            ]
+            expected_column_contract = [
+                (
+                    column.name,
+                    _expected_postgresql_format_type(column),
+                    bool(column.nullable),
+                    _expected_postgresql_default(column, connection),
+                    "",
+                    "",
+                    _expected_postgresql_collation(column),
+                )
+                for column in expected.columns
+            ]
+            if actual_column_contract != expected_column_contract:
+                diffs.append(
+                    f"local_extension_columns:{table_name}:"
+                    f"expected={expected_column_contract}:actual={actual_column_contract}"
+                )
+
+        if present_tables:
+            constraint_rows = connection.execute(
+                text(
+                    """
+                    SELECT c.relname, con.contype, con.conname, pg_get_constraintdef(con.oid),
+                           con.convalidated, con.condeferrable, con.condeferred,
+                           con.conenforced, con.conislocal, con.coninhcount, con.connoinherit
+                    FROM pg_constraint con
+                    JOIN pg_class c ON c.oid = con.conrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    WHERE n.nspname = 'public'
+                      AND con.contype IN ('p', 'f', 'c', 'u')
+                      AND c.relname = ANY(:table_names)
+                    ORDER BY c.relname, con.contype, con.conname
+                    """
+                ),
+                {"table_names": sorted(present_tables)},
+            ).fetchall()
+            actual_constraints = {
+                (
+                    str(row[0]),
+                    str(row[1]),
+                    str(row[2]),
+                    " ".join(str(row[3]).split()),
+                    bool(row[4]),
+                    bool(row[5]),
+                    bool(row[6]),
+                )
+                for row in constraint_rows
+            }
+            expected_constraints = {
+                (table_name, kind, name, " ".join(definition.split()), validated, deferrable, deferred)
+                for table_name, kind, name, definition, validated, deferrable, deferred in _LOCAL_EXTENSION_CONSTRAINTS
+                if table_name in present_tables
+            }
+            if actual_constraints != expected_constraints:
+                diffs.append(
+                    "local_extension_constraints:"
+                    f"expected={sorted(expected_constraints)}:actual={sorted(actual_constraints)}"
+                )
+
+            actual_constraint_states = {
+                (
+                    str(row[0]),
+                    str(row[1]),
+                    str(row[2]),
+                    bool(row[4]),
+                    bool(row[7]),
+                    bool(row[5]),
+                    bool(row[6]),
+                    bool(row[8]),
+                    int(row[9]),
+                    bool(row[10]),
+                )
+                for row in constraint_rows
+            }
+            expected_constraint_states = {
+                (
+                    table_name,
+                    kind,
+                    name,
+                    validated,
+                    True,
+                    deferrable,
+                    deferred,
+                    True,
+                    0,
+                    kind in {"p", "f", "u"},
+                )
+                for table_name, kind, name, _definition, validated, deferrable, deferred in _LOCAL_EXTENSION_CONSTRAINTS
+                if table_name in present_tables
+            }
+            if actual_constraint_states != expected_constraint_states:
+                diffs.append(
+                    "local_extension_constraint_states:"
+                    f"expected={sorted(expected_constraint_states)}:actual={sorted(actual_constraint_states)}"
+                )
+
+            not_null_rows = connection.execute(
+                text(
+                    """
+                    SELECT c.relname, a.attname, pg_get_constraintdef(con.oid),
+                           con.convalidated, con.conenforced, con.condeferrable, con.condeferred,
+                           con.conislocal, con.coninhcount, con.connoinherit
+                    FROM pg_constraint con
+                    JOIN pg_class c ON c.oid = con.conrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = con.conkey[1]
+                    WHERE n.nspname = 'public'
+                      AND con.contype = 'n'
+                      AND c.relname = ANY(:table_names)
+                    ORDER BY c.relname, a.attname
+                    """
+                ),
+                {"table_names": sorted(present_tables)},
+            ).fetchall()
+            actual_not_nulls = {
+                (
+                    str(row[0]),
+                    str(row[1]),
+                    " ".join(str(row[2]).split()),
+                    bool(row[3]),
+                    bool(row[4]),
+                    bool(row[5]),
+                    bool(row[6]),
+                    bool(row[7]),
+                    int(row[8]),
+                    bool(row[9]),
+                )
+                for row in not_null_rows
+            }
+            expected_not_nulls = {
+                (
+                    table_name,
+                    column.name,
+                    f"NOT NULL {column.name}",
+                    True,
+                    True,
+                    False,
+                    False,
+                    True,
+                    0,
+                    False,
+                )
+                for table_name in present_tables
+                for column in Base.metadata.tables[table_name].columns
+                if not column.nullable
+            }
+            if actual_not_nulls != expected_not_nulls:
+                diffs.append(
+                    "local_extension_not_null_constraints:"
+                    f"expected={sorted(expected_not_nulls)}:actual={sorted(actual_not_nulls)}"
+                )
+
+            index_rows = connection.execute(
+                text(
+                    """
+                    SELECT c.relname, ic.relname, am.amname, pg_get_indexdef(i.indexrelid),
+                           i.indisunique, i.indisvalid, i.indisready
+                    FROM pg_index i
+                    JOIN pg_class c ON c.oid = i.indrelid
+                    JOIN pg_namespace n ON n.oid = c.relnamespace
+                    JOIN pg_class ic ON ic.oid = i.indexrelid
+                    JOIN pg_am am ON am.oid = ic.relam
+                    WHERE n.nspname = 'public'
+                      AND c.relname = ANY(:table_names)
+                      AND NOT EXISTS (
+                          SELECT 1 FROM pg_constraint con WHERE con.conindid = i.indexrelid
+                      )
+                    ORDER BY c.relname, ic.relname
+                    """
+                ),
+                {"table_names": sorted(present_tables)},
+            ).fetchall()
+            actual_indexes = {
+                (
+                    str(row[0]),
+                    str(row[1]),
+                    str(row[2]),
+                    " ".join(str(row[3]).split()),
+                    bool(row[4]),
+                    bool(row[5]),
+                    bool(row[6]),
+                )
+                for row in index_rows
+            }
+            expected_indexes = {
+                (table_name, name, method, " ".join(definition.split()), unique, valid, ready)
+                for table_name, name, method, definition, unique, valid, ready in _LOCAL_EXTENSION_STANDALONE_INDEXES
+                if table_name in present_tables
+            }
+            if actual_indexes != expected_indexes:
+                diffs.append(
+                    f"local_extension_indexes:expected={sorted(expected_indexes)}:actual={sorted(actual_indexes)}"
+                )
+        return tuple(diffs)
 
 
 _NO_LEGACY_BOOTSTRAP = LegacyBootstrapResult(

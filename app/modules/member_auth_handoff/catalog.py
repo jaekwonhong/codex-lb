@@ -81,11 +81,7 @@ class MemberAuthHandoffCatalog:
         )
 
     def auth_entries_for_workspace(self, workspace_id: str) -> tuple[MemberAuthHandoffCatalogEntry, ...]:
-        return tuple(
-            entry
-            for entry in (*self.entries, *self.owner_entries)
-            if entry.workspace_id == workspace_id
-        )
+        return tuple(entry for entry in (*self.entries, *self.owner_entries) if entry.workspace_id == workspace_id)
 
     def contains_member(
         self,
@@ -112,8 +108,7 @@ class MemberAuthHandoffCatalog:
         matches = tuple(
             entry
             for entry in self.entries
-            if entry.workspace_account_id == workspace_account_id
-            and entry.email.strip().casefold() == normalized_email
+            if entry.workspace_account_id == workspace_account_id and entry.email.strip().casefold() == normalized_email
         )
         return matches[0] if len(matches) == 1 else None
 
@@ -295,6 +290,7 @@ _WORKSPACE_LABEL_BY_ACCOUNT_ID = {
 
 def resolve_catalog_workspace_label(workspace_account_id: str) -> str | None:
     return _WORKSPACE_LABEL_BY_ACCOUNT_ID.get(workspace_account_id)
+
 
 PACKAGED_MEMBER_AUTH_HANDOFF_CATALOG = MemberAuthHandoffCatalog(
     entries=(

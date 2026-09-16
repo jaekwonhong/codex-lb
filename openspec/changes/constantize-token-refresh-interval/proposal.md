@@ -69,8 +69,8 @@ certain, not merely possible.
   `docs/configuration.md` are corrected to stop claiming a non-empty backlog,
   and a live-tree test pins that an empty registry passes while a new env-only
   T3 field is still rejected.
-- Generated settings reference regenerated (96 -> 95 settings);
-  `[settings_fields].max` 96 -> 95; the Helm chart README's 1.24 -> 1.25
+- Generated settings reference regenerated (96 -> 95 settings at this change's authoring baseline);
+  `[settings_fields].max` follows that historical 96 -> 95 transition; the Helm chart README's 1.24 -> 1.25
   "Removed environment variables" register gains the row.
 
 ## Capabilities

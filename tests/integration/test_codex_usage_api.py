@@ -3,12 +3,16 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from datetime import timedelta, timezone
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
+from starlette.requests import Request
 
 from app.core.clients.rate_limit_reset_credits import RateLimitResetCreditsSnapshot, ResetCreditItem
 from app.core.clients.usage import ConsumeRateLimitResetCreditResponse
 from app.core.crypto import TokenEncryptor
+from app.core.exceptions import ProxyAuthError
 from app.core.usage.models import UsagePayload
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, ApiKeyLimit, LimitType, LimitWindow, UsageHistory
@@ -17,7 +21,9 @@ from app.dependencies import get_proxy_service_for_app
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import ApiKeyCreateData, ApiKeysService, LimitRuleInput
+from app.modules.proxy import api as proxy_api
 from app.modules.proxy.account_cache import get_account_selection_cache
+from app.modules.rate_limit_reset_credits.redeem_coordination import RedeemClaimTimeoutError
 from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_credits_store
 from app.modules.usage.repository import AdditionalUsageRepository, UsageRepository
 
@@ -753,8 +759,19 @@ async def test_codex_usage_reset_consume_forwards_and_refreshes(async_client, db
         return UsagePayload.model_validate({"plan_type": "plus"})
 
     consume_calls: list[dict[str, object]] = []
+    serializer_events: list[tuple[str, str]] = []
+
+    @asynccontextmanager
+    async def stub_serialize_reset_credit_redeem(account_id: str, *, session):
+        assert session is not None
+        serializer_events.append(("enter", account_id))
+        try:
+            yield
+        finally:
+            serializer_events.append(("exit", account_id))
 
     async def stub_consume_rate_limit_reset_credit(**kwargs: object) -> ConsumeRateLimitResetCreditResponse:
+        assert serializer_events == [("enter", "acc_reset_consume")]
         consume_calls.append(kwargs)
         return ConsumeRateLimitResetCreditResponse.model_validate({"code": "reset", "windows_reset": 2})
 
@@ -774,6 +791,10 @@ async def test_codex_usage_reset_consume_forwards_and_refreshes(async_client, db
             return True
 
     monkeypatch.setattr("app.core.auth.dependencies.fetch_usage", stub_fetch_usage)
+    monkeypatch.setattr(
+        "app.modules.proxy.api.serialize_reset_credit_redeem",
+        stub_serialize_reset_credit_redeem,
+    )
     monkeypatch.setattr("app.modules.proxy.api.consume_rate_limit_reset_credit", stub_consume_rate_limit_reset_credit)
     monkeypatch.setattr("app.modules.proxy.api.UsageUpdater", StubUsageUpdater)
     cache_generation = get_account_selection_cache().generation
@@ -799,6 +820,10 @@ async def test_codex_usage_reset_consume_forwards_and_refreshes(async_client, db
         }
     ]
     assert refreshed_account_ids == ["acc_reset_consume:chatgpt-token"]
+    assert serializer_events == [
+        ("enter", "acc_reset_consume"),
+        ("exit", "acc_reset_consume"),
+    ]
     assert get_account_selection_cache().generation > cache_generation
     assert get_rate_limit_reset_credits_store().get("acc_reset_consume") is None
 
@@ -833,6 +858,14 @@ async def test_codex_usage_reset_consume_refreshes_matched_workspace_account(asy
     async def stub_consume_rate_limit_reset_credit(**_: object) -> ConsumeRateLimitResetCreditResponse:
         return ConsumeRateLimitResetCreditResponse.model_validate({"code": "reset", "windows_reset": 1})
 
+    serialized_account_ids: list[str] = []
+
+    @asynccontextmanager
+    async def stub_serialize_reset_credit_redeem(account_id: str, *, session):
+        assert session is not None
+        serialized_account_ids.append(account_id)
+        yield
+
     refreshed_account_ids: list[str] = []
 
     class StubUsageUpdater:
@@ -850,6 +883,10 @@ async def test_codex_usage_reset_consume_refreshes_matched_workspace_account(asy
             return True
 
     monkeypatch.setattr("app.core.auth.dependencies.fetch_usage", stub_fetch_usage)
+    monkeypatch.setattr(
+        "app.modules.proxy.api.serialize_reset_credit_redeem",
+        stub_serialize_reset_credit_redeem,
+    )
     monkeypatch.setattr("app.modules.proxy.api.consume_rate_limit_reset_credit", stub_consume_rate_limit_reset_credit)
     monkeypatch.setattr("app.modules.proxy.api.UsageUpdater", StubUsageUpdater)
 
@@ -863,7 +900,143 @@ async def test_codex_usage_reset_consume_refreshes_matched_workspace_account(asy
     )
 
     assert response.status_code == 200
+    assert serialized_account_ids == ["workspace_reset_multi_29c4834a"]
     assert refreshed_account_ids == ["workspace_reset_multi_29c4834a"]
+
+
+@pytest.mark.asyncio
+async def test_codex_usage_reset_consume_fails_closed_before_upstream_when_serializer_is_contended(
+    async_client,
+    db_setup,
+    monkeypatch,
+):
+    raw_chatgpt_account_id = "workspace_reset_contended"
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        await accounts_repo.upsert(
+            _make_account(
+                "acc_reset_contended",
+                "reset-contended@example.com",
+                chatgpt_account_id=raw_chatgpt_account_id,
+            )
+        )
+
+    async def stub_fetch_usage(**_: object) -> UsagePayload:
+        return UsagePayload.model_validate({"plan_type": "plus"})
+
+    @asynccontextmanager
+    async def contended_serializer(account_id: str, *, session):
+        assert account_id == "acc_reset_contended"
+        assert session is not None
+        raise RedeemClaimTimeoutError("claim held")
+        yield  # pragma: no cover
+
+    async def should_not_consume(**_: object) -> ConsumeRateLimitResetCreditResponse:
+        raise AssertionError("upstream consume must not run before reset serializer admission")
+
+    monkeypatch.setattr("app.core.auth.dependencies.fetch_usage", stub_fetch_usage)
+    monkeypatch.setattr(
+        "app.modules.proxy.api.serialize_reset_credit_redeem",
+        contended_serializer,
+    )
+    monkeypatch.setattr("app.modules.proxy.api.consume_rate_limit_reset_credit", should_not_consume)
+
+    response = await async_client.post(
+        "/api/codex/rate-limit-reset-credits/consume",
+        headers={
+            "Authorization": "Bearer chatgpt-token",
+            "chatgpt-account-id": raw_chatgpt_account_id,
+        },
+        json={"redeem_request_id": "redeem-contended"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "invalid_request_error"
+    assert response.json()["error"]["message"] == (
+        "Another reset credit redemption is already in progress for this account"
+    )
+
+
+@pytest.mark.asyncio
+async def test_codex_usage_reset_consume_requires_bound_local_account_before_serializer() -> None:
+    request = cast(Request, SimpleNamespace(state=SimpleNamespace()))
+
+    with pytest.raises(ProxyAuthError, match="ChatGPT authentication required"):
+        async with proxy_api._serialize_codex_usage_reset_credit_redeem(request):
+            raise AssertionError("missing local identity must fail before serializer admission")
+
+
+@pytest.mark.asyncio
+async def test_codex_usage_reset_consume_cancellation_unwinds_serializer_before_post_success_work(
+    async_client,
+    db_setup,
+    monkeypatch,
+):
+    raw_chatgpt_account_id = "workspace_reset_cancel"
+    local_account_id = "acc_reset_cancel"
+    async with SessionLocal() as session:
+        accounts_repo = AccountsRepository(session)
+        await accounts_repo.upsert(
+            _make_account(
+                local_account_id,
+                "reset-cancel@example.com",
+                chatgpt_account_id=raw_chatgpt_account_id,
+            )
+        )
+
+    async def stub_fetch_usage(**_: object) -> UsagePayload:
+        return UsagePayload.model_validate({"plan_type": "plus"})
+
+    serializer_entered = asyncio.Event()
+    serializer_exited = asyncio.Event()
+    upstream_entered = asyncio.Event()
+    block_upstream = asyncio.Event()
+
+    @asynccontextmanager
+    async def stub_serializer(account_id: str, *, session):
+        assert account_id == local_account_id
+        assert session is not None
+        serializer_entered.set()
+        try:
+            yield
+        finally:
+            serializer_exited.set()
+
+    async def blocked_consume(**_: object) -> ConsumeRateLimitResetCreditResponse:
+        upstream_entered.set()
+        await block_upstream.wait()
+        raise AssertionError("cancelled upstream should not resume")
+
+    class NoRefreshUsageUpdater:
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+        async def force_refresh(self, *_: object, **__: object) -> bool:
+            raise AssertionError("post-success usage refresh must not run after cancellation")
+
+    monkeypatch.setattr("app.core.auth.dependencies.fetch_usage", stub_fetch_usage)
+    monkeypatch.setattr("app.modules.proxy.api.serialize_reset_credit_redeem", stub_serializer)
+    monkeypatch.setattr("app.modules.proxy.api.consume_rate_limit_reset_credit", blocked_consume)
+    monkeypatch.setattr("app.modules.proxy.api.UsageUpdater", NoRefreshUsageUpdater)
+    await get_rate_limit_reset_credits_store().set(local_account_id, _reset_credit_snapshot("credit-cancel"))
+
+    task = asyncio.create_task(
+        async_client.post(
+            "/api/codex/rate-limit-reset-credits/consume",
+            headers={
+                "Authorization": "Bearer chatgpt-token",
+                "chatgpt-account-id": raw_chatgpt_account_id,
+            },
+            json={"redeem_request_id": "redeem-cancel"},
+        )
+    )
+    await asyncio.wait_for(serializer_entered.wait(), timeout=1)
+    await asyncio.wait_for(upstream_entered.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(serializer_exited.wait(), timeout=1)
+    assert get_rate_limit_reset_credits_store().get(local_account_id) is not None
 
 
 @pytest.mark.asyncio

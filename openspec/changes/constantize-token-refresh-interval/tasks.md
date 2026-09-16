@@ -9,8 +9,9 @@
   `SETTING_TIERS` and `MIGRATING` rows, leaving `MIGRATING` empty.
 - [x] Confirm `scripts/check_settings_tiers.py` passes with an empty `MIGRATING`
   and document that terminal state in its docstring and in `tiers.py`.
-- [x] Regenerate `docs/reference/settings.md`; lower `[settings_fields].max` to
-  95; add the removed env name to the Helm chart README's 1.24 -> 1.25 register.
+- [x] Regenerate `docs/reference/settings.md`; lower the authoring-baseline
+  `[settings_fields].max` from 96 to 95; add the removed env name to the Helm chart
+  README's 1.24 -> 1.25 register.
 - [x] `docs/traffic-parity.md`: document the credential stamp and the retired
   pin. `docs/configuration.md`: stop describing the backlog as non-empty.
 - [x] Tests: canary suite asserts the stamp keeps `should_refresh` false and that

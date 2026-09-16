@@ -433,9 +433,7 @@ def test_usage_draining_fallback_probe_avoids_discarded_relative_availability_ch
 
 def test_healthy_burn_first_fallback_winner_is_returned_without_redraw(monkeypatch):
     choices = MagicMock(
-        side_effect=lambda states, *, weights, k: [
-            next(state for state in states if state.account_id == "healthy-a")
-        ]
+        side_effect=lambda states, *, weights, k: [next(state for state in states if state.account_id == "healthy-a")]
     )
     winner_log = MagicMock()
     monkeypatch.setattr("app.core.balancer.logic.random.choices", choices)

@@ -7,9 +7,10 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 from app.core.auth import generate_unique_account_id
 from app.core.auth.refresh import RefreshError
@@ -23,7 +24,7 @@ from app.core.clients.rate_limit_reset_credits import (
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.upstream_proxy import UpstreamProxyRouteError
-from app.db.models import Account, AccountStatus
+from app.db.models import Account, AccountStatus, ResetCreditRedeemRequest
 from app.db.session import SessionLocal
 from app.modules.rate_limit_reset_credits.store import get_rate_limit_reset_credits_store
 
@@ -809,14 +810,28 @@ async def test_v1_reset_credit_post_consumes_exact_credit_and_invalidates_snapsh
         ],
     )
 
-    consume_mock = AsyncMock(
-        return_value=ConsumeResetCreditResponse.model_validate(
+    from app.modules.rate_limit_reset_credits.redeem_coordination import pin_redeem_request as real_pin_redeem_request
+
+    effect_order: list[str] = []
+
+    async def pin_spy(account_id: str, redeem_request_id: str, credit_id: str) -> str:
+        pinned = await real_pin_redeem_request(account_id, redeem_request_id, credit_id)
+        effect_order.append("durable_pin")
+        return pinned
+
+    async def consume_spy(*args, **kwargs):
+        assert effect_order == ["durable_pin"]
+        effect_order.append("upstream_consume")
+        return ConsumeResetCreditResponse.model_validate(
             {
                 "code": "reset",
                 "credit": {"id": "credit-later", "status": "redeemed", "redeemed_at": "2031-05-01T03:30:00Z"},
                 "windows_reset": 1,
             }
         )
+
+    consume_mock = AsyncMock(
+        side_effect=consume_spy,
     )
     monkeypatch.setattr(
         "app.modules.proxy.api.fetch_reset_credits",
@@ -829,6 +844,7 @@ async def test_v1_reset_credit_post_consumes_exact_credit_and_invalidates_snapsh
             )
         ),
     )
+    monkeypatch.setattr("app.modules.proxy.api.pin_redeem_request", pin_spy)
     monkeypatch.setattr("app.modules.proxy.api.consume_reset_credit", consume_mock)
 
     response = await async_client.post(
@@ -847,6 +863,18 @@ async def test_v1_reset_credit_post_consumes_exact_credit_and_invalidates_snapsh
     consume_args = consume_mock.await_args
     assert consume_args is not None
     assert consume_args.args[2] == "credit-later"
+    redeem_request_id = consume_args.kwargs["redeem_request_id"]
+    assert str(UUID(redeem_request_id)) == redeem_request_id
+    async with SessionLocal() as session:
+        durable = await session.scalar(
+            select(ResetCreditRedeemRequest).where(
+                ResetCreditRedeemRequest.account_id == account_id,
+                ResetCreditRedeemRequest.redeem_request_id == redeem_request_id,
+            )
+        )
+    assert durable is not None
+    assert durable.credit_id == "credit-later"
+    assert effect_order == ["durable_pin", "upstream_consume"]
     assert get_rate_limit_reset_credits_store().get(account_id) is None
 
 
@@ -977,6 +1005,7 @@ async def test_v1_reset_credit_post_refreshes_account_before_consuming_credit(
         chatgpt_account_id: str,
         credit_id: str,
         *,
+        redeem_request_id: str | None = None,
         route: object | None = None,
         allow_direct_egress: bool = False,
     ):
@@ -984,6 +1013,8 @@ async def test_v1_reset_credit_post_refreshes_account_before_consuming_credit(
         assert access_token == "fresh-access-token"
         assert chatgpt_account_id == "chatgpt-refresh-token"
         assert credit_id == "credit-refresh-token"
+        assert redeem_request_id is not None
+        assert str(UUID(redeem_request_id)) == redeem_request_id
         assert route is None
         assert allow_direct_egress is True
         return ConsumeResetCreditResponse.model_validate(
@@ -1161,6 +1192,7 @@ async def test_v1_reset_credit_post_holds_session_open_through_lock_and_upstream
         chatgpt_account_id: str,
         credit_id: str,
         *,
+        redeem_request_id: str | None = None,
         route: object | None = None,
         allow_direct_egress: bool = False,
     ):
@@ -1168,6 +1200,8 @@ async def test_v1_reset_credit_post_holds_session_open_through_lock_and_upstream
         assert access_token == "access-token"
         assert chatgpt_account_id == "chatgpt-session-lifecycle"
         assert credit_id == "credit-session-lifecycle"
+        assert redeem_request_id is not None
+        assert str(UUID(redeem_request_id)) == redeem_request_id
         assert route is None
         assert allow_direct_egress is True
         return ConsumeResetCreditResponse.model_validate(
@@ -1285,12 +1319,15 @@ async def test_v1_reset_credit_post_preserves_success_when_post_redeem_usage_ref
         chatgpt_account_id: str,
         credit_id: str,
         *,
+        redeem_request_id: str | None = None,
         route: object | None = None,
         allow_direct_egress: bool = False,
     ):
         assert access_token == "access-token"
         assert chatgpt_account_id == "chatgpt-refresh-raise"
         assert credit_id == "credit-refresh-raise"
+        assert redeem_request_id is not None
+        assert str(UUID(redeem_request_id)) == redeem_request_id
         assert route is None
         assert allow_direct_egress is True
         return ConsumeResetCreditResponse.model_validate(

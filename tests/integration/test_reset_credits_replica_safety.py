@@ -27,7 +27,8 @@ from app.core.clients.rate_limit_reset_credits import (
     ResetCreditItem,
     ResetCreditsResponse,
 )
-from app.db.models import ResetCreditRedeemClaim, ResetCreditRedeemRequest
+from app.core.crypto import TokenEncryptor
+from app.db.models import Account, ResetCreditRedeemClaim, ResetCreditRedeemRequest
 from app.db.session import SessionLocal
 from app.modules.rate_limit_reset_credits import api as reset_credits_api
 from app.modules.rate_limit_reset_credits.redeem_coordination import (
@@ -38,6 +39,11 @@ from app.modules.rate_limit_reset_credits.redeem_coordination import (
     release_redeem_claim,
     renew_redeem_claim_periodically,
     try_acquire_redeem_claim,
+)
+from app.modules.rate_limit_reset_credits.rotation_resolution import (
+    RotationResetCreditResolutionStatus,
+    WeeklyRecoveryState,
+    resolve_rotation_reset_credit,
 )
 from app.modules.rate_limit_reset_credits.store import (
     RateLimitResetCreditsStore,
@@ -475,6 +481,98 @@ async def test_concurrent_dashboard_consumes_contend_on_db_claim(async_client, m
     assert second_response.json()["error"]["code"] == "no_available_reset_credit"
     # The single available credit was consumed exactly once.
     assert consume_calls == ["credit-only"]
+
+
+@pytest.mark.asyncio
+async def test_rotation_resolver_contends_with_existing_redeem_path_across_sessions(
+    async_client,
+    monkeypatch,
+) -> None:
+    """Rotation and an existing redeem path share the durable SQLite claim.
+
+    The dashboard request and rotation resolver use independent DB sessions and
+    independent process-local credit stores, matching two replicas that share
+    one SQLite database. Rotation waits for the existing holder, then performs
+    a fresh authoritative read and does not consume a second credit.
+    """
+    account_id = await _import_account(
+        async_client,
+        email="rotation-claim@example.com",
+        account_id="acc_rotation_claim",
+    )
+    only = _credit("credit-rotation", expires_at="2026-09-20T00:00:00Z")
+    upstream_available = True
+    consume_entered = asyncio.Event()
+    consume_release = asyncio.Event()
+    consume_calls: list[tuple[str, str | None]] = []
+
+    async def fake_fetch(*args: Any, **kwargs: Any) -> ResetCreditsResponse:
+        if upstream_available:
+            return _upstream_response([only])
+        return _upstream_response([], available_count=0)
+
+    async def fake_consume(
+        access_token: str,
+        chatgpt_account_id: str | None,
+        credit_id: str,
+        **kwargs: Any,
+    ) -> ConsumeResetCreditResponse:
+        nonlocal upstream_available
+        consume_calls.append((credit_id, kwargs.get("redeem_request_id")))
+        consume_entered.set()
+        await consume_release.wait()
+        upstream_available = False
+        return _success_consume(credit_id)
+
+    async def observe_exhausted() -> WeeklyRecoveryState:
+        return WeeklyRecoveryState.EXHAUSTED
+
+    async def resolve_direct(account: Account):
+        return None
+
+    monkeypatch.setattr(reset_credits_api, "fetch_reset_credits", fake_fetch)
+    monkeypatch.setattr(reset_credits_api, "consume_reset_credit", fake_consume)
+    monkeypatch.setattr(reset_credits_api, "_build_refresh_usage_callback", lambda _context: _noop_refresh)
+
+    await get_rate_limit_reset_credits_store().set(account_id, _snapshot([only]))
+    existing_redeem = asyncio.create_task(
+        async_client.post(
+            f"/api/accounts/{account_id}/rate-limit-reset-credits/consume",
+            json={"redeemRequestId": "manual-R"},
+        )
+    )
+    await asyncio.wait_for(consume_entered.wait(), timeout=10)
+
+    rotation_store = RateLimitResetCreditsStore()
+    async with SessionLocal() as account_session:
+        account = await account_session.get(Account, account_id)
+    assert account is not None
+    rotation = asyncio.create_task(
+        resolve_rotation_reset_credit(
+            account,
+            redeem_request_id="rotation-R",
+            observe_fresh_weekly=observe_exhausted,
+            store=rotation_store,
+            encryptor=TokenEncryptor(),
+            fetch_fn=fake_fetch,
+            consume_fn=fake_consume,
+            refresh_usage=_noop_refresh,
+            resolve_route=resolve_direct,
+        )
+    )
+    await asyncio.sleep(0.3)
+    assert consume_calls == [("credit-rotation", "manual-R")]
+
+    consume_release.set()
+    existing_response = await existing_redeem
+    resolution = await rotation
+
+    assert existing_response.status_code == 200, existing_response.text
+    assert resolution.status is RotationResetCreditResolutionStatus.CONFIRMED_NO_REDEEMABLE_CREDIT
+    assert consume_calls == [("credit-rotation", "manual-R")]
+    rotation_snapshot = rotation_store.get(account_id)
+    assert rotation_snapshot is not None
+    assert rotation_snapshot.available_count == 0
 
 
 @pytest.mark.asyncio
