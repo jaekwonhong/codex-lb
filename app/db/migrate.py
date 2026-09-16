@@ -923,6 +923,66 @@ _LOCAL_EXTENSION_STANDALONE_INDEXES = frozenset(
 )
 
 
+_LOCAL_EXTENSION_CONSTRAINT_DEFINITION_ALIASES: dict[tuple[str, str, str], tuple[str, str]] = {
+    (
+        "member_rotation_quota_operations",
+        "c",
+        "ck_member_rotation_quota_invite_effect",
+    ): (
+        "CHECK (((invite_effect)::text = ANY ((ARRAY['not_attempted'::character varying, "
+        "'unknown'::character varying, 'confirmed'::character varying, "
+        "'authoritative_non_effect'::character varying])::text[])))",
+        "CHECK (((invite_effect)::text = ANY (ARRAY[('not_attempted'::character varying)::text, "
+        "('unknown'::character varying)::text, ('confirmed'::character varying)::text, "
+        "('authoritative_non_effect'::character varying)::text])))",
+    ),
+    (
+        "member_rotation_quota_operations",
+        "c",
+        "ck_member_rotation_quota_remove_effect",
+    ): (
+        "CHECK (((remove_effect)::text = ANY ((ARRAY['not_attempted'::character varying, "
+        "'unknown'::character varying, 'confirmed'::character varying, "
+        "'authoritative_non_effect'::character varying])::text[])))",
+        "CHECK (((remove_effect)::text = ANY (ARRAY[('not_attempted'::character varying)::text, "
+        "('unknown'::character varying)::text, ('confirmed'::character varying)::text, "
+        "('authoritative_non_effect'::character varying)::text])))",
+    ),
+    (
+        "workspace_member_final_usage_snapshots",
+        "c",
+        "ck_workspace_member_final_usage_snapshot_logical_window",
+    ): (
+        "CHECK (((logical_window)::text = ANY ((ARRAY['5h'::character varying, "
+        "'weekly'::character varying])::text[])))",
+        "CHECK (((logical_window)::text = ANY (ARRAY[('5h'::character varying)::text, "
+        "('weekly'::character varying)::text])))",
+    ),
+}
+
+
+def _normalize_local_extension_constraint_definition(
+    table_name: str,
+    kind: str,
+    name: str,
+    value: object,
+) -> str:
+    """Canonicalize only exact pg_dump round-trip aliases for three CHECKs.
+
+    PostgreSQL 18 can round-trip these VARCHAR ``IN``/``ANY`` checks by moving
+    the varchar-to-text cast from the array onto each literal.  Names, kinds,
+    validation/deferrability/enforcement state and every non-aliased definition
+    remain exact; an altered column, operator, literal, or member count cannot
+    match this two-spelling allowlist.
+    """
+
+    normalized = " ".join(str(value).split())
+    aliases = _LOCAL_EXTENSION_CONSTRAINT_DEFINITION_ALIASES.get((table_name, kind, name))
+    if aliases is not None and normalized in aliases:
+        return aliases[0]
+    return normalized
+
+
 def _normalize_postgresql_default(value: object | None) -> str | None:
     if value is None:
         return None
@@ -1091,7 +1151,7 @@ def check_local_extension_schema(database_url: str) -> tuple[str, ...]:
                     str(row[0]),
                     str(row[1]),
                     str(row[2]),
-                    " ".join(str(row[3]).split()),
+                    _normalize_local_extension_constraint_definition(str(row[0]), str(row[1]), str(row[2]), row[3]),
                     bool(row[4]),
                     bool(row[5]),
                     bool(row[6]),
@@ -1099,7 +1159,15 @@ def check_local_extension_schema(database_url: str) -> tuple[str, ...]:
                 for row in constraint_rows
             }
             expected_constraints = {
-                (table_name, kind, name, " ".join(definition.split()), validated, deferrable, deferred)
+                (
+                    table_name,
+                    kind,
+                    name,
+                    _normalize_local_extension_constraint_definition(table_name, kind, name, definition),
+                    validated,
+                    deferrable,
+                    deferred,
+                )
                 for table_name, kind, name, definition, validated, deferrable, deferred in _LOCAL_EXTENSION_CONSTRAINTS
                 if table_name in present_tables
             }

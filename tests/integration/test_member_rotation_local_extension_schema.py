@@ -9,12 +9,14 @@ from sqlalchemy import inspect as sa_inspect
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.db.migrate import (
+    _LOCAL_EXTENSION_CONSTRAINT_DEFINITION_ALIASES,
     _LOCAL_EXTENSION_CONSTRAINTS,
     _LOCAL_EXTENSION_STANDALONE_INDEXES,
     _LOCAL_EXTENSION_TABLES,
     _build_alembic_config,
     _expected_postgresql_collation,
     _expected_postgresql_format_type,
+    _normalize_local_extension_constraint_definition,
     _normalize_postgresql_default,
     check_local_extension_schema,
     check_schema_drift,
@@ -37,6 +39,45 @@ def test_rotation_tables_do_not_advance_official_alembic_head(tmp_path: Path) ->
     db_url = f"sqlite+aiosqlite:///{tmp_path / 'member-rotation-official-head.sqlite'}"
     config = _build_alembic_config(db_url)
     assert ScriptDirectory.from_config(config).get_current_head() == OFFICIAL_HEAD
+
+
+def test_constraint_normalization_accepts_all_exact_pg_dump_aliases() -> None:
+    expected_keys = {
+        ("member_rotation_quota_operations", "c", "ck_member_rotation_quota_invite_effect"),
+        ("member_rotation_quota_operations", "c", "ck_member_rotation_quota_remove_effect"),
+        (
+            "workspace_member_final_usage_snapshots",
+            "c",
+            "ck_workspace_member_final_usage_snapshot_logical_window",
+        ),
+    }
+    assert set(_LOCAL_EXTENSION_CONSTRAINT_DEFINITION_ALIASES) == expected_keys
+    for key, (production, restored) in _LOCAL_EXTENSION_CONSTRAINT_DEFINITION_ALIASES.items():
+        canonical = _normalize_local_extension_constraint_definition(*key, production)
+        assert canonical == production
+        assert _normalize_local_extension_constraint_definition(*key, restored) == canonical
+
+
+def test_constraint_normalization_rejects_non_alias_changes() -> None:
+    key = ("member_rotation_quota_operations", "c", "ck_member_rotation_quota_invite_effect")
+    production, restored = _LOCAL_EXTENSION_CONSTRAINT_DEFINITION_ALIASES[key]
+    canonical = _normalize_local_extension_constraint_definition(*key, production)
+
+    mutations = (
+        restored.replace("invite_effect", "remove_effect"),
+        restored.replace("'unknown'", "'other'"),
+        restored.replace(" = ANY ", " <> ALL "),
+        restored.replace(", ('unknown'::character varying)::text", ""),
+    )
+    for mutated in mutations:
+        assert _normalize_local_extension_constraint_definition(*key, mutated) != canonical
+
+    for wrong_key in (
+        ("member_rotation_workspace_controls", key[1], key[2]),
+        (key[0], "u", key[2]),
+        (key[0], key[1], "some_other_check"),
+    ):
+        assert _normalize_local_extension_constraint_definition(*wrong_key, restored) != canonical
 
 
 def test_runtime_local_extension_contract_pins_exact_postgresql_physical_semantics() -> None:
