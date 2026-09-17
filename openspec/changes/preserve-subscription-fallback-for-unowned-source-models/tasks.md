@@ -20,4 +20,13 @@
 
 - [x] 4.1 Run focused and full model-source routing regressions plus relevant dispatch/model/WebSocket source-guard suites.
 - [x] 4.2 Run Ruff, formatting, type checks, and strict OpenSpec validation.
-- [ ] 4.3 Build an immutable Beta image from the committed tree and verify Astra HTTP success, DGX scoped selection, readiness, PostgreSQL health, rotation OFF, and no member/OAuth effects in production.
+- [x] 4.3 Build an immutable Beta image from the committed tree and verify Astra HTTP success, DGX scoped selection, readiness, PostgreSQL health, rotation OFF, and no member/OAuth effects in production.
+
+
+## 5. Patch-packet recurrence prevention
+
+- [x] 5.1 Reconstruct the donor packet with the ownership correction immediately after the historical helper-introduction commit and prove the original seven donor successors replay without conflict.
+- [x] 5.2 Add a stdlib-only semantic verifier for the integrated Beta packet that rejects registry-only ownership, missing positive assigned-source ownership, unawaited HTTP guards, and missing structural/continuity bypasses.
+- [x] 5.3 Add focused verifier tests and record the historical defect lineage plus corrected packet provenance in change context.
+- [x] 5.4 Prove the known-bad pre-hotfix integrated tree fails the semantic verifier while the corrected production tree passes.
+- [x] 5.5 Make `scripts/qualify_beta_patch_packet.sh` the canonical packet qualification entrypoint and invoke it automatically from the existing Q2 qualification wrapper.

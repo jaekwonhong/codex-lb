@@ -60,3 +60,32 @@ A structural Responses source-route exclusion MUST remain authoritative: file-pi
 - **AND** the requested model is absent from the subscription registry
 - **WHEN** the key requests that model through a Responses HTTP surface
 - **THEN** the proxy fails closed rather than broadening the request to a subscription account
+
+
+### Requirement: Integrated Beta patch packets qualify the source-scope provider boundary semantically
+
+A Beta candidate that carries the local DGX/source-scoping patch packet MUST be
+qualified after Responses integration with a semantic contract that is
+independent of historical commit IDs. Qualification MUST reject a candidate if
+source-only classification uses subscription-registry absence without positive
+model ownership by an explicitly assigned source, if the classifier cannot
+perform the ownership lookup asynchronously, if a Responses HTTP caller does
+not await that classifier, or if the final guard can override a structural
+source-route exclusion or an already continuity-suppressed subscription owner.
+The qualification MUST also preserve the dangling empty-assignment fail-closed
+boundary.
+
+#### Scenario: Historical registry-only integration is rejected
+
+- **GIVEN** a candidate whose source-scoped classifier treats registry absence as source ownership
+- **AND** its Responses HTTP handlers use that classifier as the final provider-boundary guard
+- **WHEN** Beta patch-packet qualification runs
+- **THEN** qualification fails before deployment
+
+#### Scenario: Ownership-aware integrated packet qualifies
+
+- **GIVEN** source-only classification positively checks model declaration inside the presented key's assigned sources
+- **AND** dangling scope remains fail closed
+- **AND** both Responses HTTP guards await the classifier while preserving source-route exclusions and continuity suppression
+- **WHEN** Beta patch-packet qualification runs
+- **THEN** the source-scope semantic contract passes regardless of the candidate's rebased commit IDs

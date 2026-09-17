@@ -26,4 +26,5 @@ No schema, migration, setting, or member-rotation behavior changes.
 
 - Code: `app/modules/model_sources/{repository,selection}.py` and the two Responses HTTP handlers in `app/modules/proxy/api.py`.
 - Tests: route-level regressions for backend/v1 Responses, DGX runtime-enabled routing, structural file-pin routing, and continuity-suppressed subscription ownership.
+- Qualification: `scripts/qualify_beta_patch_packet.sh` is the canonical semantic/regression entrypoint and is invoked by the Q2 qualification wrapper so future local Beta rebases cannot silently skip this contract.
 - Runtime: Beta app image only. No database or configuration mutation is required; the existing Beta image remains an app-level rollback authority.

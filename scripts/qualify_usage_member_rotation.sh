@@ -4,6 +4,8 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${repo_root}"
 
+"${repo_root}/scripts/qualify_beta_patch_packet.sh"
+
 uv run pytest -q \
   tests/unit/test_weekly_usage_observation.py \
   tests/unit/test_rotation_reset_credit_resolution.py \
