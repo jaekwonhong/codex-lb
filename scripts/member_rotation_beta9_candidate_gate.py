@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 PACKAGE_VERSION = "1.25.0-beta.9"
-UPSTREAM_SOURCE_SHA = "69f128afcbc616d9f8e924ca6583f7031d75cf82"
+UPSTREAM_SOURCE_SHA = "d1fd2f21fa0e0f3b5fcad3af5fada19693cd1fc1"
 Q2_LIVE_SOURCE_SHA = "0f75aa03f51cd8fb2dc8600374046f844cac2756"
 
 ORIGINAL_ENTRYPOINT: None = None
