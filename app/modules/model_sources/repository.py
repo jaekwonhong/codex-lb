@@ -47,6 +47,24 @@ class ModelSourcesRepository:
         )
         return result.scalar_one_or_none()
 
+    async def assigned_source_has_model(self, model: str, *, allowed_source_ids: set[str]) -> bool:
+        """Whether one of the explicitly assigned sources declares ``model``.
+
+        This is intentionally independent of source/model enablement and route
+        capability. Callers use it only after routable and disabled lookups
+        miss, to distinguish a genuinely source-owned slug from an unrelated
+        subscription slug on a source-scoped API key.
+        """
+        if not allowed_source_ids:
+            return False
+        result = await self._session.execute(
+            select(ModelSourceModel.id)
+            .where(ModelSourceModel.model == model)
+            .where(ModelSourceModel.source_id.in_(allowed_source_ids))
+            .limit(1)
+        )
+        return result.scalar_one_or_none() is not None
+
     async def find_chat_source_for_model(
         self,
         model: str,

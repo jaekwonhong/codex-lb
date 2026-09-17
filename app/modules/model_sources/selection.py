@@ -21,6 +21,7 @@ from app.modules.model_sources.repository import ModelSourcesRepository
 
 logger = logging.getLogger(__name__)
 
+
 def allowed_source_ids_for_api_key(api_key: ApiKeyData | None) -> set[str] | None:
     """Source ids an API key may use, or ``None`` when scoping is disabled."""
     if api_key is None or not api_key.source_assignment_scope_enabled:
@@ -48,7 +49,7 @@ def runtime_enabled_source_ids_for_api_key(api_key: ApiKeyData | None) -> set[st
     return configured & set(api_key.assigned_source_ids)
 
 
-def source_scoped_model_requires_source(
+async def source_scoped_model_requires_source(
     model: str | None,
     api_key: ApiKeyData | None,
     *,
@@ -57,18 +58,52 @@ def source_scoped_model_requires_source(
     """Whether a source-scoped request must not fall through to subscriptions.
 
     Source assignment is not an exclusive provider mode: a key can still use
-    ordinary subscription models. Fail closed only when none of the exact
-    request candidates exists in the subscription catalog. In that case a
-    failed source lookup means the model is source-only for this request, so
-    forwarding it to a subscription account would cross provider boundaries.
+    ordinary subscription models. A missing live subscription-registry entry
+    is not proof that a model is source-only: the registry may legitimately be
+    cleared while every account is temporarily non-active, and newer upstream
+    subscription slugs can then be absent from the bootstrap floor.
+
+    With a non-empty assignment set, fail closed only when the requested slug
+    is absent from the subscription registry and one of this key's explicitly
+    assigned sources actually declares that slug. Route/enablement is
+    deliberately ignored here because the normal and disabled lookups have
+    already missed; ownership is the final provider-boundary check, not catalog
+    absence by itself. A dangling source-scoped key with no remaining assignment
+    rows keeps the historical fail-closed boundary because its provider intent
+    can no longer be proven safely.
     """
     if api_key is None or not api_key.source_assignment_scope_enabled:
         return False
     candidates = [candidate for candidate in (raw_model, model) if candidate]
     if not candidates:
         return False
+    exact_allowed_models = set(api_key.allowed_models) if api_key.allowed_models else None
+    deduped_candidates = [
+        candidate
+        for candidate in dict.fromkeys(candidates)
+        if exact_allowed_models is None or candidate in exact_allowed_models
+    ]
+    if not deduped_candidates:
+        return False
     registry_models = get_model_registry().get_models_with_fallback()
-    return not any(candidate in registry_models for candidate in dict.fromkeys(candidates))
+    if any(candidate in registry_models for candidate in deduped_candidates):
+        return False
+
+    assigned_source_ids = allowed_source_ids_for_api_key(api_key)
+    if assigned_source_ids is None:
+        return False
+    if not assigned_source_ids:
+        # Preserve the historical fail-closed boundary for a source-scoped key
+        # whose durable assignments disappeared (for example after source
+        # deletion). Without ownership metadata there is no safe provider
+        # fallback for an otherwise unknown slug.
+        return True
+    async with get_background_session() as session:
+        repository = ModelSourcesRepository(session)
+        for candidate in deduped_candidates:
+            if await repository.assigned_source_has_model(candidate, allowed_source_ids=assigned_source_ids):
+                return True
+    return False
 
 
 async def _find_runtime_enabled_responses_source_for_model(
