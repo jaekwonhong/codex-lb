@@ -51,6 +51,8 @@ from scripts.member_rotation_release_qualification import (
     P4_VERSION,
     PREDECESSOR_OFFICIAL_ALEMBIC_HEAD,
     PRODUCTION_OFFICIAL_ALEMBIC_HEAD,
+    ROLLBACK_ARTIFACT_KIND,
+    ROLLBACK_BACKUP_CONTRACT,
     ROLLBACK_EXTENSION_TABLES,
     ROLLBACK_STATE_KEYS,
     DurableEffectReceipt,
@@ -83,15 +85,16 @@ ROLLBACK_BETA_SHA256 = "2" * 64
 ROLLBACK_STABLE_SOURCE_SHA = "3" * 40
 ROLLBACK_BETA_SOURCE_SHA = "4" * 40
 ROLLBACK_DATABASE_CONTAINER_ID = "5" * 64
-ROLLBACK_DATABASE_SYSTEM_IDENTIFIER = "8684501606386458669"
 ROLLBACK_DATABASE_SNAPSHOT = "6" * 64
 ROLLBACK_CREDENTIAL_FINGERPRINT = "a" * 64
 ROLLBACK_STABLE_CONTAINER_ID = "7" * 64
 ROLLBACK_BETA_CONTAINER_ID = "e" * 64
 POSTGRES_CONTAINER_ID = "f" * 64
 POSTGRES_SYSTEM_IDENTIFIER = "7684501606386458669"
+ROLLBACK_DATABASE_SYSTEM_IDENTIFIER = POSTGRES_SYSTEM_IDENTIFIER
 POSTGRES_SNAPSHOT = "9" * 64
 EXTENSION_SCHEMA_SHA256 = "8" * 64
+ROLLBACK_EXTENSION_SCHEMA_SHA256 = "0" * 64
 STABLE_ROLE = "stable-v1.25.0-beta.7-official"
 BETA_ROLE = "beta-v1.25.0-beta.7-q2-usage-member-rotation-default-off-dgx-encrypted-reasoning"
 MEMBER = UsageAccountIdentity(
@@ -202,6 +205,18 @@ def test_frozen_matrix_matches_release_qualification_contract() -> None:
     }
     assert matrix["canary"]["pre_effect_authorization_required"] is True
     assert matrix["canary"]["remove_reconciliation_required_before_invite"] is True
+    assert matrix["beta9_candidate_gate"] == {
+        "runtime_identity_fields": ["image_sha256", "source_sha", "source_tree_sha"],
+        "sentinel_namespace": ".beta9-q2-start-gate-<full-image-sha256>-v1",
+        "old_q2_sentinel_reusable": False,
+        "restart_policy_while_gated": "no",
+        "entrypoint_sha256": "c2203ee0402234761ba343ca8621265a0d5240d22de5754386232260a19489ca",
+        "atomic_no_overwrite_publish": True,
+        "ambiguous_publish_fails_closed": True,
+        "pid1_starttime_continuity": True,
+        "netns_continuity": True,
+        "post_stop_revoke_requires_shared_runtime_mount": True,
+    }
     assert P4_OWNING_OPS_COMMIT != P4_RECONSTRUCTION_BASELINE
 
     root = Path(__file__).resolve().parents[2]
@@ -836,6 +851,10 @@ def _valid_preflight() -> dict[str, Any]:
             "identity_sha256": ROLLBACK_SHA256,
             "verified": True,
             "strategy": "restore_pre_migration_database",
+            "artifact_kind": ROLLBACK_ARTIFACT_KIND,
+            "backup_contract": ROLLBACK_BACKUP_CONTRACT,
+            "backup_manifest_sha256": ROLLBACK_SHA256,
+            "backup_manifest_verified": True,
             "post_migration_predecessor_boundary": {
                 "stable": {
                     "probe_kind": "migration_state",
@@ -873,10 +892,11 @@ def _valid_preflight() -> dict[str, Any]:
                 },
             },
             "source_database": {
+                "system_identifier": POSTGRES_SYSTEM_IDENTIFIER,
                 "current_revision": PREDECESSOR_OFFICIAL_ALEMBIC_HEAD,
                 "head_revision": PREDECESSOR_OFFICIAL_ALEMBIC_HEAD,
                 "member_rotation_extension_preserved": True,
-                "extension_schema_sha256": EXTENSION_SCHEMA_SHA256,
+                "extension_schema_sha256": ROLLBACK_EXTENSION_SCHEMA_SHA256,
                 "extension_tables": _extension_table_fingerprints(),
                 "snapshot_fingerprint": ROLLBACK_DATABASE_SNAPSHOT,
                 "backup_identity_sha256": ROLLBACK_SHA256,
@@ -891,7 +911,7 @@ def _valid_preflight() -> dict[str, Any]:
                 "current_revision": PREDECESSOR_OFFICIAL_ALEMBIC_HEAD,
                 "head_revision": PREDECESSOR_OFFICIAL_ALEMBIC_HEAD,
                 "member_rotation_extension_preserved": True,
-                "extension_schema_sha256": EXTENSION_SCHEMA_SHA256,
+                "extension_schema_sha256": ROLLBACK_EXTENSION_SCHEMA_SHA256,
                 "extension_tables": _extension_table_fingerprints(),
                 "snapshot_fingerprint": ROLLBACK_DATABASE_SNAPSHOT,
                 "source_snapshot_fingerprint": ROLLBACK_DATABASE_SNAPSHOT,
@@ -899,6 +919,7 @@ def _valid_preflight() -> dict[str, Any]:
                 "legacy_credential_columns": list(LEGACY_DASHBOARD_CREDENTIAL_COLUMNS),
                 "legacy_credential_fingerprint_sha256": ROLLBACK_CREDENTIAL_FINGERPRINT,
                 "retired_sentinel_present": False,
+                "catalog_representation_preserved": True,
             },
             "predecessor": {
                 "stable_image_sha256": ROLLBACK_STABLE_SHA256,
@@ -930,7 +951,7 @@ def _valid_preflight() -> dict[str, Any]:
                 "needs_upgrade": False,
                 "is_ahead": False,
                 "unknown_revisions": [],
-                "extension_schema_sha256": EXTENSION_SCHEMA_SHA256,
+                "extension_schema_sha256": ROLLBACK_EXTENSION_SCHEMA_SHA256,
                 "postgres_snapshot_fingerprint": ROLLBACK_DATABASE_SNAPSHOT,
             },
             "beta_start_probe": {
@@ -955,7 +976,7 @@ def _valid_preflight() -> dict[str, Any]:
                 "needs_upgrade": False,
                 "is_ahead": False,
                 "unknown_revisions": [],
-                "extension_schema_sha256": EXTENSION_SCHEMA_SHA256,
+                "extension_schema_sha256": ROLLBACK_EXTENSION_SCHEMA_SHA256,
                 "postgres_snapshot_fingerprint": ROLLBACK_DATABASE_SNAPSHOT,
             },
         },
@@ -1043,6 +1064,10 @@ def test_preflight_requires_exact_candidate_p4_pg_idle_runtime_feature_and_rollb
         (("feature", "postgres_snapshot_fingerprint"), "1" * 64, "feature evidence is not bound"),
         (("rollback", "exists"), False, "rollback artifact does not exist"),
         (("rollback", "strategy"), "alembic_downgrade", "restore the verified pre-migration database"),
+        (("rollback", "artifact_kind"), "logical_pg_dump", "physical base backup"),
+        (("rollback", "backup_contract"), "logical_v1", "catalog-preserving physical backup contract"),
+        (("rollback", "backup_manifest_verified"), False, "physical backup manifest was not verified"),
+        (("rollback", "backup_manifest_sha256"), "0" * 64, "identity does not match"),
         (
             ("rollback", "post_migration_predecessor_boundary", "stable", "compatible"),
             True,
@@ -1063,6 +1088,7 @@ def test_preflight_requires_exact_candidate_p4_pg_idle_runtime_feature_and_rollb
             "0" * 64,
             "source database is not bound to the verified backup artifact",
         ),
+        (("rollback", "source_database", "system_identifier"), "123", "source cluster identity mismatch"),
         (
             ("rollback", "source_database", "extension_tables", "member_switch_control_records", "count"),
             99,
@@ -1087,6 +1113,16 @@ def test_preflight_requires_exact_candidate_p4_pg_idle_runtime_feature_and_rollb
             ("rollback", "restore_rehearsal", "backup_identity_sha256"),
             "1" * 64,
             "verified backup artifact",
+        ),
+        (
+            ("rollback", "restore_rehearsal", "system_identifier"),
+            "8684501606386458669",
+            "did not preserve the source PostgreSQL system identifier",
+        ),
+        (
+            ("rollback", "restore_rehearsal", "catalog_representation_preserved"),
+            False,
+            "catalog-preserving physical restoration",
         ),
         (
             ("rollback", "restore_rehearsal", "extension_tables", "member_rotation_workspace_controls", "count"),
@@ -1163,13 +1199,17 @@ def _rollback_state(*, restored: bool = False) -> dict[str, Any]:
     state["database"] = {
         "container_id": ROLLBACK_DATABASE_CONTAINER_ID if restored else POSTGRES_CONTAINER_ID,
         "container_started_at": "2026-09-16T00:00:00Z" if restored else "2026-09-15T00:00:00Z",
-        "system_identifier": ROLLBACK_DATABASE_SYSTEM_IDENTIFIER if restored else POSTGRES_SYSTEM_IDENTIFIER,
+        "system_identifier": POSTGRES_SYSTEM_IDENTIFIER,
         "current_revision": PREDECESSOR_OFFICIAL_ALEMBIC_HEAD,
         "head_revision": PREDECESSOR_OFFICIAL_ALEMBIC_HEAD,
         "extension_contract": MEMBER_ROTATION_EXTENSION_CONTRACT,
-        "extension_schema_sha256": EXTENSION_SCHEMA_SHA256,
+        "extension_schema_sha256": ROLLBACK_EXTENSION_SCHEMA_SHA256,
         "snapshot_fingerprint": ROLLBACK_DATABASE_SNAPSHOT,
         "backup_identity_sha256": ROLLBACK_SHA256,
+        "artifact_kind": ROLLBACK_ARTIFACT_KIND,
+        "backup_contract": ROLLBACK_BACKUP_CONTRACT,
+        "backup_manifest_sha256": ROLLBACK_SHA256,
+        "backup_manifest_verified": True,
         "legacy_credential_columns": list(LEGACY_DASHBOARD_CREDENTIAL_COLUMNS),
         "legacy_credential_fingerprint_sha256": ROLLBACK_CREDENTIAL_FINGERPRINT,
         "retired_sentinel_present": False,
@@ -1178,6 +1218,7 @@ def _rollback_state(*, restored: bool = False) -> dict[str, Any]:
         state["database"].update(
             source_snapshot_fingerprint=ROLLBACK_DATABASE_SNAPSHOT,
             restore_verified=True,
+            catalog_representation_preserved=True,
         )
     state["extension_tables"] = {
         table: {"count": index, "sha256": hashlib.sha256(table.encode()).hexdigest()}
@@ -1216,7 +1257,7 @@ def _rollback_state(*, restored: bool = False) -> dict[str, Any]:
                 "is_ahead": False,
                 "unknown_revisions": [],
                 "postgres_snapshot_fingerprint": ROLLBACK_DATABASE_SNAPSHOT,
-                "extension_schema_sha256": EXTENSION_SCHEMA_SHA256,
+                "extension_schema_sha256": ROLLBACK_EXTENSION_SCHEMA_SHA256,
             },
             "beta": {
                 "probe_kind": "runtime_start",
@@ -1241,7 +1282,7 @@ def _rollback_state(*, restored: bool = False) -> dict[str, Any]:
                 "is_ahead": False,
                 "unknown_revisions": [],
                 "postgres_snapshot_fingerprint": ROLLBACK_DATABASE_SNAPSHOT,
-                "extension_schema_sha256": EXTENSION_SCHEMA_SHA256,
+                "extension_schema_sha256": ROLLBACK_EXTENSION_SCHEMA_SHA256,
             },
         }
     return state
@@ -1284,6 +1325,21 @@ def test_rollback_requires_exact_durable_state_preservation() -> None:
     after = copy.deepcopy(restored)
     after["database"]["legacy_credential_fingerprint_sha256"] = "0" * 64
     with pytest.raises(QualificationError, match="dashboard credential state changed"):
+        _verify_rollback(before, after)
+
+    after = copy.deepcopy(restored)
+    after["database"]["system_identifier"] = "8684501606386458669"
+    with pytest.raises(QualificationError, match="restored rollback database identity is invalid"):
+        _verify_rollback(before, after)
+
+    after = copy.deepcopy(restored)
+    after["database"]["artifact_kind"] = "logical_pg_dump"
+    with pytest.raises(QualificationError, match="physical base backup"):
+        _verify_rollback(before, after)
+
+    after = copy.deepcopy(restored)
+    after["database"]["catalog_representation_preserved"] = False
+    with pytest.raises(QualificationError, match="preserve catalog representation"):
         _verify_rollback(before, after)
 
     after = copy.deepcopy(restored)

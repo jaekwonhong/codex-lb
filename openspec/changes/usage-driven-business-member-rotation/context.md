@@ -90,12 +90,21 @@ Release qualification distinguishes the non-rolling migration epochs. Migration,
 beta.9 runtime evidence bind to the admitted post-migration PostgreSQL identity at
 `20260913_000000_add_oidc_provider_flow`. That post-migration epoch also records read-only migration-state probes from
 the exact beta.7 Stable/Q2-Beta predecessors proving the DB is ahead/unknown and therefore incompatible. Rollback instead
-binds a verified pre-migration database artifact captured at
-`20260910_000000_request_logs_missing_cost_index`, proves an isolated restore reproduces that logical snapshot and the
-six local-extension tables using exact per-table count/data fingerprints, and binds the sealed source snapshot itself to
-the verified backup digest. It restores the three legacy dashboard credential columns with the retired-credential
-sentinel absent, and only then starts the exact predecessor image/source/role builds with startup migrations disabled.
+binds a verified catalog-preserving physical PostgreSQL backup captured at
+`20260910_000000_request_logs_missing_cost_index`, including its verified backup manifest digest and source system
+identifier. An isolated restore must preserve that system identifier and the predecessor catalog representation used by
+the strict Q2 local-extension verifier, reproduce the six local-extension tables using exact per-table count/data
+fingerprints, and bind the sealed source snapshot itself to the verified backup digest. A logical `pg_dump`/`pg_restore`
+alone is not rollback authority when it rewrites `pg_get_constraintdef()` representation. The physical restore recovers
+the three legacy dashboard credential columns with the retired-credential sentinel absent, and only then starts the exact
+predecessor image/source/role builds with startup migrations disabled.
 Each predecessor container must have a `StartedAt` strictly later than the restored DB epoch and prove it stays running,
 reaches `/health/ready`, and reports compatible predecessor-head migration state on that restored DB.
 Rollback is a database restore plus predecessor restart, not a beta.9 Alembic downgrade and not an attempt to run
 beta.7 code on the beta.9 schema.
+
+The beta.9 Q2 candidate also uses a new first-start gate namespace. Admission binds the final immutable image digest to
+its exact source/tree provenance and original entrypoint bytes at runtime; it does not hard-code the final image digest
+into source. The old Q2 `592ace...` sentinel is never reused. Publication is atomic/no-overwrite, restart remains `no`
+while gated, release preserves the PID1 starttime and network namespace, ambiguous publication fails closed, and any
+reviewed post-stop revocation must prove the candidate stopped and the revocation view shares the same runtime mount.

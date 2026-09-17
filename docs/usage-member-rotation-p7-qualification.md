@@ -160,9 +160,13 @@ The JSON evidence has these required sections:
   },
   "rollback": {
     "exists": true,
-    "identity_sha256": "<64-hex verified pre-migration DB backup digest>",
+    "identity_sha256": "<64-hex verified pg_basebackup manifest digest>",
     "verified": true,
     "strategy": "restore_pre_migration_database",
+    "artifact_kind": "postgresql_physical_base_backup",
+    "backup_contract": "postgresql_catalog_preserving_physical_v1",
+    "backup_manifest_sha256": "<same verified pg_basebackup manifest digest>",
+    "backup_manifest_verified": true,
     "post_migration_predecessor_boundary": {
       "stable": {
         "probe_kind": "migration_state",
@@ -184,6 +188,7 @@ The JSON evidence has these required sections:
       "beta": "<same boundary proof for exact Q2 Beta predecessor>"
     },
     "source_database": {
+      "system_identifier": "<pre-migration PostgreSQL system identifier>",
       "current_revision": "20260910_000000_request_logs_missing_cost_index",
       "head_revision": "20260910_000000_request_logs_missing_cost_index",
       "member_rotation_extension_preserved": true,
@@ -196,7 +201,7 @@ The JSON evidence has these required sections:
         "workspace_member_usage_reset_invalidations": {"count": 0, "sha256": "<64-hex data digest>"},
         "workspace_member_final_usage_snapshots": {"count": 0, "sha256": "<64-hex data digest>"}
       },
-      "snapshot_fingerprint": "<verified pre-migration logical DB fingerprint>",
+      "snapshot_fingerprint": "<verified pre-migration rollback snapshot fingerprint>",
       "backup_identity_sha256": "<same verified backup digest>",
       "legacy_credential_columns": [
         "password_hash",
@@ -215,8 +220,8 @@ The JSON evidence has these required sections:
       "member_rotation_extension_preserved": true,
       "extension_schema_sha256": "<same six-table local-extension schema digest>",
       "extension_tables": "<same six per-table count + data-digest mapping as source_database>",
-      "snapshot_fingerprint": "<same verified pre-migration logical DB fingerprint>",
-      "source_snapshot_fingerprint": "<same verified pre-migration logical DB fingerprint>",
+      "snapshot_fingerprint": "<same verified pre-migration rollback snapshot fingerprint>",
+      "source_snapshot_fingerprint": "<same verified pre-migration rollback snapshot fingerprint>",
       "backup_identity_sha256": "<same verified backup digest>",
       "legacy_credential_columns": [
         "password_hash",
@@ -224,7 +229,8 @@ The JSON evidence has these required sections:
         "totp_last_verified_step"
       ],
       "legacy_credential_fingerprint_sha256": "<same hash-only credential-state fingerprint>",
-      "retired_sentinel_present": false
+      "retired_sentinel_present": false,
+      "catalog_representation_preserved": true
     },
     "predecessor": "<exact beta.7 Stable/Q2-Beta image + source + role identities>",
     "stable_start_probe": {
@@ -263,9 +269,13 @@ feature-OFF, and matched beta.9 runtime evidence bind to one admitted post-migra
 must include read-only migration-state probes from the exact beta.7 Stable and Q2-Beta predecessor builds showing the
 database is ahead/unknown and therefore incompatible; that positive boundary evidence prevents a later rehearsal from
 silently treating the non-rolling migration as rolling-safe. Rollback is a separate database epoch: P7 binds a verified
-pre-migration backup at `20260910...` directly to the sealed source snapshot, records count + data SHA-256 for each of
-the six local extension tables, and proves an isolated exact logical restore reproduces those per-table fingerprints and
-the legacy dashboard credential state. Only then are exact predecessor runtime-start probes accepted. Those probes must
+catalog-preserving physical PostgreSQL backup at `20260910...` directly to the sealed source snapshot, records its
+verified backup manifest digest plus count + data SHA-256 for each of the six local extension tables, and proves an
+isolated physical restore preserves the source PostgreSQL system identifier, exact local-extension catalog/schema
+fingerprint, per-table fingerprints, and legacy dashboard credential state. A logical `pg_dump`/`pg_restore` rehearsal
+may still be used for beta.7→beta.9 migration testing, but it is not an operational rollback artifact for the immutable
+Q2 predecessor because PostgreSQL may rewrite `pg_get_constraintdef()` representation. Only then are exact predecessor
+runtime-start probes accepted. Those probes must
 prove the expected image/source/role has a container `StartedAt` strictly later than the restored database `StartedAt`,
 stayed running with zero restarts, reached `/health/ready` with HTTP 200, had startup migrations disabled, and remained
 bound to the restored predecessor-head snapshot.
@@ -284,7 +294,7 @@ rehearsal gates remain independently required.
 
 ## Rollback qualification
 
-Capture normalized count + SHA-256 fingerprints before and after code rollback for `quota_history`,
+Capture normalized count + SHA-256 fingerprints from the sealed pre-migration source and the restored rollback database for `quota_history`,
 `unknown_effect_receipts`, `removed_member_snapshots`, `reset_resolution_state`, and `oauth_member_records`. Then
 run:
 
@@ -303,14 +313,23 @@ python -m scripts.member_rotation_release_qualification rollback \
 Every durable category and all six local-extension table fingerprints must match exactly between the sealed
 pre-migration source snapshot and the restored rollback database. The restore must return to
 `20260910_000000_request_logs_missing_cost_index`, restore the three legacy dashboard credential columns/value
-fingerprint, keep `dashboard_legacy_credentials_retired` absent, and bind both the source and restored snapshot to the
-exact verified backup digest. Only the restored database is used for exact beta.7 Stable/Q2-Beta predecessor start
+fingerprint, keep `dashboard_legacy_credentials_retired` absent, preserve the pre-migration PostgreSQL system identifier
+and catalog representation, and bind both the source and restored snapshot to the exact verified physical backup manifest
+digest. Only the restored database is used for exact beta.7 Stable/Q2-Beta predecessor start
 probes; each must bind the expected image/source/role, have a container `StartedAt` strictly later than the restored DB
 epoch, actually start and become ready with migrations disabled and zero restarts, report current/head at
 `20260910...`, `needs_upgrade=false`, `is_ahead=false`, no unknown revisions, and retain the restored snapshot/extension
 fingerprints. The separate post-migration boundary probes must show those same predecessor builds reject the admitted
 `20260913...` beta.9 snapshot as ahead/unknown. This keeps unresolved remove/invite evidence durable without pretending
 beta.7 is compatible with the beta.9 schema.
+
+For the beta.9 Q2 candidate, the historical `.q2-beta-start-gate-592ace38-v1` sentinel is not reusable. The first-start
+gate must be admitted with the final immutable image digest plus exact source/tree SHAs, verify those provenance labels
+from the immutable image config as well as the effective container config, verify the original entrypoint bytes, and run
+with exact `restart=no` while gated. Its sentinel uses the new full-image-derived beta.9 namespace and is published with
+an atomic no-overwrite protocol. Release is accepted only when the same PID1 starttime and network namespace exec the
+app; an outcome-unknown publish remains fail-closed. Post-stop sentinel revocation additionally requires the exact
+candidate to be stopped and the revocation view to share the same runtime mount.
 
 ## Final live-canary guard
 

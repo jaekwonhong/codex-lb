@@ -13,6 +13,7 @@ uv run pytest -q \
   tests/unit/test_member_rotation_controller.py \
   tests/unit/test_member_switch_control.py \
   tests/unit/test_member_switch_continuation.py \
+  tests/unit/test_member_rotation_beta9_candidate_gate.py \
   tests/unit/test_member_rotation_p7_qualification.py \
   tests/integration/test_member_rotation_local_extension_schema.py \
   tests/integration/test_member_rotation_operator_api.py \
@@ -23,7 +24,9 @@ uv run ruff check \
   app/modules/member_rotation_operator/adapter.py \
   app/db/migrate.py \
   app/db/session.py \
+  scripts/member_rotation_beta9_candidate_gate.py \
   scripts/member_rotation_release_qualification.py \
+  tests/unit/test_member_rotation_beta9_candidate_gate.py \
   tests/integration/test_member_rotation_local_extension_schema.py \
   tests/unit/test_member_rotation_p7_qualification.py \
   tests/unit/test_member_rotation_controller.py \
@@ -34,7 +37,9 @@ uv run ty check \
   app/modules/member_rotation_operator/adapter.py \
   app/db/migrate.py \
   app/db/session.py \
+  scripts/member_rotation_beta9_candidate_gate.py \
   scripts/member_rotation_release_qualification.py \
+  tests/unit/test_member_rotation_beta9_candidate_gate.py \
   tests/unit/test_member_rotation_p7_qualification.py \
   tests/unit/test_member_rotation_controller.py \
   tests/integration/test_member_rotation_g2_operator_adapter.py

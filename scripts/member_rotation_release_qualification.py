@@ -37,6 +37,8 @@ P4_REPLAY_TOUCHED_TREE_SHA256 = "1feb8130c6d683569d8dd5d6f4e0a3a5f705afa6e66b53d
 PRODUCTION_OFFICIAL_ALEMBIC_HEAD = "20260913_000000_add_oidc_provider_flow"
 PREDECESSOR_OFFICIAL_ALEMBIC_HEAD = "20260910_000000_request_logs_missing_cost_index"
 MEMBER_ROTATION_EXTENSION_CONTRACT = "member_rotation_local_extension_v1"
+ROLLBACK_ARTIFACT_KIND = "postgresql_physical_base_backup"
+ROLLBACK_BACKUP_CONTRACT = "postgresql_catalog_preserving_physical_v1"
 P4_CONTRACT = frozenset(
     {
         "typed_remove_response_observation",
@@ -903,6 +905,20 @@ def verify_preflight(
         rollback.get("strategy") == "restore_pre_migration_database",
         "rollback strategy must restore the verified pre-migration database",
     )
+    _require(
+        rollback.get("artifact_kind") == ROLLBACK_ARTIFACT_KIND,
+        "rollback artifact must be a PostgreSQL physical base backup",
+    )
+    _require(
+        rollback.get("backup_contract") == ROLLBACK_BACKUP_CONTRACT,
+        "rollback artifact does not satisfy the catalog-preserving physical backup contract",
+    )
+    _require(rollback.get("backup_manifest_verified") is True, "rollback physical backup manifest was not verified")
+    _require(
+        _normalized_sha256(rollback.get("backup_manifest_sha256"), "rollback.backup_manifest_sha256")
+        == rollback_identity,
+        "rollback artifact identity does not match the verified physical backup manifest",
+    )
 
     expected_rollback_stable = _normalized_sha256(expected_rollback_stable_sha256, "expected rollback Stable SHA")
     expected_rollback_beta = _normalized_sha256(expected_rollback_beta_sha256, "expected rollback Beta SHA")
@@ -958,13 +974,16 @@ def verify_preflight(
         rollback_source.get("snapshot_fingerprint"),
         "rollback.source_database.snapshot_fingerprint",
     )
+    rollback_source_system_identifier = rollback_source.get("system_identifier")
+    _require(
+        isinstance(rollback_source_system_identifier, str)
+        and rollback_source_system_identifier.isdigit()
+        and rollback_source_system_identifier == system_identifier,
+        "rollback source cluster identity mismatch",
+    )
     rollback_source_extension = _normalized_sha256(
         rollback_source.get("extension_schema_sha256"),
         "rollback.source_database.extension_schema_sha256",
-    )
-    _require(
-        rollback_source_extension == extension_schema_sha,
-        "rollback source extension schema fingerprint mismatch",
     )
     _require(
         _normalized_sha256(
@@ -1006,8 +1025,14 @@ def verify_preflight(
     )
     restore_system_identifier = restore.get("system_identifier")
     _require(
-        isinstance(restore_system_identifier, str) and restore_system_identifier.isdigit(),
-        "rollback restore system identifier is invalid",
+        isinstance(restore_system_identifier, str)
+        and restore_system_identifier.isdigit()
+        and restore_system_identifier == rollback_source_system_identifier,
+        "rollback restore did not preserve the source PostgreSQL system identifier",
+    )
+    _require(
+        restore.get("catalog_representation_preserved") is True,
+        "rollback restore did not prove catalog-preserving physical restoration",
     )
     _require(
         restore.get("current_revision") == PREDECESSOR_OFFICIAL_ALEMBIC_HEAD
@@ -1173,6 +1198,16 @@ def verify_rollback_state(
 
     before_database = _mapping(before.get("database"), "before.database")
     after_database = _mapping(after.get("database"), "after.database")
+    for label, database in (("before", before_database), ("after", after_database)):
+        _require(
+            database.get("artifact_kind") == ROLLBACK_ARTIFACT_KIND,
+            f"{label} rollback artifact is not a PostgreSQL physical base backup",
+        )
+        _require(
+            database.get("backup_contract") == ROLLBACK_BACKUP_CONTRACT,
+            f"{label} rollback database does not satisfy the catalog-preserving backup contract",
+        )
+        _require(database.get("backup_manifest_verified") is True, f"{label} rollback backup manifest is not verified")
     _require(
         before_database.get("current_revision") == PREDECESSOR_OFFICIAL_ALEMBIC_HEAD
         and before_database.get("head_revision") == PREDECESSOR_OFFICIAL_ALEMBIC_HEAD,
@@ -1235,7 +1270,14 @@ def verify_rollback_state(
         "before.database.backup_identity_sha256",
     )
     _require(
+        _normalized_sha256(before_database.get("backup_manifest_sha256"), "before.database.backup_manifest_sha256")
+        == backup_identity,
+        "pre-migration rollback source is not bound to the verified physical backup manifest",
+    )
+    _require(
         _normalized_sha256(after_database.get("backup_identity_sha256"), "after.database.backup_identity_sha256")
+        == backup_identity
+        and _normalized_sha256(after_database.get("backup_manifest_sha256"), "after.database.backup_manifest_sha256")
         == backup_identity
         and after_database.get("restore_verified") is True,
         "rollback database restore is not bound to the verified backup",
@@ -1246,12 +1288,20 @@ def verify_rollback_state(
     )
     restored_started_at = after_database.get("container_started_at")
     restored_system_identifier = after_database.get("system_identifier")
+    source_system_identifier = before_database.get("system_identifier")
     _require(
         isinstance(restored_started_at, str)
         and bool(restored_started_at.strip())
         and isinstance(restored_system_identifier, str)
-        and restored_system_identifier.isdigit(),
+        and restored_system_identifier.isdigit()
+        and isinstance(source_system_identifier, str)
+        and source_system_identifier.isdigit()
+        and restored_system_identifier == source_system_identifier,
         "restored rollback database identity is invalid",
+    )
+    _require(
+        after_database.get("catalog_representation_preserved") is True,
+        "rollback database restore did not preserve catalog representation",
     )
     before_extensions = _mapping(before.get("extension_tables"), "before.extension_tables")
     after_extensions = _mapping(after.get("extension_tables"), "after.extension_tables")
