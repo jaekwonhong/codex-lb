@@ -1972,12 +1972,27 @@ async def test_backend_codex_responses_compaction_trigger_skips_model_source(asy
 @pytest.mark.asyncio
 async def test_backend_codex_responses_file_pinned_payload_skips_model_source(async_client, monkeypatch):
     model = "external-codex-responses-file-pin"
-    await _create_model_source(
+    source_id = await _create_model_source(
         async_client,
         name="codex-responses-file-pin",
         model=model,
         supports_responses=True,
     )
+    enable = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert enable.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={"name": "file-pin-scoped-key", "assignedSourceIds": [source_id]},
+    )
+    assert created.status_code == 200
     observed: dict[str, object] = {}
 
     async def fail_source(*args, **kwargs):
@@ -1996,6 +2011,7 @@ async def test_backend_codex_responses_file_pinned_payload_skips_model_source(as
 
     response = await async_client.post(
         "/backend-api/codex/responses",
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
         json={
             "model": model,
             "instructions": "read this file",
@@ -2122,16 +2138,32 @@ async def test_v1_responses_file_pinned_payload_skips_model_source(async_client,
 async def test_v1_responses_recorded_previous_response_owner_skips_model_source(async_client, monkeypatch):
     model = "external-v1-responses-prev-id"
     previous_response_id = "resp_03ac4d75eac7c5d1016a0a619e8a688191b5267ba7ffac3111"
-    await _create_model_source(
+    source_id = await _create_model_source(
         async_client,
         name="v1-responses-prev-id",
         model=model,
         supports_responses=True,
     )
+    enable = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert enable.status_code == 200
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={"name": "previous-owner-scoped-key", "assignedSourceIds": [source_id]},
+    )
+    assert created.status_code == 200
     account_id = await _import_account(async_client, "acct-prev-owner-v1", "prev-owner-v1@example.com")
     async with SessionLocal() as session:
         await RequestLogsRepository(session).add_log(
             account_id=account_id,
+            api_key_id=created.json()["id"],
             request_id=previous_response_id,
             model=model,
             input_tokens=None,
@@ -2157,6 +2189,7 @@ async def test_v1_responses_recorded_previous_response_owner_skips_model_source(
 
     response = await async_client.post(
         "/v1/responses",
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
         json={
             "model": model,
             "input": [{"role": "user", "content": [{"type": "input_text", "text": "continue"}]}],

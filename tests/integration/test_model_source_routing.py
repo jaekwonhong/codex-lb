@@ -1029,9 +1029,9 @@ async def test_scoped_source_only_responses_miss_fails_closed_before_subscriptio
     assigned_source_id = await _create_model_source(
         async_client,
         name="source-only-boundary",
-        model="different-source-model",
+        model="source-only-missing-model",
         base_url=f"http://127.0.0.1:{_free_port()}/v1",
-        supports_responses=True,
+        supports_responses=False,
     )
     created = await async_client.post(
         "/api/api-keys/",
@@ -1055,6 +1055,88 @@ async def test_scoped_source_only_responses_miss_fails_closed_before_subscriptio
     )
     assert subscription_response.status_code == 503
     assert subscription_response.json()["error"]["code"] == "no_accounts"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/responses", "/backend-api/codex/responses"])
+async def test_scoped_key_registry_miss_for_unowned_subscription_model_falls_through(
+    async_client,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    await _enable_api_key_auth(async_client)
+    assigned_source_id = await _create_model_source(
+        async_client,
+        name="unrelated-source-boundary",
+        model="qwen-source-only-model",
+        base_url=f"http://127.0.0.1:{_free_port()}/v1",
+        supports_responses=True,
+    )
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={"name": "registry-miss-subscription-key", "assignedSourceIds": [assigned_source_id]},
+    )
+    assert created.status_code == 200
+
+    class _EmptyRegistry:
+        def get_models_with_fallback(self) -> dict[str, object]:
+            return {}
+
+    monkeypatch.setattr(source_selection, "get_model_registry", lambda: _EmptyRegistry())
+
+    response = await async_client.post(
+        path,
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+        json={"model": "gpt-6-astra", "input": "hi", "stream": False},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "no_accounts"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/responses", "/backend-api/codex/responses"])
+async def test_deleted_assigned_source_keeps_registry_miss_fail_closed(
+    async_client,
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    await _enable_api_key_auth(async_client)
+    source_id = await _create_model_source(
+        async_client,
+        name="deleted-source-boundary",
+        model="deleted-source-only-model",
+        base_url=f"http://127.0.0.1:{_free_port()}/v1",
+        supports_responses=True,
+    )
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={"name": "deleted-source-boundary-key", "assignedSourceIds": [source_id]},
+    )
+    assert created.status_code == 200
+    deleted = await async_client.delete(f"/api/model-sources/{source_id}")
+    assert deleted.status_code == 204
+
+    listed = await async_client.get("/api/api-keys/")
+    assert listed.status_code == 200
+    key_row = next(row for row in listed.json() if row["id"] == created.json()["id"])
+    assert key_row["sourceAssignmentScopeEnabled"] is True
+    assert key_row["assignedSourceIds"] == []
+
+    class _EmptyRegistry:
+        def get_models_with_fallback(self) -> dict[str, object]:
+            return {}
+
+    monkeypatch.setattr(source_selection, "get_model_registry", lambda: _EmptyRegistry())
+
+    response = await async_client.post(
+        path,
+        headers={"Authorization": f"Bearer {created.json()['key']}"},
+        json={"model": "deleted-source-only-model", "input": "hi", "stream": False},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "model_source_unavailable"
 
 
 @pytest.mark.asyncio

@@ -1239,10 +1239,14 @@ async def responses(
             native_codex_heartbeat=native_codex_heartbeat,
             context=context,
         )
-    if source_scoped_model_requires_source(
-        responses_payload.model,
-        api_key,
-        raw_model=raw_source_model,
+    if (
+        not source_route_excluded
+        and not continuity_suppressed
+        and await source_scoped_model_requires_source(
+            responses_payload.model,
+            api_key,
+            raw_model=raw_source_model,
+        )
     ):
         return _logged_error_json_response(
             request,
@@ -1458,10 +1462,14 @@ async def v1_responses(
             pre_normalization_effort=pre_normalization_effort,
             context=context,
         )
-    if source_scoped_model_requires_source(
-        responses_payload.model,
-        api_key,
-        raw_model=raw_source_model,
+    if (
+        not source_route_excluded
+        and not continuity_suppressed
+        and await source_scoped_model_requires_source(
+            responses_payload.model,
+            api_key,
+            raw_model=raw_source_model,
+        )
     ):
         return _logged_error_json_response(
             request,
