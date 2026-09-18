@@ -13,11 +13,13 @@ def _write_tree(
     repository: str,
     selection: str,
     proxy_api: str,
+    websocket_mixin: str | None = None,
 ) -> None:
     files = {
         "app/modules/model_sources/repository.py": repository,
         "app/modules/model_sources/selection.py": selection,
         "app/modules/proxy/api.py": proxy_api,
+        "app/modules/proxy/_service/websocket/mixin.py": websocket_mixin or _good_websocket_mixin(),
     }
     for relative, text in files.items():
         path = root / relative
@@ -60,6 +62,18 @@ def _good_proxy_api() -> str:
     return f"async def responses():\n{guard}\nasync def v1_responses():\n{guard}"
 
 
+def _good_websocket_mixin() -> str:
+    return """
+async def proxy_responses_websocket():
+    if await responses_model_is_source_owned(model, api_key, raw_model=raw_model):
+        return False
+
+async def _connect_proxy_websocket():
+    if await responses_model_is_source_owned(model, api_key, raw_model=raw_model):
+        return False
+"""
+
+
 def test_verify_accepts_ownership_aware_packet_contract(tmp_path: Path) -> None:
     _write_tree(
         tmp_path,
@@ -72,6 +86,7 @@ def test_verify_accepts_ownership_aware_packet_contract(tmp_path: Path) -> None:
 
     assert result.contract == CONTRACT
     assert result.responses_guard_call_count == 2
+    assert result.websocket_source_guard_call_count == 2
 
 
 def test_verify_rejects_historical_registry_only_sync_helper(tmp_path: Path) -> None:
@@ -126,4 +141,41 @@ async def source_scoped_model_requires_source(model, api_key, *, raw_model=None)
     )
 
     with pytest.raises(VerificationError, match="positively query assigned-source model ownership"):
+        verify(tmp_path)
+
+
+def test_verify_rejects_missing_websocket_source_owned_guards(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        repository=_good_repository(),
+        selection=_good_selection(),
+        proxy_api=_good_proxy_api(),
+        websocket_mixin="""
+async def proxy_responses_websocket():
+    return True
+""",
+    )
+
+    with pytest.raises(VerificationError, match="WebSocket source-owned provider boundary"):
+        verify(tmp_path)
+
+
+def test_verify_rejects_unawaited_websocket_source_owned_guard(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        repository=_good_repository(),
+        selection=_good_selection(),
+        proxy_api=_good_proxy_api(),
+        websocket_mixin="""
+async def proxy_responses_websocket():
+    if responses_model_is_source_owned(model, api_key):
+        return False
+
+async def _connect_proxy_websocket():
+    if await responses_model_is_source_owned(model, api_key):
+        return False
+""",
+    )
+
+    with pytest.raises(VerificationError, match="must await source resolution"):
         verify(tmp_path)

@@ -1170,6 +1170,13 @@ source ids.
 - **THEN** the API key remains source-assignment scoped with no assigned source ids
 - **AND** source `src_b` is not eligible for model listing or routing
 
+#### Scenario: Responses WebSocket preserves source ownership boundary
+
+- **GIVEN** a request model resolves to an assigned Responses-capable model source, including an explicitly runtime-enabled local source or a disabled source whose ownership still applies
+- **WHEN** the client uses the Responses WebSocket transport, which cannot forward model-source traffic directly
+- **THEN** both initial request handling and upstream-connect resolution detect that source ownership before subscription-account dispatch
+- **AND** the WebSocket path falls back or refuses according to the source-owned transport contract rather than silently sending the model to a subscription account
+
 ### Requirement: Source-routed usage uses API-key reservations
 
 The system MUST reserve API-key usage before forwarding an OpenAI-compatible
@@ -1942,4 +1949,3 @@ The database SHALL provide an index that supports filtering request logs by API 
 - **WHEN** database migrations are applied
 - **THEN** the `request_logs` table includes an index whose leading key columns are `api_key_id` and descending `requested_at`
 - **AND** the 7-day account-cost breakdown query for an API key is satisfiable by that index for its filter phase
-

@@ -29,6 +29,7 @@ class VerificationResult:
     root: str
     contract: str = CONTRACT
     responses_guard_call_count: int = 0
+    websocket_source_guard_call_count: int = 0
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -36,6 +37,7 @@ class VerificationResult:
             "contract": self.contract,
             "root": self.root,
             "responses_guard_call_count": self.responses_guard_call_count,
+            "websocket_source_guard_call_count": self.websocket_source_guard_call_count,
         }
 
 
@@ -142,11 +144,18 @@ def _iter_guard_calls(module: ast.Module) -> Iterable[ast.Call]:
             yield node
 
 
+def _iter_calls(module: ast.Module, name: str) -> Iterable[ast.Call]:
+    for node in ast.walk(module):
+        if isinstance(node, ast.Call) and _call_name(node) == name:
+            yield node
+
+
 def verify(root: Path) -> VerificationResult:
     root = root.resolve()
     repository = _parse(root, "app/modules/model_sources/repository.py")
     selection = _parse(root, "app/modules/model_sources/selection.py")
     proxy_api = _parse(root, "app/modules/proxy/api.py")
+    websocket_mixin = _parse(root, "app/modules/proxy/_service/websocket/mixin.py")
 
     ownership_method = _find_async_method(repository, "ModelSourcesRepository", "assigned_source_has_model")
     if ownership_method is None:
@@ -187,7 +196,21 @@ def verify(root: Path) -> VerificationResult:
                 "Responses source-only guard must preserve continuity-suppressed subscription ownership"
             )
 
-    return VerificationResult(root=str(root), responses_guard_call_count=len(guard_calls))
+    websocket_guard_calls = list(_iter_calls(websocket_mixin, "responses_model_is_source_owned"))
+    if len(websocket_guard_calls) < 2:
+        raise VerificationError(
+            "WebSocket source-owned provider boundary must be enforced at both request and connect resolution"
+        )
+    websocket_parents = _parent_map(websocket_mixin)
+    for call in websocket_guard_calls:
+        if not isinstance(websocket_parents.get(call), ast.Await):
+            raise VerificationError("WebSocket source-owned provider guard must await source resolution")
+
+    return VerificationResult(
+        root=str(root),
+        responses_guard_call_count=len(guard_calls),
+        websocket_source_guard_call_count=len(websocket_guard_calls),
+    )
 
 
 def main() -> int:
@@ -207,7 +230,8 @@ def main() -> int:
     else:
         print(
             f"beta patch packet verification passed: contract={result.contract} "
-            f"responses_guard_call_count={result.responses_guard_call_count}"
+            f"responses_guard_call_count={result.responses_guard_call_count} "
+            f"websocket_source_guard_call_count={result.websocket_source_guard_call_count}"
         )
     return 0
 
