@@ -11,6 +11,13 @@ When `GET /api/request-logs/options` is requested without user-supplied filters,
 - **THEN** each facet MUST be produced by per-distinct-value index probes (recursive skip scan) rather than a full `DISTINCT` pass
 - **AND** the response MUST equal the legacy `DISTINCT` results, including `(value, NULL)` pairs and ordering
 
+#### Scenario: SQLite facet traversal does not require planner statistics
+
+- **GIVEN** SQLite request logs with many repeated visible rows, the standard facet indexes, and no planner statistics
+- **WHEN** the unfiltered options endpoint is called
+- **THEN** facet traversal MUST use the facet's ordered values and equality-constrained eligibility checks
+- **AND** adding duplicate visible rows MUST NOT cause each recursive step to rescan the entire live-row cohort
+
 #### Scenario: Soft-deleted rows stay excluded from skip-scanned facets
 
 - **GIVEN** request-log rows with `deleted_at` set
