@@ -60,7 +60,30 @@ class AccountsRepositoryPort(Protocol):
         blocked_at: int | None | object = ...,
     ) -> bool: ...
 
-    async def delete(self, account_id: str, *, delete_history: bool = False) -> bool: ...
+    async def update_status_if_current(
+        self,
+        account_id: str,
+        status: AccountStatus,
+        deactivation_reason: str | None = None,
+        reset_at: int | None = None,
+        blocked_at: int | None | object = ...,
+        *,
+        expected_status: AccountStatus,
+        expected_deactivation_reason: str | None = None,
+        expected_reset_at: int | None = None,
+        expected_blocked_at: int | None | object = ...,
+        expected_refresh_token_encrypted: bytes | None = None,
+    ) -> bool: ...
+
+    async def delete(
+        self,
+        account_id: str,
+        *,
+        delete_history: bool = False,
+        expected_status: AccountStatus | object = ...,
+        expected_deactivation_reason: str | None | object = ...,
+        expected_refresh_token_encrypted: bytes | None = None,
+    ) -> bool: ...
 
 
 class OauthServicePort(Protocol):
@@ -227,7 +250,13 @@ class MemberAuthHandoffService:
                         code="already_clean",
                         action=request.action,
                     )
-                if not await self._repository.delete(old_matches[0].id):
+                old_account = old_matches[0]
+                if not await self._repository.delete(
+                    old_account.id,
+                    expected_status=old_account.status,
+                    expected_deactivation_reason=old_account.deactivation_reason,
+                    expected_refresh_token_encrypted=old_account.refresh_token_encrypted,
+                ):
                     return MemberAuthReconciliationResponse(
                         accepted=False,
                         code="old_auth_delete_failed",
@@ -264,11 +293,16 @@ class MemberAuthHandoffService:
                         code="target_auth_quarantine_mismatch",
                         action=request.action,
                     )
-                if not await self._repository.update_status(
+                if not await self._repository.update_status_if_current(
                     target_account.id,
                     AccountStatus.ACTIVE,
                     None,
                     blocked_at=None,
+                    expected_status=target_account.status,
+                    expected_deactivation_reason=target_account.deactivation_reason,
+                    expected_reset_at=target_account.reset_at,
+                    expected_blocked_at=target_account.blocked_at,
+                    expected_refresh_token_encrypted=target_account.refresh_token_encrypted,
                 ):
                     return MemberAuthReconciliationResponse(
                         accepted=False,
@@ -568,11 +602,16 @@ class MemberAuthHandoffService:
                     if old_account.deactivation_reason != _QUARANTINE_REASON:
                         return self._fail_and_store(handoff, "old_auth_quarantine_mismatch")
                 elif old_account.status in _AUTHENTICATED_STATUSES:
-                    updated = await self._repository.update_status(
+                    updated = await self._repository.update_status_if_current(
                         old_account.id,
                         AccountStatus.PAUSED,
                         _QUARANTINE_REASON,
                         blocked_at=None,
+                        expected_status=old_account.status,
+                        expected_deactivation_reason=old_account.deactivation_reason,
+                        expected_reset_at=old_account.reset_at,
+                        expected_blocked_at=old_account.blocked_at,
+                        expected_refresh_token_encrypted=old_account.refresh_token_encrypted,
                     )
                     if not updated:
                         return self._fail_and_store(handoff, "old_auth_quarantine_failed")
@@ -812,7 +851,12 @@ class MemberAuthHandoffService:
                     ):
                         return self._fail_and_store(handoff, "old_auth_quarantine_mismatch")
                     await self._checkpoint(handoff)
-                    if not await self._repository.delete(old_account.id):
+                    if not await self._repository.delete(
+                        old_account.id,
+                        expected_status=old_account.status,
+                        expected_deactivation_reason=old_account.deactivation_reason,
+                        expected_refresh_token_encrypted=old_account.refresh_token_encrypted,
+                    ):
                         return self._fail_and_store(handoff, "old_auth_delete_failed")
                     handoff.state = "old_auth_deleted"
                     handoff.old_auth_deleted = True

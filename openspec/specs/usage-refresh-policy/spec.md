@@ -1921,6 +1921,31 @@ throttling and quota error codes MUST NOT request a refresh.
 - **THEN** no new refresh is requested
 - **AND** a failure after the window elapses requests a refresh again
 
+### Requirement: Zero-usage rotation confirmation executes as a distinct verified fetch
+
+When the first successful long-window usage observation reports zero remaining
+capacity and the rotation observer requests confirmation, the updater MUST run a
+second upstream usage fetch, await the same account-slot identity validation used
+by ordinary usage mutation, and submit the second verified observation to the
+rotation observer. The identity check MUST NOT be left as an un-awaited coroutine
+or otherwise cause the confirmation path to return before recording the second
+observation. A mismatched second payload MUST fail closed and MUST NOT confirm
+zero usage.
+
+#### Scenario: Distinct zero observation is confirmed
+
+- **GIVEN** a first successful usage fetch records zero remaining long-window capacity and requests confirmation
+- **WHEN** a second fetch returns another payload for the same account/workspace slot
+- **THEN** the updater awaits the slot-identity check and records the second observation
+- **AND** the observer may create its confirmed rotation evidence from those two distinct observations
+
+#### Scenario: Second fetch belongs to another slot
+
+- **GIVEN** a first zero observation requested confirmation
+- **WHEN** the second usage payload resolves to a conflicting workspace slot
+- **THEN** the identity validation is awaited and the second observation is discarded
+- **AND** no confirmed zero event is created from the mismatched payload
+
 #### Scenario: The pool reports usage exhaustion on the next selection
 
 - **GIVEN** the last selectable account's stream fails upstream with `usage_limit_reached`
@@ -1948,6 +1973,22 @@ throttling and quota error codes MUST NOT request a refresh.
 
 Permanent refresh credential or session errors MUST mark the account `reauth_required`. This requirement refines existing refresh-failure requirements: any instruction to remove that status from request routing, tear down affinity, or add a process-local unavailable overlay MUST defer to the canonical status matrix in `account-routing`. Proactive and background refresh MUST continue to skip known-bad refresh material.
 
+A usage request that started from an older account snapshot MUST NOT overwrite a
+newer credential replacement or account-state transition when its eventual
+client/session error arrives. Any usage-error downgrade to `reauth_required` or
+`deactivated` MUST use a compare-and-set bound to the status metadata and exact
+refresh-token ciphertext observed by that request. A CAS miss means another
+writer won the race and the late usage error is stale; it MUST leave the newer
+row untouched.
+
+The same credential boundary applies to usage-derived identity and plan metadata.
+A usage payload MAY update plan/workspace/seat metadata only while the stored
+refresh-token ciphertext still matches the credential that produced the payload.
+If a peer reauthenticates or imports a replacement credential before that
+metadata write lands, the compare-and-set MUST miss, the peer's newer metadata
+MUST remain authoritative, and the stale caller snapshot MUST be refreshed from
+storage rather than retaining the losing payload values.
+
 A separate upstream account-deactivation signal MUST continue to mark the account `deactivated` and apply existing hard-unavailable behavior.
 
 #### Scenario: Refresh failure separates access and refresh eligibility
@@ -1962,6 +2003,23 @@ A separate upstream account-deactivation signal MUST continue to mark the accoun
 - **WHEN** upstream reports that the account itself is deactivated
 - **THEN** the account becomes `deactivated`
 - **AND** it is removed from request routing and affinity
+
+#### Scenario: Late usage 401 loses to concurrent reauthentication
+
+- **GIVEN** usage refresh started with credential A for an active account
+- **AND** a peer reauthenticates the same local row and replaces its refresh token with credential B
+- **WHEN** the request made with credential A later returns a permanent session/authentication error
+- **THEN** the guarded usage-error status write misses credential B
+- **AND** the row remains on the peer's newer credential and status rather than being downgraded by the stale request
+
+#### Scenario: Late usage metadata loses to concurrent reauthentication
+
+- **GIVEN** usage refresh started with credential A and obtained plan/workspace metadata for that credential
+- **AND** a peer reauthenticates the same local row to credential B with newer plan/workspace/seat metadata
+- **WHEN** the old usage response attempts its metadata-only persistence
+- **THEN** the refresh-token compare-and-set misses credential B
+- **AND** credential B and its newer metadata remain paired on the row
+- **AND** the stale caller snapshot is reconciled to the winning stored metadata
 
 ### Requirement: Claimless forced refresh reconciles fresh account state before exchange
 

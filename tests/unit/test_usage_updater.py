@@ -924,6 +924,92 @@ def _route() -> ResolvedUpstreamRoute:
 
 
 @pytest.mark.asyncio
+async def test_zero_usage_confirmation_awaits_slot_check_and_records_second_observation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    account = _make_account("acc_zero_confirm", "workspace_zero_confirm")
+    payload = UsagePayload.model_validate(
+        {
+            "rate_limit": {
+                "primary_window": {
+                    "used_percent": 100.0,
+                    "reset_at": 1_800_000_000,
+                    "limit_window_seconds": 300 * 60,
+                },
+                "secondary_window": {
+                    "used_percent": 100.0,
+                    "reset_at": 1_800_000_000,
+                    "limit_window_seconds": 7 * 24 * 60 * 60,
+                },
+            }
+        }
+    )
+    fetch = AsyncMock(side_effect=[payload, payload])
+    observe = AsyncMock(side_effect=[True, False])
+    monkeypatch.setattr("app.modules.usage.updater.fetch_usage", fetch)
+    monkeypatch.setattr("app.modules.usage.updater.observe_successful_usage", observe)
+    monkeypatch.setattr("app.modules.usage.updater._resolve_upstream_route_for_account", AsyncMock(return_value=None))
+
+    updater = UsageUpdater(StubUsageRepository(return_rows=True), accounts_repo=StubAccountsRepository())
+    await updater._refresh_account(account, usage_account_id=account.chatgpt_account_id)
+
+    assert fetch.await_count == 2
+    assert observe.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_usage_metadata_sync_cannot_clobber_concurrent_reauth_metadata() -> None:
+    """Old usage metadata must lose when the credential changed after fetch start."""
+
+    encryptor = TokenEncryptor()
+    stale = _make_account("acc_metadata_reauth_race", "workspace_metadata_race", email="race@example.com")
+    stale.workspace_id = "workspace-old"
+    stale.workspace_label = "Old Workspace"
+    stale.seat_type = "team"
+    stale.plan_type = "plus"
+
+    stored = _make_account("acc_metadata_reauth_race", "workspace_metadata_race", email="race@example.com")
+    stored.access_token_encrypted = stale.access_token_encrypted
+    stored.refresh_token_encrypted = stale.refresh_token_encrypted
+    stored.id_token_encrypted = stale.id_token_encrypted
+    stored.workspace_id = "workspace-new"
+    stored.workspace_label = "Reauthed Workspace"
+    stored.seat_type = "business"
+    stored.plan_type = "pro"
+    # Peer reauth replaced the credential after the old usage fetch began.
+    stored.access_token_encrypted = encryptor.encrypt("peer-access")
+    stored.refresh_token_encrypted = encryptor.encrypt("peer-refresh")
+    stored.id_token_encrypted = encryptor.encrypt("peer-id")
+
+    accounts_repo = StubAccountsRepository()
+    accounts_repo.accounts_by_id[stored.id] = stored
+    updater = UsageUpdater(StubUsageRepository(), accounts_repo=accounts_repo)
+    old_payload = UsagePayload.model_validate(
+        {
+            "plan_type": "team",
+            "workspace_id": "workspace-old",
+            "workspace_label": "Stale Workspace",
+            "seat_type": "team",
+        }
+    )
+
+    updated = await updater._sync_identity_metadata(stale, old_payload)
+
+    assert updated is False
+    assert stored.plan_type == "pro"
+    assert stored.workspace_id == "workspace-new"
+    assert stored.workspace_label == "Reauthed Workspace"
+    assert stored.seat_type == "business"
+    assert encryptor.decrypt(stored.refresh_token_encrypted) == "peer-refresh"
+    # The caller snapshot is reconciled to the winner rather than left with the
+    # stale payload it tried to write.
+    assert stale.plan_type == "pro"
+    assert stale.workspace_id == "workspace-new"
+    assert stale.workspace_label == "Reauthed Workspace"
+    assert stale.seat_type == "business"
+
+
+@pytest.mark.asyncio
 async def test_usage_updater_passes_resolved_route_to_fetch_usage(monkeypatch: pytest.MonkeyPatch) -> None:
     account = _make_account("acc_route", "chatgpt_acc_route")
     repo = StubUsageRepository()
@@ -2903,6 +2989,10 @@ class StubAccountsRepository:
             or account.deactivation_reason != expected_deactivation_reason
             or account.reset_at != expected_reset_at
             or account.blocked_at != expected_blocked_at
+            or (
+                expected_refresh_token_encrypted is not None
+                and account.refresh_token_encrypted != expected_refresh_token_encrypted
+            )
         ):
             return False
         return await self.update_status(account_id, status, deactivation_reason, reset_at, blocked_at)
@@ -2935,6 +3025,13 @@ class StubAccountsRepository:
         if not isinstance(account_id, str):
             return True
         account = self.accounts_by_id.get(account_id)
+        expected_refresh_token_encrypted = kwargs.get("expected_refresh_token_encrypted")
+        if (
+            account is not None
+            and expected_refresh_token_encrypted is not None
+            and account.refresh_token_encrypted != expected_refresh_token_encrypted
+        ):
+            return False
         if account is not None:
             plan_type = kwargs.get("plan_type")
             email = kwargs.get("email")
@@ -3133,6 +3230,56 @@ async def test_usage_updater_marks_session_failures_as_reauth_required(
     assert "401" in update["deactivation_reason"]
     assert message_hint in update["deactivation_reason"]
     assert acc.status == AccountStatus.REAUTH_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_usage_updater_stale_session_failure_cannot_clobber_concurrent_reauth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A late 401 from old access-token material must lose to a peer reauth.
+
+    Usage refresh starts from the caller's stale account snapshot. While its
+    upstream request is in flight another replica can reauthenticate the same
+    row and replace the refresh token without changing ACTIVE status. The late
+    old-token session failure must be guarded by that refresh-token material;
+    an unconditional status write would knock the freshly repaired row back to
+    REAUTH_REQUIRED.
+    """
+
+    from app.core.clients.usage import UsageFetchError
+
+    stale = _make_account("acc_401_reauth_race", "workspace_401_reauth_race", email="race@example.com")
+    stored = _make_account("acc_401_reauth_race", "workspace_401_reauth_race", email="race@example.com")
+    stored.access_token_encrypted = stale.access_token_encrypted
+    stored.refresh_token_encrypted = stale.refresh_token_encrypted
+    stored.id_token_encrypted = stale.id_token_encrypted
+
+    usage_repo = StubUsageRepository()
+    accounts_repo = StubAccountsRepository()
+    accounts_repo.accounts_by_id[stored.id] = stored
+    updater = UsageUpdater(usage_repo, accounts_repo=accounts_repo)
+    encryptor = TokenEncryptor()
+
+    async def stale_fetch_then_peer_reauth(**_: Any) -> UsagePayload:
+        stored.access_token_encrypted = encryptor.encrypt("access-peer-reauth")
+        stored.refresh_token_encrypted = encryptor.encrypt("refresh-peer-reauth")
+        stored.id_token_encrypted = encryptor.encrypt("id-peer-reauth")
+        stored.status = AccountStatus.ACTIVE
+        stored.deactivation_reason = None
+        raise UsageFetchError(
+            401,
+            "Your authentication token has been invalidated. Please try signing in again.",
+            code="token_invalidated",
+        )
+
+    monkeypatch.setattr("app.modules.usage.updater.fetch_usage", stale_fetch_then_peer_reauth)
+
+    await updater.refresh_accounts([stale], latest_usage={})
+
+    assert stored.status == AccountStatus.ACTIVE
+    assert stored.deactivation_reason is None
+    assert encryptor.decrypt(stored.refresh_token_encrypted) == "refresh-peer-reauth"
+    assert accounts_repo.status_updates == []
 
 
 @pytest.mark.asyncio

@@ -60,6 +60,44 @@ async def test_list_accounts_refresh_existing_reloads_identity_map(db_setup):
 
 
 @pytest.mark.asyncio
+async def test_guarded_delete_refuses_concurrent_credential_replacement(db_setup):
+    del db_setup
+    original = _account("guarded_delete", chatgpt_account_id="chatgpt_guarded_delete")
+    original.status = AccountStatus.PAUSED
+    original.deactivation_reason = "member_auth_handoff_quarantine"
+    old_refresh = original.refresh_token_encrypted
+
+    async with SessionLocal() as session:
+        await AccountsRepository(session).upsert(original)
+
+    replacement = _account("replacement", chatgpt_account_id="chatgpt_guarded_delete")
+    replacement.email = original.email
+    replacement.access_token_encrypted = b"access-new"
+    replacement.refresh_token_encrypted = b"refresh-new"
+    replacement.id_token_encrypted = b"id-new"
+    replacement.status = AccountStatus.ACTIVE
+    replacement.deactivation_reason = None
+    async with SessionLocal() as session:
+        saved = await AccountsRepository(session).replace_reauthorized("guarded_delete", replacement)
+        assert saved is not None
+        assert saved.status == AccountStatus.ACTIVE
+        assert saved.refresh_token_encrypted == b"refresh-new"
+
+    async with SessionLocal() as session:
+        deleted = await AccountsRepository(session).delete(
+            "guarded_delete",
+            expected_status=AccountStatus.PAUSED,
+            expected_deactivation_reason="member_auth_handoff_quarantine",
+            expected_refresh_token_encrypted=old_refresh,
+        )
+        assert deleted is False
+        current = await AccountsRepository(session).get_by_id("guarded_delete")
+        assert current is not None
+        assert current.status == AccountStatus.ACTIVE
+        assert current.refresh_token_encrypted == b"refresh-new"
+
+
+@pytest.mark.asyncio
 async def test_upsert_account_slot_preserves_emails_sharing_workspace_identity(db_setup):
     del db_setup
     shared_chatgpt_id = "chatgpt_workspace_shared"

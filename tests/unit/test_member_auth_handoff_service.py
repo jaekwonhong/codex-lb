@@ -79,7 +79,55 @@ class FakeRepository:
             current.deactivation_reason = deactivation_reason
         return True
 
-    async def delete(self, account_id: str, *, delete_history: bool = False) -> bool:
+    async def update_status_if_current(
+        self,
+        account_id: str,
+        status: AccountStatus,
+        deactivation_reason: str | None = None,
+        reset_at: int | None = None,
+        blocked_at: int | None | object = ...,
+        *,
+        expected_status: AccountStatus,
+        expected_deactivation_reason: str | None = None,
+        expected_reset_at: int | None = None,
+        expected_blocked_at: int | None | object = ...,
+        expected_refresh_token_encrypted: bytes | str | None = None,
+    ) -> bool:
+        current = next((account for account in self.accounts if account.id == account_id), None)
+        if (
+            current is None
+            or current.status != expected_status
+            or current.deactivation_reason != expected_deactivation_reason
+            or current.reset_at != expected_reset_at
+            or (expected_blocked_at is not ... and current.blocked_at != expected_blocked_at)
+            or (
+                expected_refresh_token_encrypted is not None
+                and current.refresh_token_encrypted != expected_refresh_token_encrypted
+            )
+        ):
+            return False
+        return await self.update_status(account_id, status, deactivation_reason, reset_at, blocked_at)
+
+    async def delete(
+        self,
+        account_id: str,
+        *,
+        delete_history: bool = False,
+        expected_status: AccountStatus | None = None,
+        expected_deactivation_reason: str | None = None,
+        expected_refresh_token_encrypted: bytes | str | None = None,
+    ) -> bool:
+        current = next((account for account in self.accounts if account.id == account_id), None)
+        if expected_status is not None and (
+            current is None
+            or current.status != expected_status
+            or current.deactivation_reason != expected_deactivation_reason
+            or (
+                expected_refresh_token_encrypted is not None
+                and current.refresh_token_encrypted != expected_refresh_token_encrypted
+            )
+        ):
+            return False
         self.deleted.append(account_id)
         return True
 
@@ -591,6 +639,50 @@ async def test_prepare_quarantines_exact_removed_auth_before_device_oauth(monkey
 
 
 @pytest.mark.asyncio
+async def test_prepare_stale_quarantine_cannot_overwrite_newer_reauth_required(monkeypatch) -> None:
+    class RacingRepository(FakeRepository):
+        async def update_status(
+            self,
+            account_id: str,
+            status: AccountStatus,
+            deactivation_reason: str | None = None,
+            reset_at: int | None = None,
+            blocked_at: int | None | object = ...,
+        ) -> bool:
+            current = next(item for item in self.accounts if item.id == account_id)
+            current.status = AccountStatus.REAUTH_REQUIRED
+            current.deactivation_reason = "Refresh token was reused - re-login required"
+            return await super().update_status(account_id, status, deactivation_reason, reset_at, blocked_at)
+
+        async def update_status_if_current(self, *args, **kwargs) -> bool:
+            account_id = args[0]
+            current = next(item for item in self.accounts if item.id == account_id)
+            current.status = AccountStatus.REAUTH_REQUIRED
+            current.deactivation_reason = "Refresh token was reused - re-login required"
+            return await super().update_status_if_current(*args, **kwargs)
+
+    request = prepare_request()
+    old = account("old-local", request.removed_email or "", request.workspace_account_id, AccountStatus.ACTIVE)
+    repository = RacingRepository([old])
+    oauth = FakeOauth()
+    monkeypatch.setattr("app.modules.member_auth_handoff.service.mark_account_routing_unavailable", lambda _id: None)
+    monkeypatch.setattr(
+        "app.modules.member_auth_handoff.service.get_account_selection_cache",
+        lambda: type("Cache", (), {"invalidate": lambda self: None})(),
+    )
+    monkeypatch.setattr("app.modules.member_auth_handoff.service.propagate_account_routing_change", _noop)
+    service = MemberAuthHandoffService(repository, oauth, MemberAuthHandoffStore())
+
+    result = await service.prepare(request)
+
+    assert result.state == "failed"
+    assert result.error_code == "old_auth_quarantine_failed"
+    assert old.status == AccountStatus.REAUTH_REQUIRED
+    assert old.deactivation_reason == "Refresh token was reused - re-login required"
+    assert oauth.requests == []
+
+
+@pytest.mark.asyncio
 async def test_prepare_blocks_device_oauth_when_removed_auth_quarantine_fails(monkeypatch) -> None:
     class QuarantineFailingRepository(FakeRepository):
         async def update_status(
@@ -938,6 +1030,45 @@ async def test_removed_auth_is_deleted_only_after_verified_oauth_success(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_oauth_success_stale_cleanup_cannot_delete_concurrently_reauthenticated_old_row(monkeypatch) -> None:
+    request = prepare_request()
+
+    class DeleteRaceRepository(FakeRepository):
+        async def delete(self, account_id: str, **kwargs) -> bool:
+            current = next(item for item in self.accounts if item.id == account_id)
+            current.status = AccountStatus.ACTIVE
+            current.deactivation_reason = None
+            current.refresh_token_encrypted = "peer-reauth-refresh"
+            return await super().delete(account_id, **kwargs)
+
+    old = account("old-local", request.removed_email or "", request.workspace_account_id, AccountStatus.ACTIVE)
+    repository = DeleteRaceRepository([old])
+    oauth = FakeOauth()
+    monkeypatch.setattr("app.modules.member_auth_handoff.service.mark_account_routing_unavailable", lambda _id: None)
+    monkeypatch.setattr(
+        "app.modules.member_auth_handoff.service.get_account_selection_cache",
+        lambda: type("Cache", (), {"invalidate": lambda self: None})(),
+    )
+    monkeypatch.setattr("app.modules.member_auth_handoff.service.propagate_account_routing_change", _noop)
+    service = MemberAuthHandoffService(repository, oauth, MemberAuthHandoffStore())
+    prepared = await service.prepare(request)
+    assert prepared.state == "device_code_issued"
+
+    oauth.status = "success"
+    repository.accounts.append(
+        account("target-local", request.target_email, request.workspace_account_id, AccountStatus.ACTIVE)
+    )
+    completed = await service.advance(prepared.handoff_id)
+
+    assert completed is not None
+    assert completed.state == "failed"
+    assert completed.error_code == "old_auth_delete_failed"
+    assert old.status == AccountStatus.ACTIVE
+    assert old.refresh_token_encrypted == "peer-reauth-refresh"
+    assert repository.deleted == []
+
+
+@pytest.mark.asyncio
 async def test_status_deletes_inferred_quarantined_auth_after_oauth_success(monkeypatch) -> None:
     request = prepare_request().model_copy(update={"removed_email": None, "removed_user_id": None})
     repository = FakeRepository(
@@ -1051,6 +1182,60 @@ async def test_reconcile_unpause_reactivates_only_exact_handoff_quarantined_targ
     assert result.accepted is True
     assert result.code == "target_auth_unpaused"
     assert repository.status_updates == [("target-local", AccountStatus.ACTIVE, None)]
+
+
+@pytest.mark.asyncio
+async def test_reconcile_unpause_stale_snapshot_cannot_revive_reauth_required_target(monkeypatch) -> None:
+    request = prepare_request()
+
+    class RacingRepository(FakeRepository):
+        async def update_status(
+            self,
+            account_id: str,
+            status: AccountStatus,
+            deactivation_reason: str | None = None,
+            reset_at: int | None = None,
+            blocked_at: int | None | object = ...,
+        ) -> bool:
+            current = next(item for item in self.accounts if item.id == account_id)
+            current.status = AccountStatus.REAUTH_REQUIRED
+            current.deactivation_reason = "Refresh token was reused - re-login required"
+            return await super().update_status(account_id, status, deactivation_reason, reset_at, blocked_at)
+
+        async def update_status_if_current(self, *args, **kwargs) -> bool:
+            account_id = args[0]
+            current = next(item for item in self.accounts if item.id == account_id)
+            current.status = AccountStatus.REAUTH_REQUIRED
+            current.deactivation_reason = "Refresh token was reused - re-login required"
+            return await super().update_status_if_current(*args, **kwargs)
+
+    target = account("target-local", request.target_email, request.workspace_account_id, AccountStatus.PAUSED)
+    target.deactivation_reason = "member_auth_handoff_quarantine"
+    repository = RacingRepository([target])
+    monkeypatch.setattr(
+        "app.modules.member_auth_handoff.service.get_account_selection_cache",
+        lambda: type("Cache", (), {"invalidate": lambda self: None})(),
+    )
+    monkeypatch.setattr("app.modules.member_auth_handoff.service.propagate_account_routing_change", _noop)
+    service = MemberAuthHandoffService(repository, FakeOauth(), MemberAuthHandoffStore())
+
+    result = await service.reconcile_auth(
+        MemberAuthReconciliationRequest(
+            action="unpause_target_auth",
+            workspace_id="cdp-1",
+            preset_id=request.preset_id,
+            workspace_account_id=request.workspace_account_id,
+            target_email=request.target_email,
+            target_user_id=request.target_user_id,
+            membership_state="active",
+            catalog_fingerprint=request.catalog_fingerprint,
+        )
+    )
+
+    assert result.accepted is False
+    assert result.code == "target_auth_unpause_failed"
+    assert target.status == AccountStatus.REAUTH_REQUIRED
+    assert target.deactivation_reason == "Refresh token was reused - re-login required"
 
 
 @pytest.mark.asyncio

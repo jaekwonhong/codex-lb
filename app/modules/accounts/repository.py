@@ -1193,6 +1193,9 @@ class AccountsRepository:
         *,
         delete_history: bool = False,
         only_pending: bool = False,
+        expected_status: AccountStatus | object = _UNSET,
+        expected_deactivation_reason: str | None | object = _UNSET,
+        expected_refresh_token_encrypted: bytes | None = None,
     ) -> bool:
         async with sqlite_writer_section():
             if self._dialect_name() == "postgresql":
@@ -1208,6 +1211,8 @@ class AccountsRepository:
                         locked_account.access_token_encrypted,
                         locked_account.refresh_token_encrypted,
                         locked_account.id_token_encrypted,
+                        locked_account.status,
+                        locked_account.deactivation_reason,
                     )
                 )
             else:
@@ -1219,9 +1224,26 @@ class AccountsRepository:
                             Account.access_token_encrypted,
                             Account.refresh_token_encrypted,
                             Account.id_token_encrypted,
+                            Account.status,
+                            Account.deactivation_reason,
                         ).where(Account.id == account_id)
                     )
                 ).first()
+            if pending_state is None:
+                await self._session.rollback()
+                return False
+            if expected_status is not _UNSET and pending_state[5] != expected_status:
+                await self._session.rollback()
+                return False
+            if expected_deactivation_reason is not _UNSET and pending_state[6] != expected_deactivation_reason:
+                await self._session.rollback()
+                return False
+            if expected_refresh_token_encrypted is not None and pending_state[3] != expected_refresh_token_encrypted:
+                # A concurrent re-auth/import replaced the credential after the
+                # caller observed the row. Never let a stale cleanup delete that
+                # freshly repaired credential.
+                await self._session.rollback()
+                return False
             if only_pending:
                 # Background finalization: a credential replacement
                 # (re-import/reauth) that cleared the marker supersedes the
@@ -1230,7 +1252,7 @@ class AccountsRepository:
                 # On PostgreSQL the identity-membership row lock held above
                 # keeps the marker stable through this transaction; on SQLite
                 # the writer section serializes all writers.
-                if pending_state is None or pending_state[0] is None:
+                if pending_state[0] is None:
                     await self._session.rollback()
                     return False
                 if credentials_replaced_since_wipe(pending_state[2], pending_state[3], pending_state[4]):
@@ -1385,6 +1407,7 @@ class AccountsRepository:
         workspace_label: str | None = None,
         seat_type: str | None = None,
         last_refresh: datetime | None = None,
+        expected_refresh_token_encrypted: bytes | None = None,
     ) -> bool:
         """Update non-token account metadata (identity/plan/workspace fields).
 
@@ -1419,9 +1442,10 @@ class AccountsRepository:
             if not values:
                 existing = await self._session.get(Account, account_id)
                 return existing is not None
-            result = await self._session.execute(
-                update(Account).where(Account.id == account_id).values(**values).returning(Account.id)
-            )
+            stmt = update(Account).where(Account.id == account_id)
+            if expected_refresh_token_encrypted is not None:
+                stmt = stmt.where(Account.refresh_token_encrypted == expected_refresh_token_encrypted)
+            result = await self._session.execute(stmt.values(**values).returning(Account.id))
             await self._session.commit()
             return result.scalar_one_or_none() is not None
 

@@ -104,6 +104,7 @@ class AccountsRepositoryPort(Protocol):
         workspace_label: str | None = None,
         seat_type: str | None = None,
         last_refresh: datetime | None = None,
+        expected_refresh_token_encrypted: bytes | None = None,
     ) -> bool: ...
 
     async def workspace_slot_taken(

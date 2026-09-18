@@ -954,7 +954,7 @@ class UsageUpdater:
             )
         except (UsageFetchError, UpstreamProxyRouteError):
             return
-        if _payload_mismatches_account_slot(account, payload) or payload.rate_limit is None:
+        if await _payload_mismatches_account_slot(account, payload) or payload.rate_limit is None:
             return
         windows = usage_core.normalize_rate_limit_windows(
             payload.rate_limit.primary_window,
@@ -987,7 +987,25 @@ class UsageUpdater:
             exc.message,
             get_request_id(),
         )
-        await self._auth_manager._repo.update_status(account.id, status, reason)
+        repo = cast(AccountsRepositoryWithStatusComparePort, self._auth_manager._repo)
+        updated = await repo.update_status_if_current(
+            account.id,
+            status,
+            reason,
+            account.reset_at,
+            blocked_at=account.blocked_at,
+            expected_status=account.status,
+            expected_deactivation_reason=account.deactivation_reason,
+            expected_reset_at=account.reset_at,
+            expected_blocked_at=account.blocked_at,
+            expected_refresh_token_encrypted=account.refresh_token_encrypted,
+        )
+        if not updated:
+            # A concurrent re-auth/import or another status transition won the
+            # race after this usage request started. The late client error was
+            # produced by the old request snapshot and has no authority to
+            # overwrite that newer row.
+            return
         account.status = status
         account.deactivation_reason = reason
         if status == AccountStatus.DEACTIVATED:
@@ -1023,27 +1041,35 @@ class UsageUpdater:
         ):
             return True
 
+        if not self._auth_manager:
+            account.plan_type = next_plan_type
+            account.workspace_id = next_workspace_id
+            account.workspace_label = next_workspace_label
+            account.seat_type = next_seat_type
+            return True
+
+        # Identity/plan/workspace sync only, but still bind it to the exact
+        # credential that produced this usage response. A peer reauth can replace
+        # both the token and seat/workspace metadata while this request is in
+        # flight; an unguarded metadata-only write would preserve the peer token
+        # yet pair it with stale metadata from the old credential.
+        updated = await self._auth_manager._repo.update_account_metadata(
+            account.id,
+            plan_type=next_plan_type,
+            email=account.email,
+            chatgpt_account_id=account.chatgpt_account_id,
+            workspace_id=next_workspace_id,
+            workspace_label=next_workspace_label,
+            seat_type=next_seat_type,
+            expected_refresh_token_encrypted=account.refresh_token_encrypted,
+        )
+        if not updated:
+            await self._sync_account_from_repo(account)
+            return False
         account.plan_type = next_plan_type
         account.workspace_id = next_workspace_id
         account.workspace_label = next_workspace_label
         account.seat_type = next_seat_type
-        if not self._auth_manager:
-            return True
-
-        # Identity/plan/workspace sync only. This runs against a stale in-memory
-        # ``account`` snapshot taken well before the write, so it MUST route
-        # through the metadata-only writer, which structurally cannot touch
-        # token ciphertext. Persisting token material from this snapshot would
-        # clobber a peer replica's concurrent refresh-token rotation.
-        await self._auth_manager._repo.update_account_metadata(
-            account.id,
-            plan_type=account.plan_type,
-            email=account.email,
-            chatgpt_account_id=account.chatgpt_account_id,
-            workspace_id=account.workspace_id,
-            workspace_label=account.workspace_label,
-            seat_type=account.seat_type,
-        )
         return True
 
     async def _recover_quota_status_from_usage(

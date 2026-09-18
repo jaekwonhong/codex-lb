@@ -28,11 +28,31 @@ The frontend SHALL NOT authorize transitions from a local cached phase.
 Preparing auth SHALL quarantine the outgoing auth rather than delete it before
 the incoming auth is verified. A fresh recovery request SHALL NOT silently
 supersede an unresolved handoff.
+Account-row mutations performed from an observed handoff snapshot SHALL remain
+conditional on that exact snapshot. Quarantine and unpause writes MUST use a
+compare-and-set over the observed status/reason/reset/block/credential material,
+and cleanup deletion MUST verify that the quarantined row still has the observed
+status, quarantine reason, and refresh-token material immediately before deletion.
+A concurrent reauthentication/import or permanent auth transition therefore
+supersedes the stale handoff mutation instead of being overwritten or deleted.
 
 #### Scenario: Two browsers attempt the same transition
 - **WHEN** both submit commands for one revision
 - **THEN** at most one command crosses an external mutation boundary
 - **AND** the other observes a conflict or a stored receipt
+
+#### Scenario: Concurrent auth repair supersedes stale handoff cleanup
+- **GIVEN** a handoff observed an outgoing row as quarantined under credential A
+- **AND** another actor reauthenticates that same local row to credential B before cleanup deletion
+- **WHEN** the handoff tries to delete the old auth using its retained snapshot
+- **THEN** the guarded delete does not remove credential B
+- **AND** the handoff remains failed or attention-required rather than claiming cleanup completed
+
+#### Scenario: Concurrent permanent failure supersedes stale unpause
+- **GIVEN** reconciliation observed the exact target row as handoff-quarantined
+- **AND** the row becomes `reauth_required` before the unpause write lands
+- **WHEN** reconciliation tries to restore it to active
+- **THEN** the compare-and-set misses and the `reauth_required` state remains authoritative
 
 ### Requirement: Companion durable identity and separated responsibilities
 Companion SHALL retain client-flow identity and operation receipts before external

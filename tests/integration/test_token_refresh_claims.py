@@ -1034,6 +1034,48 @@ async def test_update_account_metadata_cannot_touch_token_material(db_setup):
 
 
 @pytest.mark.asyncio
+async def test_update_account_metadata_guard_rejects_peer_rotation(db_setup):
+    account_id = "acc_metadata_guard"
+    await _create_account(account_id)
+    encryptor = TokenEncryptor()
+
+    async with SessionLocal() as stale_session:
+        stale_repo = AccountsRepository(stale_session)
+        stale = await stale_repo.get_by_id(account_id)
+        assert stale is not None
+        old_ciphertext = stale.refresh_token_encrypted
+
+        async with SessionLocal() as peer_session:
+            peer_repo = AccountsRepository(peer_session)
+            rotated = await peer_repo.rotate_tokens(
+                account_id,
+                access_token_encrypted=encryptor.encrypt("peer-access"),
+                refresh_token_encrypted=encryptor.encrypt("peer-refresh"),
+                id_token_encrypted=encryptor.encrypt("peer-id"),
+                last_refresh=utcnow(),
+                expected_refresh_token_encrypted=old_ciphertext,
+                plan_type="pro",
+                workspace_label="Peer Workspace",
+            )
+            assert rotated is True
+
+        applied = await stale_repo.update_account_metadata(
+            account_id,
+            plan_type="team",
+            workspace_label="Stale Workspace",
+            expected_refresh_token_encrypted=old_ciphertext,
+        )
+        assert applied is False
+
+    async with SessionLocal() as session:
+        current = await AccountsRepository(session).get_by_id(account_id)
+        assert current is not None
+        assert current.plan_type == "pro"
+        assert current.workspace_label == "Peer Workspace"
+        assert encryptor.decrypt(current.refresh_token_encrypted) == "peer-refresh"
+
+
+@pytest.mark.asyncio
 async def test_update_status_if_current_rejects_stale_refresh_token_material(db_setup):
     """The status CAS must also be conditioned on the refresh-token ciphertext
     so a permanent-failure downgrade cannot land over a concurrent rotation."""
