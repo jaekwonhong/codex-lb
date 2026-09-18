@@ -30,6 +30,7 @@ class VerificationResult:
     contract: str = CONTRACT
     responses_guard_call_count: int = 0
     websocket_source_guard_call_count: int = 0
+    dgx_responses_payload_call_count: int = 0
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -38,6 +39,7 @@ class VerificationResult:
             "root": self.root,
             "responses_guard_call_count": self.responses_guard_call_count,
             "websocket_source_guard_call_count": self.websocket_source_guard_call_count,
+            "dgx_responses_payload_call_count": self.dgx_responses_payload_call_count,
         }
 
 
@@ -154,6 +156,7 @@ def verify(root: Path) -> VerificationResult:
     root = root.resolve()
     repository = _parse(root, "app/modules/model_sources/repository.py")
     selection = _parse(root, "app/modules/model_sources/selection.py")
+    forwarding = _parse(root, "app/modules/model_sources/forwarding.py")
     proxy_api = _parse(root, "app/modules/proxy/api.py")
     websocket_mixin = _parse(root, "app/modules/proxy/_service/websocket/mixin.py")
 
@@ -176,6 +179,14 @@ def verify(root: Path) -> VerificationResult:
         raise VerificationError("source-only guard does not positively query assigned-source model ownership")
     if not _has_empty_assignment_fail_closed(helper):
         raise VerificationError("source-only guard lost the dangling empty-assignment fail-closed boundary")
+
+    websocket_helper = _find_top_level_function(selection, "responses_model_is_source_owned")
+    if not isinstance(websocket_helper, ast.AsyncFunctionDef):
+        raise VerificationError("responses_model_is_source_owned() must remain an async WebSocket provider guard")
+    if not _awaits_call(websocket_helper, "source_scoped_model_requires_source"):
+        raise VerificationError(
+            "WebSocket provider guard does not preserve the dangling source-scope fail-closed boundary"
+        )
 
     parents = _parent_map(proxy_api)
     guard_calls = list(_iter_guard_calls(proxy_api))
@@ -206,10 +217,38 @@ def verify(root: Path) -> VerificationResult:
         if not isinstance(websocket_parents.get(call), ast.Await):
             raise VerificationError("WebSocket source-owned provider guard must await source resolution")
 
+    dgx_payload_helper = _find_top_level_function(forwarding, "_dgx_responses_payload")
+    if dgx_payload_helper is None:
+        raise VerificationError("DGX Responses encrypted-reasoning scrub helper is missing")
+    helper_literals = {
+        child.value
+        for child in ast.walk(dgx_payload_helper)
+        if isinstance(child, ast.Constant) and isinstance(child.value, str)
+    }
+    for required_literal in (
+        "src_69bc4887d69740979f6a0beaca37eefb",
+        "qwen3.8-flash-next",
+        "encrypted_content",
+    ):
+        if required_literal not in helper_literals:
+            raise VerificationError(
+                f"DGX Responses payload scrub lost required qualified marker: {required_literal}"
+            )
+    dgx_call_count = 0
+    for function_name in ("forward_responses", "stream_responses"):
+        forwarder = _find_top_level_function(forwarding, function_name)
+        if not isinstance(forwarder, ast.AsyncFunctionDef):
+            raise VerificationError(f"DGX Responses qualification requires async {function_name}()")
+        calls = _calls(forwarder, "_dgx_responses_payload")
+        if not calls:
+            raise VerificationError(f"{function_name}() does not apply the qualified DGX Responses payload scrub")
+        dgx_call_count += len(calls)
+
     return VerificationResult(
         root=str(root),
         responses_guard_call_count=len(guard_calls),
         websocket_source_guard_call_count=len(websocket_guard_calls),
+        dgx_responses_payload_call_count=dgx_call_count,
     )
 
 
@@ -231,7 +270,8 @@ def main() -> int:
         print(
             f"beta patch packet verification passed: contract={result.contract} "
             f"responses_guard_call_count={result.responses_guard_call_count} "
-            f"websocket_source_guard_call_count={result.websocket_source_guard_call_count}"
+            f"websocket_source_guard_call_count={result.websocket_source_guard_call_count} "
+            f"dgx_responses_payload_call_count={result.dgx_responses_payload_call_count}"
         )
     return 0
 

@@ -125,6 +125,7 @@ def test_validate_container_configuration_binds_image_source_tree_and_restart(mo
         (lambda v: v["Config"]["Labels"].update({"codex-lb.source-tree": "1" * 40}), "source-tree"),
         (lambda v: v["HostConfig"]["RestartPolicy"].update(Name="unless-stopped"), "restart=no"),
         (lambda v: v["HostConfig"]["RestartPolicy"].update(MaximumRetryCount=1), "restart=no"),
+        (lambda v: v.update(Mounts=[]), "exactly one gate runtime mount"),
     ):
         broken = _inspect(identity, _token())
         mutate(broken)

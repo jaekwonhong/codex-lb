@@ -14,12 +14,14 @@ def _write_tree(
     selection: str,
     proxy_api: str,
     websocket_mixin: str | None = None,
+    forwarding: str | None = None,
 ) -> None:
     files = {
         "app/modules/model_sources/repository.py": repository,
         "app/modules/model_sources/selection.py": selection,
         "app/modules/proxy/api.py": proxy_api,
         "app/modules/proxy/_service/websocket/mixin.py": websocket_mixin or _good_websocket_mixin(),
+        "app/modules/model_sources/forwarding.py": forwarding or _good_forwarding(),
     }
     for relative, text in files.items():
         path = root / relative
@@ -47,6 +49,9 @@ async def source_scoped_model_requires_source(model, api_key, *, raw_model=None)
     if await repository.assigned_source_has_model(model, allowed_source_ids=assigned_source_ids):
         return True
     return False
+
+async def responses_model_is_source_owned(model, api_key, *, raw_model=None):
+    return await source_scoped_model_requires_source(model, api_key, raw_model=raw_model)
 """
 
 
@@ -74,6 +79,23 @@ async def _connect_proxy_websocket():
 """
 
 
+def _good_forwarding() -> str:
+    return """
+def _dgx_responses_payload(source, payload):
+    if source.id != "src_69bc4887d69740979f6a0beaca37eefb" or payload.get("model") != "qwen3.8-flash-next":
+        return payload
+    return {key: value for key, value in payload.items() if key != "encrypted_content"}
+
+async def forward_responses(source, payload):
+    payload = _dgx_responses_payload(source, payload)
+    return payload
+
+async def stream_responses(source, payload):
+    payload = _dgx_responses_payload(source, payload)
+    return payload
+"""
+
+
 def test_verify_accepts_ownership_aware_packet_contract(tmp_path: Path) -> None:
     _write_tree(
         tmp_path,
@@ -87,6 +109,7 @@ def test_verify_accepts_ownership_aware_packet_contract(tmp_path: Path) -> None:
     assert result.contract == CONTRACT
     assert result.responses_guard_call_count == 2
     assert result.websocket_source_guard_call_count == 2
+    assert result.dgx_responses_payload_call_count == 2
 
 
 def test_verify_rejects_historical_registry_only_sync_helper(tmp_path: Path) -> None:
@@ -160,6 +183,22 @@ async def proxy_responses_websocket():
         verify(tmp_path)
 
 
+def test_verify_rejects_websocket_helper_without_dangling_scope_boundary(tmp_path: Path) -> None:
+    selection = _good_selection().replace(
+        "return await source_scoped_model_requires_source(model, api_key, raw_model=raw_model)",
+        "return False",
+    )
+    _write_tree(
+        tmp_path,
+        repository=_good_repository(),
+        selection=selection,
+        proxy_api=_good_proxy_api(),
+    )
+
+    with pytest.raises(VerificationError, match="dangling source-scope fail-closed boundary"):
+        verify(tmp_path)
+
+
 def test_verify_rejects_unawaited_websocket_source_owned_guard(tmp_path: Path) -> None:
     _write_tree(
         tmp_path,
@@ -178,4 +217,23 @@ async def _connect_proxy_websocket():
     )
 
     with pytest.raises(VerificationError, match="must await source resolution"):
+        verify(tmp_path)
+
+
+def test_verify_rejects_missing_dgx_responses_payload_scrub(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        repository=_good_repository(),
+        selection=_good_selection(),
+        proxy_api=_good_proxy_api(),
+        forwarding="""
+async def forward_responses(source, payload):
+    return payload
+
+async def stream_responses(source, payload):
+    return payload
+""",
+    )
+
+    with pytest.raises(VerificationError, match="encrypted-reasoning scrub helper is missing"):
         verify(tmp_path)

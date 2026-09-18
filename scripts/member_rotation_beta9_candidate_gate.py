@@ -272,6 +272,7 @@ def validate_container_configuration(
         restart == {"Name": "no", "MaximumRetryCount": 0},
         "candidate must remain exact restart=no while gated",
     )
+    _gate_mount_identity(view, label="candidate")
 
     labels = config.get("Labels") or {}
     require(isinstance(labels, dict), "candidate labels are malformed")
