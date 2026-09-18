@@ -2381,6 +2381,56 @@ async def test_usage_refresh_confirms_free_downgrade_without_workspace_on_second
 
 
 @pytest.mark.asyncio
+async def test_workspace_less_downgrade_mutations_use_the_fetch_credential_fence(monkeypatch) -> None:
+    """Free observe, confirming cleanup, and paid cleanup share one credential fence."""
+    account = _make_account("acc_plan_fence", "upstream_user", email="same@example.com")
+    account.workspace_id = None
+    account.plan_type = "plus"
+    expected_refresh_token_encrypted = account.refresh_token_encrypted
+    calls: list[tuple[str, bytes]] = []
+
+    class GuardedStore:
+        async def observe_if_current(
+            self,
+            account_id: str,
+            *,
+            expected_refresh_token_encrypted: bytes,
+            credential_fingerprint: str,
+            observed_plan_type: str,
+        ) -> int | None:
+            del account_id, credential_fingerprint, observed_plan_type
+            calls.append(("observe", expected_refresh_token_encrypted))
+            return 2
+
+        async def clear_if_current(
+            self,
+            account_id: str,
+            *,
+            expected_refresh_token_encrypted: bytes,
+        ) -> bool:
+            del account_id
+            calls.append(("clear", expected_refresh_token_encrypted))
+            # Model reauthentication landing between the confirming observation
+            # and its cleanup. The old confirmer must not proceed.
+            return len(calls) > 2
+
+    monkeypatch.setattr(usage_updater_module, "_plan_downgrade_observation_store", lambda: GuardedStore())
+
+    assert not await usage_updater_module._free_plan_downgrade_is_confirmed(
+        account,
+        stored_plan_type="plus",
+        normalized_payload_plan_type="free",
+    )
+    await usage_updater_module._clear_workspace_less_free_plan_observations(account)
+
+    assert calls == [
+        ("observe", expected_refresh_token_encrypted),
+        ("clear", expected_refresh_token_encrypted),
+        ("clear", expected_refresh_token_encrypted),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_usage_refresh_paid_payload_clears_pending_free_downgrade(monkeypatch) -> None:
     """A transient ``free`` blip must not accumulate toward a downgrade once the
     account reports a recognized paid plan again."""

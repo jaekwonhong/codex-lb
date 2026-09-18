@@ -16,7 +16,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 
 import pytest
-from sqlalchemy import event, select
+from sqlalchemy import delete, event, select
 from sqlalchemy.engine import Engine
 
 from app.core.crypto import TokenEncryptor
@@ -54,6 +54,23 @@ async def _seed_account(account_id: str, email: str) -> None:
     async with SessionLocal() as session:
         session.add(_make_account(account_id, email))
         await session.commit()
+
+
+async def _refresh_token_ciphertext(account_id: str) -> bytes:
+    async with SessionLocal() as session:
+        account = await session.get(Account, account_id)
+        assert account is not None
+        return account.refresh_token_encrypted
+
+
+async def _replace_refresh_token(account_id: str, plaintext: str) -> bytes:
+    replacement = TokenEncryptor().encrypt(plaintext)
+    async with SessionLocal() as session:
+        account = await session.get(Account, account_id)
+        assert account is not None
+        account.refresh_token_encrypted = replacement
+        await session.commit()
+    return replacement
 
 
 @contextmanager
@@ -134,16 +151,20 @@ async def test_concurrent_observations_advance_the_count_through_the_database(db
     """
     await _seed_account("acc_store_concurrent", "store-concurrent@example.com")
     store = PlanDowngradeObservationStore()
+    expected_refresh_token_encrypted = await _refresh_token_ciphertext("acc_store_concurrent")
     concurrency = 5
     barrier = asyncio.Barrier(concurrency)
 
     async def observe_after_barrier() -> int:
         await barrier.wait()
-        return await store.observe(
+        observations = await store.observe_if_current(
             "acc_store_concurrent",
+            expected_refresh_token_encrypted=expected_refresh_token_encrypted,
             credential_fingerprint="fp-shared",
             observed_plan_type="free",
         )
+        assert observations is not None
+        return observations
 
     results = await asyncio.gather(*(observe_after_barrier() for _ in range(concurrency)))
 
@@ -151,6 +172,139 @@ async def test_concurrent_observations_advance_the_count_through_the_database(db
     recorded = await store.get("acc_store_concurrent")
     assert recorded is not None
     assert recorded.observations == concurrency
+
+
+@pytest.mark.asyncio
+async def test_stale_free_after_credential_replacement_cannot_seed_new_generation(db_setup):
+    """A late free response from the old credential must miss after replacement."""
+    account_id = "acc_store_stale_free"
+    await _seed_account(account_id, "store-stale-free@example.com")
+    stale_refresh_token_encrypted = await _refresh_token_ciphertext(account_id)
+    current_refresh_token_encrypted = await _replace_refresh_token(account_id, "refresh-replaced")
+    store = PlanDowngradeObservationStore()
+
+    assert (
+        await store.observe_if_current(
+            account_id,
+            expected_refresh_token_encrypted=stale_refresh_token_encrypted,
+            credential_fingerprint="fp-stable-seat",
+            observed_plan_type="free",
+        )
+        is None
+    )
+    assert await store.get(account_id) is None
+
+    assert (
+        await store.observe_if_current(
+            account_id,
+            expected_refresh_token_encrypted=current_refresh_token_encrypted,
+            credential_fingerprint="fp-stable-seat",
+            observed_plan_type="free",
+        )
+        == 1
+    )
+
+
+@pytest.mark.asyncio
+async def test_stale_paid_after_credential_replacement_cannot_clear_new_generation_evidence(db_setup):
+    """A late paid response from the old credential must not erase fresh evidence."""
+    account_id = "acc_store_stale_paid"
+    await _seed_account(account_id, "store-stale-paid@example.com")
+    stale_refresh_token_encrypted = await _refresh_token_ciphertext(account_id)
+    current_refresh_token_encrypted = await _replace_refresh_token(account_id, "refresh-replaced")
+    store = PlanDowngradeObservationStore()
+
+    assert (
+        await store.observe_if_current(
+            account_id,
+            expected_refresh_token_encrypted=current_refresh_token_encrypted,
+            credential_fingerprint="fp-stable-seat",
+            observed_plan_type="free",
+        )
+        == 1
+    )
+
+    assert not await store.clear_if_current(
+        account_id,
+        expected_refresh_token_encrypted=stale_refresh_token_encrypted,
+    )
+    recorded = await store.get(account_id)
+    assert recorded is not None
+    assert recorded.observations == 1
+
+    assert await store.clear_if_current(
+        account_id,
+        expected_refresh_token_encrypted=current_refresh_token_encrypted,
+    )
+    assert await store.get(account_id) is None
+
+
+@pytest.mark.asyncio
+async def test_missing_evidence_revokes_an_older_confirming_clear(db_setup):
+    """A newer paid observation that already cleared evidence cancels an old confirmer."""
+    account_id = "acc_store_confirmation_revoked"
+    await _seed_account(account_id, "store-confirmation-revoked@example.com")
+    current_refresh_token_encrypted = await _refresh_token_ciphertext(account_id)
+    store = PlanDowngradeObservationStore()
+
+    assert (
+        await store.observe_if_current(
+            account_id,
+            expected_refresh_token_encrypted=current_refresh_token_encrypted,
+            credential_fingerprint="fp-stable-seat",
+            observed_plan_type="free",
+        )
+        == 1
+    )
+    assert await store.clear_if_current(
+        account_id,
+        expected_refresh_token_encrypted=current_refresh_token_encrypted,
+    )
+
+    assert not await store.clear_if_current(
+        account_id,
+        expected_refresh_token_encrypted=current_refresh_token_encrypted,
+    )
+
+
+@pytest.mark.asyncio
+async def test_guarded_clear_requires_an_actual_deleted_evidence_row(db_setup, monkeypatch):
+    """A row cleared after the outer probe cannot make an older confirmer succeed."""
+    account_id = "acc_store_clear_toctou"
+    await _seed_account(account_id, "store-clear-toctou@example.com")
+    current_refresh_token_encrypted = await _refresh_token_ciphertext(account_id)
+    store = PlanDowngradeObservationStore()
+    assert (
+        await store.observe_if_current(
+            account_id,
+            expected_refresh_token_encrypted=current_refresh_token_encrypted,
+            credential_fingerprint="fp-stable-seat",
+            observed_plan_type="free",
+        )
+        == 1
+    )
+
+    original = PlanDowngradeObservationStore._credential_is_current
+
+    async def clear_after_generation_lock(session, locked_account_id, expected):
+        is_current = await original(session, locked_account_id, expected)
+        await session.execute(
+            delete(AccountPlanDowngradeObservation).where(
+                AccountPlanDowngradeObservation.account_id == locked_account_id
+            )
+        )
+        return is_current
+
+    monkeypatch.setattr(
+        PlanDowngradeObservationStore,
+        "_credential_is_current",
+        staticmethod(clear_after_generation_lock),
+    )
+
+    assert not await store.clear_if_current(
+        account_id,
+        expected_refresh_token_encrypted=current_refresh_token_encrypted,
+    )
 
 
 @pytest.mark.asyncio

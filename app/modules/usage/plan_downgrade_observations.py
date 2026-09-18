@@ -178,6 +178,15 @@ class PlanDowngradeObservation:
 class PlanDowngradeObservationStorePort(Protocol):
     async def get(self, account_id: str) -> PlanDowngradeObservation | None: ...
 
+    async def observe_if_current(
+        self,
+        account_id: str,
+        *,
+        expected_refresh_token_encrypted: bytes,
+        credential_fingerprint: str,
+        observed_plan_type: str,
+    ) -> int | None: ...
+
     async def observe(
         self,
         account_id: str,
@@ -196,6 +205,13 @@ class PlanDowngradeObservationStorePort(Protocol):
     ) -> None: ...
 
     async def clear(self, account_id: str) -> None: ...
+
+    async def clear_if_current(
+        self,
+        account_id: str,
+        *,
+        expected_refresh_token_encrypted: bytes,
+    ) -> bool: ...
 
 
 # Atomic observe: insert the first observation or increment an existing one in a
@@ -235,8 +251,9 @@ class PlanDowngradeObservationStore:
     """Database-backed store shared by every replica.
 
     When the table has not been migrated yet, every operation degrades to a
-    process-local fallback so usage refresh keeps working; confirmation then loses
-    only its cross-replica coherence, exactly the pre-change behavior.
+    process-local fallback so usage refresh keeps working, except guarded
+    evidence mutations. Those fail closed when durable persistence is unavailable
+    because a process-local store cannot prove the current database generation.
     """
 
     def __init__(self, *, fallback: PlanDowngradeObservationStorePort | None = None) -> None:
@@ -254,6 +271,33 @@ class PlanDowngradeObservationStore:
                 _TABLE_NAME,
             )
         return True
+
+    @staticmethod
+    async def _credential_is_current(
+        session: AsyncSession,
+        account_id: str,
+        expected_refresh_token_encrypted: bytes,
+    ) -> bool:
+        """Lock the account generation and compare the exact refresh ciphertext."""
+        statement = select(Account.refresh_token_encrypted).where(Account.id == account_id)
+        bind = session.get_bind()
+        dialect_name = bind.dialect.name if bind is not None else "sqlite"
+        if dialect_name == "sqlite":
+            # ``sqlite_writer_section`` coordinates writers in this process only.
+            # BEGIN IMMEDIATE takes SQLite's real database-wide writer slot before
+            # the credential read, so another process cannot replace the account
+            # between this comparison and the evidence mutation below.
+            await session.execute(text("BEGIN IMMEDIATE"))
+        else:
+            # PostgreSQL credential replacement updates this same row. Holding a
+            # row lock through the evidence mutation makes replacement serialize
+            # on either side of the exact-ciphertext comparison.
+            statement = statement.with_for_update()
+        current_refresh_token_encrypted = (await session.execute(statement)).scalar_one_or_none()
+        return (
+            current_refresh_token_encrypted is not None
+            and current_refresh_token_encrypted == expected_refresh_token_encrypted
+        )
 
     async def get(self, account_id: str) -> PlanDowngradeObservation | None:
         try:
@@ -317,6 +361,56 @@ class PlanDowngradeObservationStore:
                 credential_fingerprint=credential_fingerprint,
                 observed_plan_type=observed_plan_type,
             )
+
+    async def observe_if_current(
+        self,
+        account_id: str,
+        *,
+        expected_refresh_token_encrypted: bytes,
+        credential_fingerprint: str,
+        observed_plan_type: str,
+    ) -> int | None:
+        """Record evidence only while the fetch credential is still current.
+
+        Credential replacement discards pending evidence in its own transaction.
+        Without this lock-and-compare fence, an older usage request can resume
+        after that discard and seed the replacement generation with stale
+        evidence. Routine token rotation remains compatible when it completes
+        before the fetch snapshot or after this transaction; a rotation that
+        races this exact mutation may conservatively make the observation miss.
+        """
+        try:
+            async with sqlite_writer_section():
+                async with get_background_session() as session:
+                    if not await self._credential_is_current(
+                        session,
+                        account_id,
+                        expected_refresh_token_encrypted,
+                    ):
+                        await session.rollback()
+                        return None
+                    statement = text(_OBSERVE_SQL_TEMPLATE.format(table=_TABLE_NAME)).bindparams(
+                        bindparam("account_id", type_=String()),
+                        bindparam("fingerprint", type_=String()),
+                        bindparam("plan_type", type_=String()),
+                        bindparam("now", type_=DateTime()),
+                    )
+                    result = await session.execute(
+                        statement,
+                        {
+                            "account_id": account_id,
+                            "fingerprint": credential_fingerprint,
+                            "plan_type": observed_plan_type,
+                            "now": utcnow(),
+                        },
+                    )
+                    observations = result.scalar_one()
+                    await session.commit()
+                    return int(observations)
+        except (OperationalError, ProgrammingError) as exc:
+            if not self._degrade(exc):
+                raise
+            return None
 
     async def record(
         self,
@@ -386,6 +480,50 @@ class PlanDowngradeObservationStore:
             if not self._degrade(exc):
                 raise
             await self._fallback.clear(account_id)
+
+    async def clear_if_current(
+        self,
+        account_id: str,
+        *,
+        expected_refresh_token_encrypted: bytes,
+    ) -> bool:
+        """Clear evidence only while the fetch credential is still current.
+
+        The read-first gate preserves the common healthy-account path: if no
+        evidence exists there is no mutation to fence. Once a row exists, the
+        account credential comparison and DELETE share one transaction under the
+        same database lock, so an old paid response or old confirmer cannot erase
+        evidence created after reauthentication.
+        """
+        try:
+            async with get_background_session() as session:
+                existing = await session.get(AccountPlanDowngradeObservation, account_id)
+            if existing is None:
+                # Absence is not successful confirmation cleanup: a newer paid
+                # observation (or credential replacement) may have cleared the
+                # evidence after this caller observed the confirming count.
+                return False
+            async with sqlite_writer_section():
+                async with get_background_session() as session:
+                    if not await self._credential_is_current(
+                        session,
+                        account_id,
+                        expected_refresh_token_encrypted,
+                    ):
+                        await session.rollback()
+                        return False
+                    deleted = await session.execute(
+                        delete(AccountPlanDowngradeObservation)
+                        .where(AccountPlanDowngradeObservation.account_id == account_id)
+                        .returning(AccountPlanDowngradeObservation.account_id)
+                    )
+                    deleted_account_id = deleted.scalar_one_or_none()
+                    await session.commit()
+                    return deleted_account_id is not None
+        except (OperationalError, ProgrammingError) as exc:
+            if not self._degrade(exc):
+                raise
+            return False
 
     async def account_ids(self) -> list[str]:
         """Every account with pending evidence (diagnostics and tests)."""
@@ -467,6 +605,24 @@ class InMemoryPlanDowngradeObservationStore:
         )
         return observations
 
+    async def observe_if_current(
+        self,
+        account_id: str,
+        *,
+        expected_refresh_token_encrypted: bytes,
+        credential_fingerprint: str,
+        observed_plan_type: str,
+    ) -> int | None:
+        # The DB-less fallback has no independent account row against which to
+        # compare ciphertext. Treat the caller's snapshot as current while
+        # preserving the same API used by the database-backed implementation.
+        del expected_refresh_token_encrypted
+        return await self.observe(
+            account_id,
+            credential_fingerprint=credential_fingerprint,
+            observed_plan_type=observed_plan_type,
+        )
+
     async def record(
         self,
         account_id: str,
@@ -483,6 +639,17 @@ class InMemoryPlanDowngradeObservationStore:
 
     async def clear(self, account_id: str) -> None:
         self._rows.pop(account_id, None)
+
+    async def clear_if_current(
+        self,
+        account_id: str,
+        *,
+        expected_refresh_token_encrypted: bytes,
+    ) -> bool:
+        del expected_refresh_token_encrypted
+        existed = account_id in self._rows
+        await self.clear(account_id)
+        return existed
 
     def clear_all(self) -> None:
         self._rows.clear()

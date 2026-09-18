@@ -1288,7 +1288,7 @@ async def _payload_mismatches_account_slot(account: Account, payload: UsagePaylo
             # evidence that it is still paid, so any pending downgrade evidence
             # is discarded. An unrecognized value is absence of evidence and
             # deliberately does not reach here.
-            await _clear_workspace_less_free_plan_observations(account.id)
+            await _clear_workspace_less_free_plan_observations(account)
     return False
 
 
@@ -1329,11 +1329,17 @@ async def _free_plan_downgrade_is_confirmed(
     # remaining path that rebinds the row's seat identity. Doing this as a read
     # followed by a write would leave an await between the two halves, letting
     # concurrent refreshes for one account lose an increment.
-    observations = await store.observe(
+    observations = await store.observe_if_current(
         account.id,
+        expected_refresh_token_encrypted=account.refresh_token_encrypted,
         credential_fingerprint=fingerprint,
         observed_plan_type="free",
     )
+    if observations is None:
+        # The credential changed after this usage request started. The payload
+        # belongs to the old generation and has no authority to seed evidence for
+        # the replacement generation.
+        return False
     if observations < _FREE_PLAN_DOWNGRADE_CONFIRMATIONS:
         logger.info(
             "Usage refresh observed a workspace-less downgrade to free; awaiting confirmation "
@@ -1345,7 +1351,14 @@ async def _free_plan_downgrade_is_confirmed(
             get_request_id(),
         )
         return False
-    await store.clear(account.id)
+    if not await store.clear_if_current(
+        account.id,
+        expected_refresh_token_encrypted=account.refresh_token_encrypted,
+    ):
+        # Reauthentication won after the confirming observation but before its
+        # cleanup. Leave any evidence created by the new generation untouched;
+        # the stale payload must not proceed as a confirmed downgrade.
+        return False
     logger.info(
         "Usage refresh confirmed a workspace-less downgrade to free; persisting plan change "
         "account_id=%s stored_plan_type=%s observations=%s request_id=%s",
@@ -1371,8 +1384,11 @@ def _plan_downgrade_observation_store() -> PlanDowngradeObservationStorePort:
     return _FALLBACK_PLAN_DOWNGRADE_OBSERVATIONS
 
 
-async def _clear_workspace_less_free_plan_observations(account_id: str) -> None:
-    await _plan_downgrade_observation_store().clear(account_id)
+async def _clear_workspace_less_free_plan_observations(account: Account) -> None:
+    await _plan_downgrade_observation_store().clear_if_current(
+        account.id,
+        expected_refresh_token_encrypted=account.refresh_token_encrypted,
+    )
 
 
 def _usage_entry_written(entry: UsageHistory | None) -> bool:
