@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -22,12 +23,13 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
+from app.core.audit.service import drain_audit_log_tasks
 from app.core.auth import refresh as refresh_module
 from app.core.auth.refresh import RefreshError, TokenRefreshResult
 from app.core.balancer import AccountState, select_account
 from app.core.crypto import TokenEncryptor
 from app.core.utils.time import utcnow
-from app.db.models import Account, AccountRefreshClaim, AccountStatus, StickySession, StickySessionKind
+from app.db.models import Account, AccountRefreshClaim, AccountStatus, AuditLog, StickySession, StickySessionKind
 from app.db.session import SessionLocal
 from app.modules.accounts import auth_manager as auth_manager_module
 from app.modules.accounts.auth_manager import AuthManager
@@ -133,6 +135,13 @@ async def test_invalid_refresh_token_payload_requires_reauth_and_gates_routing_o
     """Exercise the OAuth payload, guarded DB downgrade, and expiry-gated routing together."""
     account_id = "acc_invalid_refresh_token"
     await _create_account(account_id)
+    audit_events: list[tuple[str, dict[str, object]]] = []
+
+    def capture_audit(action: str, *args: object, details: dict[str, object] | None = None, **kwargs: object) -> None:
+        del args, kwargs
+        audit_events.append((action, details or {}))
+
+    monkeypatch.setattr(auth_manager_module.AuditService, "log_async", capture_audit)
 
     class InvalidRefreshTokenResponse:
         status = 400
@@ -179,6 +188,13 @@ async def test_invalid_refresh_token_payload_requires_reauth_and_gates_routing_o
     status, stored_refresh_token, sticky_present = await _account_snapshot(account_id)
     assert status == AccountStatus.REAUTH_REQUIRED
     assert stored_refresh_token == "refresh-old"
+    permanent = [details for action, details in audit_events if action == "account_refresh_permanent_failure"]
+    assert len(permanent) == 1
+    assert permanent[0]["claimant_id"] == "invalid-token-test"
+    assert permanent[0]["error_code"] == "invalid_refresh_token"
+    assert permanent[0]["status"] == "reauth_required"
+    assert len(str(permanent[0]["from_fingerprint"])) == 16
+    assert "refresh-old" not in repr(audit_events)
     # Reauth-required accounts keep request-routable continuity until the
     # stored access token's derived expiry passes (see keep-reauth-required-
     # access-routable): sticky pins survive and routing only excludes the
@@ -203,6 +219,13 @@ async def test_concurrent_cross_replica_refresh_runs_one_upstream_exchange(db_se
     upstream_calls = 0
     winner_started = asyncio.Event()
     winner_release = asyncio.Event()
+    audit_events: list[tuple[str, dict[str, object]]] = []
+
+    def capture_audit(action: str, *args: object, details: dict[str, object] | None = None, **kwargs: object) -> None:
+        del args, kwargs
+        audit_events.append((action, details or {}))
+
+    monkeypatch.setattr(auth_manager_module.AuditService, "log_async", capture_audit)
 
     async def fake_refresh(refresh_token: str, **_kwargs: object) -> TokenRefreshResult:
         nonlocal upstream_calls
@@ -246,12 +269,73 @@ async def test_concurrent_cross_replica_refresh_runs_one_upstream_exchange(db_se
     assert stored_refresh_token == "refresh-new"
     assert sticky_present is True
 
+    persisted = [details for action, details in audit_events if action == "account_refresh_rotation_persisted"]
+    adopted = [details for action, details in audit_events if action == "account_refresh_peer_rotation_adopted"]
+    assert len(persisted) == 1
+    assert persisted[0]["claimant_id"] == "replica-a"
+    assert persisted[0]["phase"] == "guarded_cas"
+    assert len(adopted) == 1
+    assert adopted[0]["claimant_id"] == "replica-b"
+    if adopted[0].get("holder_claimed_by") is not None:
+        assert str(adopted[0]["holder_claimed_by"]).startswith("replica-a#")
+    assert adopted[0]["phase"] in {"claim_wait", "post_claim_read"}
+    assert adopted[0]["from_fingerprint"] == persisted[0]["from_fingerprint"]
+    assert adopted[0]["to_fingerprint"] == persisted[0]["to_fingerprint"]
+    assert "refresh-old" not in repr(audit_events)
+    assert "refresh-new" not in repr(audit_events)
+
     # The claim was released after the winner persisted.
     async with SessionLocal() as session:
         remaining = (
             await session.execute(select(AccountRefreshClaim).where(AccountRefreshClaim.account_id == account_id))
         ).scalar_one_or_none()
         assert remaining is None
+
+
+@pytest.mark.asyncio
+async def test_refresh_rotation_audit_persists_digest_only(db_setup, monkeypatch):
+    account_id = "acc_refresh_audit"
+    await _create_account(account_id)
+
+    async def fake_refresh(refresh_token: str, **_kwargs: object) -> TokenRefreshResult:
+        assert refresh_token == "refresh-old"
+        return _rotated_result(account_id)
+
+    monkeypatch.setattr(auth_manager_module, "refresh_access_token", fake_refresh)
+
+    async with SessionLocal() as session:
+        repo = AccountsRepository(session)
+        account = await repo.get_by_id(account_id)
+        assert account is not None
+        manager = AuthManager(repo, refresh_claims=RefreshClaimCoordinator(claimant_id="replica-audit"))
+        await manager.refresh_account(account)
+
+    assert await drain_audit_log_tasks(timeout_seconds=5) is True
+    async with SessionLocal() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(AuditLog).where(
+                        AuditLog.action == "account_refresh_rotation_persisted",
+                        AuditLog.target_id == account_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(rows) == 1
+    details = json.loads(rows[0].details or "{}")
+    assert details["claimant_id"] == "replica-audit"
+    assert details["coordination"] == "claimed"
+    assert len(details["from_fingerprint"]) == 16
+    assert len(details["to_fingerprint"]) == 16
+    serialized = rows[0].details or ""
+    assert "refresh-old" not in serialized
+    assert "refresh-new" not in serialized
+    assert "access-old" not in serialized
+    assert "access-new" not in serialized
 
 
 @pytest.mark.asyncio

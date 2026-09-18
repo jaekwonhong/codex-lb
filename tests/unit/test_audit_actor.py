@@ -165,4 +165,6 @@ async def test_failing_sink_does_not_block_other_sinks(
     assert rows[0].actor_user_id is None
     assert [event.action for event in recording.events] == ["sink_fanout_test"]
     assert "Audit sink _FailingSink failed for action sink_fanout_test" in caplog.text
+    assert "webhook down" not in caplog.text
+    assert "Traceback" not in caplog.text
     assert audit_service_module._AUDIT_LOG_TASKS == set()

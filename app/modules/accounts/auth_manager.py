@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.audit.service import AuditService, AuditSeverity, AuditTarget
 from app.core.auth import DEFAULT_PLAN, OpenAIAuthClaims, extract_id_token_claims
 from app.core.auth.refresh import (
     TOKEN_REFRESH_TIMEOUT_SECONDS,
@@ -171,6 +172,11 @@ _TOKEN_REFRESH_CLAIM_TTL_FLOOR_SECONDS = 30.0
 # Negative cache for a failed refresh so a burst of requests for one account
 # does not re-run the same failing exchange (transport errors are exempt).
 _REFRESH_FAILURE_COOLDOWN_SECONDS = 5.0
+# Persist only a short digest tag for refresh-token material. The underlying
+# refresh token is high-entropy and never written to logs/audit rows; 16 hex
+# chars (64 bits) is enough to correlate one rotation across replicas while
+# keeping the diagnostic value non-credential-bearing.
+_REFRESH_AUDIT_FINGERPRINT_LEN = 16
 
 
 def _token_refresh_claim_ttl_seconds() -> float:
@@ -365,6 +371,85 @@ class AuthManager:
             return "<redacted>"
         return value
 
+    @staticmethod
+    def _fingerprint_tag(fingerprint: str | None) -> str | None:
+        if fingerprint is None:
+            return None
+        return fingerprint[:_REFRESH_AUDIT_FINGERPRINT_LEN]
+
+    def _audit_account_ref(self, account_id: str) -> str:
+        if not self._redact_sensitive_details:
+            return account_id
+        return f"sha256:{sha256(account_id.encode('utf-8')).hexdigest()[:16]}"
+
+    def _audit_refresh_event(
+        self,
+        action: str,
+        account_id: str,
+        *,
+        claimant_id: str | None = None,
+        from_fingerprint: str | None = None,
+        to_fingerprint: str | None = None,
+        holder_claimed_by: str | None = None,
+        phase: str | None = None,
+        error_code: str | None = None,
+        status: str | None = None,
+        severity: AuditSeverity = AuditSeverity.INFO,
+    ) -> None:
+        """Best-effort durable refresh audit with no credential material.
+
+        The only token-derived values are truncated SHA-256 tags. ``claimant_id``
+        and ``holder_claimed_by`` are process/claim identities already persisted
+        in ``account_refresh_claims``; they identify the replica/process and the
+        claim's token-material tag without exposing a refresh token or ciphertext.
+        Audit failure must never change refresh behavior.
+        """
+
+        details = {
+            "claimant_id": claimant_id,
+            "from_fingerprint": self._fingerprint_tag(from_fingerprint),
+            "to_fingerprint": self._fingerprint_tag(to_fingerprint),
+            "holder_claimed_by": holder_claimed_by,
+            "phase": phase,
+            "error_code": error_code,
+            "status": status,
+            "coordination": "claimed" if claimant_id is not None else "unclaimed",
+        }
+        try:
+            AuditService.log_async(
+                action,
+                details={key: value for key, value in details.items() if value is not None},
+                target=AuditTarget(type="account", id=self._audit_account_ref(account_id)),
+                severity=severity,
+            )
+        except Exception:
+            logger.warning(
+                "Refresh audit emission failed action=%s account_id=%s",
+                action,
+                self._diagnostic_value(account_id),
+                exc_info=None if self._redact_sensitive_details else True,
+            )
+
+    async def _current_claimed_by(
+        self,
+        claims: RefreshClaimCoordinatorPort,
+        account_id: str,
+    ) -> str | None:
+        """Read the current holder identity when the coordinator exposes it.
+
+        Test doubles and third-party coordinator adapters are allowed to omit the
+        diagnostic snapshot API, so absence/failure is intentionally non-fatal.
+        """
+
+        current_claim = getattr(claims, "current_claim", None)
+        if not callable(current_claim):
+            return None
+        try:
+            snapshot = await current_claim(account_id)
+        except Exception:
+            return None
+        return getattr(snapshot, "claimed_by", None) if snapshot is not None else None
+
     async def refresh_account(self, account: Account) -> Account:
         claims = self._refresh_claims if self._refresh_claims is not None else get_refresh_claim_coordinator()
         if claims is None:
@@ -422,6 +507,9 @@ class AuthManager:
             wait_seconds = min(wait_seconds, caller_budget)
         deadline = start + wait_seconds
         poll_seconds = _TOKEN_REFRESH_CLAIM_POLL_SECONDS
+        claimant_id = claims.claimant_id
+        contention_audited = False
+        observed_holder_claimed_by: str | None = None
         # NOTE: comparisons below use the fingerprint captured at entry, not
         # ``account.refresh_token_encrypted``: when ``account`` is attached to
         # the repo's session, ``get_by_id_fresh`` refreshes that very
@@ -433,6 +521,12 @@ class AuthManager:
                 ttl_seconds=_token_refresh_claim_ttl_seconds(),
                 owner=requested_fingerprint,
             ):
+                logger.info(
+                    "auth_refresh_audit event=claim_acquired account_id=%s claimant_id=%s token_fingerprint=%s",
+                    self._diagnostic_value(account.id),
+                    claimant_id,
+                    self._fingerprint_tag(requested_fingerprint),
+                )
                 # Monotonic deadline covering the ENTIRE claim hold from this
                 # point: the exchange AND the post-exchange DB persist/status-CAS
                 # loops all run while this claim is held. The exchange itself is
@@ -459,6 +553,19 @@ class AuthManager:
                         ):
                             # A peer genuinely rotated/repaired the material; adopt
                             # it and proceed without an upstream call.
+                            latest_fingerprint = _refresh_token_material_fingerprint(
+                                self._encryptor,
+                                latest.refresh_token_encrypted,
+                            )
+                            self._audit_refresh_event(
+                                "account_refresh_peer_rotation_adopted",
+                                account.id,
+                                claimant_id=claimant_id,
+                                from_fingerprint=requested_fingerprint,
+                                to_fingerprint=latest_fingerprint,
+                                holder_claimed_by=observed_holder_claimed_by,
+                                phase="post_claim_read",
+                            )
                             return _adopt_account_row(account, latest)
                         if latest.status in _TERMINAL_REFRESH_STATUSES:
                             # A PRIOR claim holder finished by committing a terminal
@@ -492,6 +599,15 @@ class AuthManager:
                     if caller_deadline is not None:
                         remaining_budget = caller_deadline - time.monotonic()
                         if remaining_budget <= 0:
+                            self._audit_refresh_event(
+                                "account_refresh_claim_timeout",
+                                account.id,
+                                claimant_id=claimant_id,
+                                from_fingerprint=requested_fingerprint,
+                                phase="post_claim_budget",
+                                error_code="refresh_claim_timeout",
+                                severity=AuditSeverity.WARNING,
+                            )
                             raise RefreshError(
                                 "refresh_claim_timeout",
                                 f"Token refresh for account {account.id} exhausted its "
@@ -506,6 +622,7 @@ class AuthManager:
                                 account,
                                 refresh_token_encrypted=fresh_material,
                                 deadline=persist_deadline,
+                                claimant_id=claimant_id,
                             )
                         finally:
                             pop_token_refresh_timeout_override(override_token)
@@ -513,19 +630,58 @@ class AuthManager:
                         account,
                         refresh_token_encrypted=fresh_material,
                         deadline=persist_deadline,
+                        claimant_id=claimant_id,
                     )
                 finally:
                     await self._release_claim_quietly(claims, account.id, owner=requested_fingerprint)
             # Claim held by another replica: adopt its rotation as soon as it
             # commits; never write account status from the losing side.
+            holder_claimed_by = None
+            if not contention_audited:
+                holder_claimed_by = await self._current_claimed_by(claims, account.id)
+                observed_holder_claimed_by = holder_claimed_by
+                logger.info(
+                    "auth_refresh_audit event=claim_contended account_id=%s claimant_id=%s "
+                    "holder_claimed_by=%s token_fingerprint=%s",
+                    self._diagnostic_value(account.id),
+                    claimant_id,
+                    holder_claimed_by,
+                    self._fingerprint_tag(requested_fingerprint),
+                )
+                contention_audited = True
             latest = await self._repo.get_by_id_fresh(account.id)
             if latest is not None and (
                 _refresh_token_material_fingerprint(self._encryptor, latest.refresh_token_encrypted)
                 != requested_fingerprint
             ):
+                latest_fingerprint = _refresh_token_material_fingerprint(
+                    self._encryptor,
+                    latest.refresh_token_encrypted,
+                )
+                self._audit_refresh_event(
+                    "account_refresh_peer_rotation_adopted",
+                    account.id,
+                    claimant_id=claimant_id,
+                    from_fingerprint=requested_fingerprint,
+                    to_fingerprint=latest_fingerprint,
+                    holder_claimed_by=observed_holder_claimed_by,
+                    phase="claim_wait",
+                )
                 return _adopt_account_row(account, latest)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                if observed_holder_claimed_by is None:
+                    observed_holder_claimed_by = await self._current_claimed_by(claims, account.id)
+                self._audit_refresh_event(
+                    "account_refresh_claim_timeout",
+                    account.id,
+                    claimant_id=claimant_id,
+                    from_fingerprint=requested_fingerprint,
+                    holder_claimed_by=observed_holder_claimed_by,
+                    phase="claim_wait",
+                    error_code="refresh_claim_timeout",
+                    severity=AuditSeverity.WARNING,
+                )
                 raise RefreshError(
                     "refresh_claim_timeout",
                     f"Token refresh for account {account.id} is claimed by another replica; "
@@ -587,6 +743,7 @@ class AuthManager:
         *,
         refresh_token_encrypted: bytes,
         deadline: float | None = None,
+        claimant_id: str | None = None,
     ) -> Account:
         attempted_fingerprint = _refresh_token_material_fingerprint(self._encryptor, refresh_token_encrypted)
         refresh_token = self._encryptor.decrypt(refresh_token_encrypted)
@@ -594,8 +751,20 @@ class AuthManager:
             result = await self._refresh_tokens(refresh_token, account=account)
         except RefreshError as exc:
             if exc.is_permanent:
+                logger.warning(
+                    "auth_refresh_audit event=permanent_failure_observed account_id=%s claimant_id=%s "
+                    "token_fingerprint=%s error_code=%s",
+                    self._diagnostic_value(account.id),
+                    claimant_id,
+                    self._fingerprint_tag(attempted_fingerprint),
+                    exc.code,
+                )
                 adopted = await self._handle_permanent_refresh_failure(
-                    account, exc, attempted_fingerprint, deadline=deadline
+                    account,
+                    exc,
+                    attempted_fingerprint,
+                    deadline=deadline,
+                    claimant_id=claimant_id,
                 )
                 if adopted is not None:
                     return adopted
@@ -708,6 +877,12 @@ class AuthManager:
             write=_write_tokens,
             expected_refresh_token_encrypted=refresh_token_encrypted,
             deadline=deadline,
+            attempted_fingerprint=attempted_fingerprint,
+            rotated_fingerprint=_refresh_token_material_fingerprint(
+                self._encryptor,
+                new_refresh_token_encrypted,
+            ),
+            claimant_id=claimant_id,
         )
         if adopted is not None:
             return adopted
@@ -737,6 +912,9 @@ class AuthManager:
         write: Callable[[bytes], Awaitable[bool]],
         expected_refresh_token_encrypted: bytes,
         deadline: float | None = None,
+        attempted_fingerprint: str,
+        rotated_fingerprint: str,
+        claimant_id: str | None,
     ) -> Account | None:
         """Persist freshly rotated tokens through a *guarded* compare-and-set only.
 
@@ -833,6 +1011,14 @@ class AuthManager:
                 # Guarded write landed: the row still held exactly the ciphertext
                 # we observed, so our freshly rotated token replaced it atomically
                 # and nothing was clobbered.
+                self._audit_refresh_event(
+                    "account_refresh_rotation_persisted",
+                    account.id,
+                    claimant_id=claimant_id,
+                    from_fingerprint=attempted_fingerprint,
+                    to_fingerprint=rotated_fingerprint,
+                    phase="guarded_cas",
+                )
                 return None
             latest = await self._repo.get_by_id_fresh(account.id)
             if latest is None:
@@ -866,6 +1052,17 @@ class AuthManager:
                 # A peer stored genuinely newer refresh-token material after our
                 # read; the guarded write MISSED and clobbered nothing. Adopt it
                 # rather than overwriting with the token we already consumed.
+                self._audit_refresh_event(
+                    "account_refresh_peer_rotation_adopted",
+                    account.id,
+                    claimant_id=claimant_id,
+                    from_fingerprint=attempted_fingerprint,
+                    to_fingerprint=_refresh_token_material_fingerprint(
+                        self._encryptor,
+                        latest.refresh_token_encrypted,
+                    ),
+                    phase="persist_cas",
+                )
                 return _adopt_account_row(account, latest)
             # Same refresh-token plaintext, re-encrypted concurrently: retry the
             # guarded CAS against the freshly observed ciphertext so our rotation
@@ -900,6 +1097,14 @@ class AuthManager:
         # couple of attempts in practice.
         for final_attempt in range(_FINAL_PERSIST_MAX_ATTEMPTS):
             if await write(expected):
+                self._audit_refresh_event(
+                    "account_refresh_rotation_persisted",
+                    account.id,
+                    claimant_id=claimant_id,
+                    from_fingerprint=attempted_fingerprint,
+                    to_fingerprint=rotated_fingerprint,
+                    phase="final_guarded_cas",
+                )
                 return None
             latest = await self._repo.get_by_id_fresh(account.id)
             if latest is None:
@@ -909,6 +1114,17 @@ class AuthManager:
             if _is_genuine_peer_rotation(consumed_plaintext, latest_plaintext):
                 # A genuine peer rotation landed on the final re-read: ADOPT it (our
                 # freshly rotated token is legitimately superseded), never overwrite.
+                self._audit_refresh_event(
+                    "account_refresh_peer_rotation_adopted",
+                    account.id,
+                    claimant_id=claimant_id,
+                    from_fingerprint=attempted_fingerprint,
+                    to_fingerprint=_refresh_token_material_fingerprint(
+                        self._encryptor,
+                        latest.refresh_token_encrypted,
+                    ),
+                    phase="final_persist_cas",
+                )
                 return _adopt_account_row(account, latest)
             if consumed_plaintext is None or latest_plaintext is None:
                 # Cannot prove plaintext identity, so we cannot prove another
@@ -939,6 +1155,8 @@ class AuthManager:
             expected_refresh_token_encrypted=expected,
             consumed_plaintext=consumed_plaintext,
             deadline_elapsed=deadline_elapsed,
+            attempted_fingerprint=attempted_fingerprint,
+            claimant_id=claimant_id,
         )
 
     async def _flag_persist_conflict_reauth(
@@ -948,6 +1166,8 @@ class AuthManager:
         expected_refresh_token_encrypted: bytes,
         consumed_plaintext: str | None,
         deadline_elapsed: bool,
+        attempted_fingerprint: str,
+        claimant_id: str | None,
     ) -> Account | None:
         """SAFE terminal outcome for a truly pathological final-persist storm.
 
@@ -991,6 +1211,17 @@ class AuthManager:
             if _is_genuine_peer_rotation(consumed_plaintext, latest_plaintext):
                 # A peer rotated genuinely newer material: the account is repaired.
                 # ADOPT it; do NOT flag reauth on a healthy rotated row.
+                self._audit_refresh_event(
+                    "account_refresh_peer_rotation_adopted",
+                    account.id,
+                    claimant_id=claimant_id,
+                    from_fingerprint=attempted_fingerprint,
+                    to_fingerprint=_refresh_token_material_fingerprint(
+                        self._encryptor,
+                        latest.refresh_token_encrypted,
+                    ),
+                    phase="persist_conflict_reauth_guard",
+                )
                 return _adopt_account_row(account, latest)
             expected = latest.refresh_token_encrypted
             applied = await self._repo.update_status_if_current(
@@ -1006,6 +1237,15 @@ class AuthManager:
                 account.status = status
                 account.deactivation_reason = reason
                 get_account_selection_cache().invalidate()
+                self._audit_refresh_event(
+                    "account_refresh_persist_conflict_reauth",
+                    account.id,
+                    claimant_id=claimant_id,
+                    from_fingerprint=attempted_fingerprint,
+                    phase=("claim_deadline" if deadline_elapsed else "same_plaintext_storm"),
+                    status=status.value,
+                    severity=AuditSeverity.WARNING,
+                )
                 logger.warning(
                     "Token-refresh compare-and-set for account_id=%s could not persist the freshly "
                     "rotated token after the dedicated final-persist retries (%s); flagged the account "
@@ -1044,6 +1284,7 @@ class AuthManager:
         attempted_fingerprint: str,
         *,
         deadline: float | None = None,
+        claimant_id: str | None = None,
     ) -> Account | None:
         """Persist a permanent refresh failure without clobbering a concurrent rotation.
 
@@ -1082,6 +1323,18 @@ class AuthManager:
             _refresh_token_material_fingerprint(self._encryptor, latest.refresh_token_encrypted)
             != attempted_fingerprint
         ):
+            self._audit_refresh_event(
+                "account_refresh_peer_rotation_adopted",
+                account.id,
+                claimant_id=claimant_id,
+                from_fingerprint=attempted_fingerprint,
+                to_fingerprint=_refresh_token_material_fingerprint(
+                    self._encryptor,
+                    latest.refresh_token_encrypted,
+                ),
+                phase="permanent_failure_pre_cas",
+                error_code=exc.code,
+            )
             return _adopt_account_row(account, latest)
         reason = PERMANENT_FAILURE_CODES.get(exc.code, exc.message)
         status = account_status_for_permanent_failure(exc.code)
@@ -1128,6 +1381,16 @@ class AuthManager:
                 if status == AccountStatus.DEACTIVATED:
                     mark_account_routing_unavailable(account.id)
                 get_account_selection_cache().invalidate()
+                self._audit_refresh_event(
+                    "account_refresh_permanent_failure",
+                    account.id,
+                    claimant_id=claimant_id,
+                    from_fingerprint=attempted_fingerprint,
+                    phase="status_cas",
+                    error_code=exc.code,
+                    status=status.value,
+                    severity=AuditSeverity.WARNING,
+                )
                 return None
             # CAS missed: the freshly observed account state changed between the
             # re-read and the write. Re-read to decide why.
@@ -1148,6 +1411,18 @@ class AuthManager:
                 # path is NOT guarded by this refresh-token CAS — so it would
                 # clobber the peer's valid rotation with ``REAUTH_REQUIRED`` and
                 # tear down sessions for an account that was just repaired.
+                self._audit_refresh_event(
+                    "account_refresh_peer_rotation_adopted",
+                    account.id,
+                    claimant_id=claimant_id,
+                    from_fingerprint=attempted_fingerprint,
+                    to_fingerprint=_refresh_token_material_fingerprint(
+                        self._encryptor,
+                        latest.refresh_token_encrypted,
+                    ),
+                    phase="permanent_failure_cas_miss",
+                    error_code=exc.code,
+                )
                 return _adopt_account_row(account, latest)
             # Same refresh-token plaintext, merely re-encrypted (non-deterministic
             # Fernet) — or an unrelated status/reason/reset nudge. The account is

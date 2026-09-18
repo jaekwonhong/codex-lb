@@ -1175,6 +1175,42 @@ The previsible-unary failover path (`_ensure_previsible_unary_fresh_with_failove
 - **WHEN** the waiting replica observes the rotated refresh-token material within the wait cap
 - **THEN** it returns the rotated tokens with zero upstream token exchanges
 
+### Requirement: Refresh rotation diagnostics are durable and credential-safe
+
+The refresh path MUST leave enough durable evidence to distinguish an internal
+cross-replica rotation from an upstream/external credential invalidation without
+persisting usable credential material. A successful refresh-token rotation MUST
+audit the account, the refresh claimant identity, and non-reversible truncated
+SHA-256 tags for the consumed and newly persisted refresh-token material. A
+replica that loses a refresh claim and adopts a peer rotation MUST audit its own
+claimant identity, the observed claim holder identity when available, the same
+before/after fingerprint tags, and the phase in which the peer rotation was
+observed. A permanent refresh failure that actually downgrades the account MUST
+audit its upstream error code, resulting status, claimant identity, and the
+attempted token fingerprint tag. A claim timeout MUST be auditable distinctly
+from a permanent credential failure. Raw access tokens, refresh tokens, ID
+tokens, encrypted token blobs, authorization codes, OAuth state values, and any
+reversible derivative MUST NOT appear in these audit details or structured log
+lines. Audit emission is diagnostic-only and MUST NOT change refresh success,
+failure, claim release, or routing semantics if an audit sink fails.
+
+#### Scenario: Concurrent replicas leave correlatable refresh evidence
+
+- **GIVEN** replica A wins an account refresh claim and replica B waits on the same token material
+- **WHEN** replica A persists the newly rotated refresh token and replica B adopts it without an upstream exchange
+- **THEN** the audit trail records one rotation-persisted event naming replica A's claimant identity and one peer-rotation-adopted event naming replica B
+- **AND** replica B's event records the observed claim holder identity when available
+- **AND** the two events carry matching before/after fingerprint tags so the rotation can be correlated across replicas
+- **AND** neither event contains the old or new refresh token or token ciphertext
+
+#### Scenario: Permanent refresh failure is distinguishable from claim contention
+
+- **GIVEN** a claim holder receives an upstream `refresh_token_reused`, `refresh_token_invalidated`, `invalid_grant`, or equivalent permanent refresh error
+- **WHEN** the guarded status compare-and-set persists `reauth_required` or `deactivated`
+- **THEN** the audit trail records the permanent error code, resulting status, claimant identity, and attempted fingerprint tag
+- **AND** a peer-claim timeout is recorded under a distinct claim-timeout action rather than being represented as a permanent credential failure
+- **AND** no usable credential material is persisted in either event
+
 #### Scenario: Claim wait consumes the caller budget before the exchange
 
 - **GIVEN** a caller refresh-timeout budget and a foreign refresh claim that is held for nearly the whole budget and then releases

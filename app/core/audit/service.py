@@ -212,5 +212,16 @@ async def _write_audit_log(event: AuditEvent) -> None:
     for sink in get_audit_sinks():
         try:
             await sink.emit(event)
-        except Exception:
-            logger.warning("Audit sink %s failed for action %s", type(sink).__name__, event.action, exc_info=True)
+        except Exception as exc:
+            # Audit payloads can contain security-sensitive identifiers even after
+            # field-level sanitisation. SQL/driver tracebacks frequently echo bind
+            # parameters, so logging ``exc_info=True`` here can leak the payload
+            # precisely when the audit sink is unhealthy. Keep sink failures
+            # content-free: action + sink + exception type are enough to diagnose
+            # availability without reflecting event details or SQL parameters.
+            logger.warning(
+                "Audit sink %s failed for action %s exception_type=%s",
+                type(sink).__name__,
+                event.action,
+                type(exc).__name__,
+            )
