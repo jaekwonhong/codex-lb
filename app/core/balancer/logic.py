@@ -1362,7 +1362,20 @@ RATE_LIMITED_MIN_COOLDOWN_SECONDS = 30.0
 
 def handle_rate_limit(state: AccountState, error: UpstreamError) -> None:
     now = time.time()
-    state.status = AccountStatus.RATE_LIMITED
+    # ``reauth_required`` is a credential-health status, not proof that the
+    # currently stored access token is unusable. Such accounts intentionally
+    # remain request-routable while that access token is still valid. If one of
+    # those requests receives a transient 429, the cooldown must not erase the
+    # permanent refresh-token diagnosis: otherwise the ordinary rate-limit
+    # recovery path later promotes the row to ACTIVE even though its refresh
+    # token is still known-bad. Keep terminal/operator-auth statuses authoritative
+    # and layer the transient cooldown only into the runtime/reset fields.
+    if state.status not in {
+        AccountStatus.REAUTH_REQUIRED,
+        AccountStatus.DEACTIVATED,
+        AccountStatus.PAUSED,
+    }:
+        state.status = AccountStatus.RATE_LIMITED
     state.error_count += 1
     state.last_error_at = now
     state.blocked_at = now
@@ -1414,7 +1427,16 @@ def _format_retry_hint(wait_seconds: float) -> str:
 
 def handle_quota_exceeded(state: AccountState, error: UpstreamError) -> None:
     now = time.time()
-    state.status = AccountStatus.QUOTA_EXCEEDED
+    # As with burst/rate-limit handling above, quota exhaustion is subordinate
+    # to a persisted credential/operator status. In particular, overwriting
+    # REAUTH_REQUIRED here would let quota recovery resurrect a dead refresh
+    # token as ACTIVE without a real reauthentication.
+    if state.status not in {
+        AccountStatus.REAUTH_REQUIRED,
+        AccountStatus.DEACTIVATED,
+        AccountStatus.PAUSED,
+    }:
+        state.status = AccountStatus.QUOTA_EXCEEDED
     state.used_percent = 100.0
     state.blocked_at = now
     state.cooldown_until = now + QUOTA_EXCEEDED_COOLDOWN_SECONDS

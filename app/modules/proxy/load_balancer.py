@@ -1720,7 +1720,12 @@ class LoadBalancer:
             handle_rate_limit(state, error)
             self._sync_runtime_state(account, state)
             async with self._repo_factory() as repos:
-                await self._persist_state(repos.accounts, account, state)
+                # A peer replica may have persisted REAUTH_REQUIRED while this
+                # request was in flight with a stale ACTIVE account object. Never
+                # let a later 429 clobber that credential diagnosis. Selection
+                # persistence already uses this guarded CAS; transient error
+                # marking must obey the same cross-replica rule.
+                await self._persist_state_if_current(repos.accounts, account, state)
             self._selection_inputs_cache.invalidate()
 
     async def mark_quota_exceeded(self, account: Account, error: UpstreamError) -> None:
@@ -1730,7 +1735,7 @@ class LoadBalancer:
             handle_quota_exceeded(state, error)
             self._sync_runtime_state(account, state)
             async with self._repo_factory() as repos:
-                persisted = await self._persist_state(repos.accounts, account, state)
+                persisted = await self._persist_state_if_current(repos.accounts, account, state)
             if persisted and account.blocked_at is not None:
                 try:
                     await observe_quota_exceeded(account, datetime.fromtimestamp(account.blocked_at, timezone.utc))

@@ -267,6 +267,47 @@ async def test_peer_replica_honors_metadata_free_rate_limit_cooldown(db_setup):
 
 
 @pytest.mark.asyncio
+async def test_reauth_required_status_survives_routable_access_token_rate_limit(db_setup):
+    account = _make_account("reauth_rate_limit", status=AccountStatus.REAUTH_REQUIRED)
+    account.deactivation_reason = "Refresh token was reused - re-login required"
+    async with SessionLocal() as session:
+        await AccountsRepository(session).upsert(account)
+
+    persisted = await _fetch_account(account.id)
+    balancer = LoadBalancer(_repo_factory)
+    await balancer.mark_rate_limit(persisted, {"message": "Rate limit exceeded. Try again in 1s."})
+
+    row = await _fetch_account(account.id)
+    assert row.status == AccountStatus.REAUTH_REQUIRED
+    assert row.deactivation_reason == "Refresh token was reused - re-login required"
+    assert row.blocked_at is not None
+    assert row.reset_at is not None
+
+
+@pytest.mark.asyncio
+async def test_peer_reauth_required_status_rejects_stale_active_rate_limit_write(db_setup):
+    persisted = _make_account("peer_reauth_rate_limit", status=AccountStatus.REAUTH_REQUIRED)
+    persisted.deactivation_reason = "Refresh token was reused - re-login required"
+    async with SessionLocal() as session:
+        await AccountsRepository(session).upsert(persisted)
+
+    stale = _make_account("peer_reauth_rate_limit", status=AccountStatus.ACTIVE)
+    # Preserve the exact persisted ciphertext so this test isolates the status
+    # compare-and-set rather than relying on a credential-rotation mismatch.
+    stale.refresh_token_encrypted = persisted.refresh_token_encrypted
+    stale.access_token_encrypted = persisted.access_token_encrypted
+    stale.id_token_encrypted = persisted.id_token_encrypted
+
+    await LoadBalancer(_repo_factory).mark_rate_limit(stale, {"message": "Rate limit exceeded. Try again in 1s."})
+
+    row = await _fetch_account(persisted.id)
+    assert row.status == AccountStatus.REAUTH_REQUIRED
+    assert row.deactivation_reason == "Refresh token was reused - re-login required"
+    assert row.reset_at is None
+    assert row.blocked_at is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("credits_has", "credits_unlimited", "credits_balance"),
     [(True, None, None), (None, True, None), (None, None, 25.0)],

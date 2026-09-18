@@ -1811,6 +1811,63 @@ async def test_mark_rate_limit_does_not_mark_account_routing_unavailable() -> No
 
 
 @pytest.mark.asyncio
+async def test_mark_rate_limit_preserves_reauth_required_status() -> None:
+    account = _make_account("acc-reauth-rate-limit", "reauth-rate-limit@example.com")
+    account.status = AccountStatus.REAUTH_REQUIRED
+    account.deactivation_reason = "Refresh token was reused - re-login required"
+    accounts_repo = StubAccountsRepository([account])
+    usage_repo = StubUsageRepository(primary={}, secondary={})
+    sticky_repo = StubStickySessionsRepository()
+    balancer = LoadBalancer(lambda: _repo_factory(accounts_repo, usage_repo, sticky_repo))
+
+    await balancer.mark_rate_limit(account, {"message": "Try again in 1s"})
+
+    assert account.status == AccountStatus.REAUTH_REQUIRED
+    assert account.deactivation_reason == "Refresh token was reused - re-login required"
+    assert accounts_repo.status_updates[-1]["status"] == AccountStatus.REAUTH_REQUIRED
+    assert accounts_repo.status_updates[-1]["deactivation_reason"] == account.deactivation_reason
+
+
+@pytest.mark.asyncio
+async def test_mark_quota_exceeded_preserves_reauth_required_status() -> None:
+    account = _make_account("acc-reauth-quota", "reauth-quota@example.com")
+    account.status = AccountStatus.REAUTH_REQUIRED
+    account.deactivation_reason = "Refresh token was reused - re-login required"
+    accounts_repo = StubAccountsRepository([account])
+    usage_repo = StubUsageRepository(primary={}, secondary={})
+    sticky_repo = StubStickySessionsRepository()
+    balancer = LoadBalancer(lambda: _repo_factory(accounts_repo, usage_repo, sticky_repo))
+
+    await balancer.mark_quota_exceeded(account, {"message": "quota exceeded"})
+
+    assert account.status == AccountStatus.REAUTH_REQUIRED
+    assert account.deactivation_reason == "Refresh token was reused - re-login required"
+    assert accounts_repo.status_updates[-1]["status"] == AccountStatus.REAUTH_REQUIRED
+    assert accounts_repo.status_updates[-1]["deactivation_reason"] == account.deactivation_reason
+
+
+@pytest.mark.asyncio
+async def test_peer_permanent_status_wins_over_stale_rate_limit_write() -> None:
+    db_account = _make_account("acc-peer-reauth-rate-limit", "peer-reauth-rate-limit@example.com")
+    db_account.status = AccountStatus.REAUTH_REQUIRED
+    db_account.deactivation_reason = "Refresh token was reused - re-login required"
+    accounts_repo = StubAccountsRepository([db_account])
+    usage_repo = StubUsageRepository(primary={}, secondary={})
+    sticky_repo = StubStickySessionsRepository()
+    balancer = LoadBalancer(lambda: _repo_factory(accounts_repo, usage_repo, sticky_repo))
+
+    stale_account = _make_account("acc-peer-reauth-rate-limit", "peer-reauth-rate-limit@example.com")
+    stale_account.status = AccountStatus.ACTIVE
+    stale_account.refresh_token_encrypted = db_account.refresh_token_encrypted
+
+    await balancer.mark_rate_limit(stale_account, {"message": "Try again in 1s"})
+
+    assert db_account.status == AccountStatus.REAUTH_REQUIRED
+    assert db_account.deactivation_reason == "Refresh token was reused - re-login required"
+    assert accounts_repo.status_updates == []
+
+
+@pytest.mark.asyncio
 async def test_select_account_does_not_hold_runtime_lock_during_input_loading(monkeypatch) -> None:
     accounts_started = asyncio.Event()
     release_accounts = asyncio.Event()

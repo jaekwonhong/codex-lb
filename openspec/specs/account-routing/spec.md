@@ -864,6 +864,8 @@ This status baseline is canonical for proxy selection, owner-bound affinity, war
 
 Selecting a routable `reauth_required` account MUST use its stored access token without proactive refresh-token exchange. Its sticky, bridge, file, response, and realtime ownership MUST remain bound while that token is unexpired. Once a known access-token expiry is reached, new proxy selection and live bridge reuse MUST stop before upstream I/O. Movable soft affinity MAY fail over, while hard account-owned continuity MUST remain fail-closed rather than crossing accounts.
 
+Transient request-capacity states MUST NOT erase a persisted credential-health or operator status. In particular, when a request-routable `reauth_required` account receives a rate-limit or quota-exhaustion response, the implementation MAY record cooldown/reset/block evidence for admission control, but the persisted account status MUST remain `reauth_required` until fresh credentials are supplied. A peer replica holding a stale pre-downgrade account object MUST use compare-and-set persistence for rate/quota marking so it cannot overwrite a newer `reauth_required`, `deactivated`, or `paused` row. Quota/rate-limit recovery MUST therefore never promote a known-bad refresh credential back to `active` merely because its transient capacity window recovered.
+
 A permanent forced-refresh failure while serving a movable request MUST release the account's lease and exclude it from that request's remaining attempts. The failure MUST NOT create a process-wide routing block before the stored access token's known expiry.
 
 #### Scenario: Token-invalidated account remains in the pool
@@ -872,6 +874,21 @@ A permanent forced-refresh failure while serving a movable request MUST release 
 - **WHEN** an ordinary proxy or supporting access-token operation selects an account
 - **THEN** account A remains eligible after all other applicable gates
 - **AND** its refresh token is not proactively exchanged
+
+#### Scenario: Rate limit does not erase reauthentication requirement
+
+- **GIVEN** account A is `reauth_required` but its stored access token is still request-routable
+- **WHEN** an upstream request on account A receives a rate-limit or quota-exhaustion response
+- **THEN** any cooldown/reset/block evidence is recorded without changing A's persisted status away from `reauth_required`
+- **AND** later capacity recovery does not promote A to `active`
+
+#### Scenario: Stale peer capacity write cannot clobber permanent auth status
+
+- **GIVEN** replica A has persisted account A as `reauth_required`
+- **AND** replica B still holds a stale in-memory copy of A as `active`
+- **WHEN** replica B observes a rate-limit or quota-exhaustion response from an in-flight request and attempts to persist that transient state
+- **THEN** its compare-and-set misses the newer database status
+- **AND** A remains `reauth_required` with its permanent failure reason intact
 
 #### Scenario: Warning state preserves ownership
 
@@ -1230,4 +1247,3 @@ When upstream answers a stream dispatch for a selected account with HTTP 429 who
 - **WHEN** the rejection is observed
 - **THEN** the burst cooldown for account A is engaged immediately, before the replacement dispatch or backoff wait
 - **AND** the deferred transient penalty, written after settlement, does not extend the cooldown deadline
-
