@@ -200,7 +200,7 @@ async def responses_model_is_source_owned(
     *,
     raw_model: str | None = None,
 ) -> bool:
-    """True when ``model`` is served by a Responses-capable source, even a disabled one.
+    """True when WebSocket must not hand ``model`` to a subscription account.
 
     Used by the WebSocket path, which cannot forward to a model source and must
     fail the session so the client falls back to the HTTP transport.
@@ -239,6 +239,13 @@ async def responses_model_is_source_owned(
     not use this helper: they call ``select_responses_model_source`` directly
     and must keep surfacing resolution errors rather than silently routing
     source traffic to a subscription account.
+
+    A source-scoped key whose durable assignment set became empty is also a
+    source boundary even though no surviving source row can prove ownership.
+    The HTTP path already fails that state closed via
+    ``source_scoped_model_requires_source``; include the same predicate here so
+    WebSocket cannot broaden the key back onto subscription routing after its
+    final assigned source is deleted.
     """
     raw = raw_model if raw_model is not None else effective_model_for_api_key(api_key, model)
     if not model and not raw:
@@ -254,7 +261,7 @@ async def responses_model_is_source_owned(
             is not None
         ):
             return True
-        return (
+        if (
             await select_responses_model_source(
                 model or raw or "",
                 api_key,
@@ -263,6 +270,12 @@ async def responses_model_is_source_owned(
                 only_disabled=True,
             )
             is not None
+        ):
+            return True
+        return await source_scoped_model_requires_source(
+            model,
+            api_key,
+            raw_model=raw,
         )
     except Exception:
         logger.warning(

@@ -43,7 +43,12 @@ from tests.unit.test_proxy_utils import (
 pytestmark = pytest.mark.unit
 
 
-def _api_key(*, enforced_model: str | None = None) -> ApiKeyData:
+def _api_key(
+    *,
+    enforced_model: str | None = None,
+    source_assignment_scope_enabled: bool = False,
+    assigned_source_ids: list[str] | None = None,
+) -> ApiKeyData:
     from datetime import datetime
 
     return ApiKeyData(
@@ -58,6 +63,8 @@ def _api_key(*, enforced_model: str | None = None) -> ApiKeyData:
         is_active=True,
         created_at=datetime(2026, 1, 1),
         last_used_at=None,
+        source_assignment_scope_enabled=source_assignment_scope_enabled,
+        assigned_source_ids=assigned_source_ids or [],
     )
 
 
@@ -94,6 +101,24 @@ async def test_source_ownership_fails_open_when_resolution_raises(monkeypatch: p
     monkeypatch.setattr(source_selection, "select_responses_model_source", boom)
 
     assert await responses_model_is_source_owned("qwen3.8-max", None) is False
+
+
+@pytest.mark.asyncio
+async def test_dangling_source_scope_requires_http_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deleting the final assigned source must not broaden WebSocket routing."""
+
+    class _EmptyRegistry:
+        def get_models_with_fallback(self) -> dict[str, object]:
+            return {}
+
+    async def no_source(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        return None
+
+    monkeypatch.setattr(source_selection, "get_model_registry", lambda: _EmptyRegistry())
+    monkeypatch.setattr(source_selection, "select_responses_model_source", no_source)
+    dangling_key = _api_key(source_assignment_scope_enabled=True, assigned_source_ids=[])
+
+    assert await responses_model_is_source_owned("deleted-source-only-model", dangling_key) is True
 
 
 async def _run_connect_guard(
@@ -991,6 +1016,59 @@ async def test_connect_guard_fails_session_for_disabled_source_model(monkeypatch
     assert emitted.get("error_code") == "model_source_requires_http_transport"
     assert emitted.get("status_code") == 503, "a 4xx is terminal client-side and would strand the HTTP fallback"
     assert "qwen3.8-max" in catalog.seen_candidates, "the disabled-source probe must reach the catalog"
+
+
+@pytest.mark.asyncio
+async def test_connect_guard_fails_closed_for_dangling_source_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A source-scoped key with no surviving assignments must not broaden to subscription routing."""
+    settings = _make_proxy_settings()
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+
+    class _EmptyRegistry:
+        def get_models_with_fallback(self) -> dict[str, object]:
+            return {}
+
+    catalog = _AliasSourceCatalog(set())
+    catalog.install(monkeypatch)
+    monkeypatch.setattr(source_selection, "get_model_registry", lambda: _EmptyRegistry())
+
+    emitted: dict[str, object] = {}
+    selection_calls = 0
+
+    async def fake_emit(self, websocket, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        emitted.update(kwargs)
+
+    async def fake_select(self, *args, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        nonlocal selection_calls
+        selection_calls += 1
+        return None
+
+    monkeypatch.setattr(proxy_service.ProxyService, "_emit_websocket_connect_failure", fake_emit)
+    monkeypatch.setattr(proxy_service.ProxyService, "_select_websocket_connect_account", fake_select)
+
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    dangling_key = _api_key(source_assignment_scope_enabled=True, assigned_source_ids=[])
+    request_state = _request_state("deleted-source-only-model")
+    request_state.api_key = dangling_key
+
+    account, upstream = await service._connect_proxy_websocket(
+        {},
+        sticky_key=None,
+        sticky_kind=None,
+        prefer_earlier_reset=False,
+        routing_strategy="capacity_weighted",
+        model="deleted-source-only-model",
+        request_state=request_state,
+        api_key=dangling_key,
+        client_send_lock=anyio.Lock(),
+        websocket=AsyncMock(),
+    )
+
+    assert account is None and upstream is None
+    assert selection_calls == 0, "dangling source scope must short-circuit before subscription account selection"
+    assert emitted.get("error_code") == "model_source_requires_http_transport"
+    assert emitted.get("status_code") == 503
 
 
 @pytest.mark.asyncio
