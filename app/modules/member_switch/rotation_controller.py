@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import Literal, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
@@ -32,6 +32,7 @@ from app.modules.member_switch.rotation_foundation import (
     evaluate_rotation_foundation,
     final_usage_snapshot_inputs,
 )
+from app.modules.member_switch.runtime_attestation import MissingRuntimeAttestation, RuntimeAttestation
 from app.modules.member_switch.schemas import (
     CommandRequest,
     CompanionTypedTelemetryProvenance,
@@ -126,12 +127,16 @@ class RotationController:
         quota_sessions: Callable[[], AsyncSession],
         *,
         clock: Callable[[], datetime] | None = None,
+        runtime_attestation: RuntimeAttestation | None = None,
+        dispatch_guard: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self.controls = controls
         self.member_switch = member_switch
         self._snapshot_sessions = snapshot_sessions
         self._quota_sessions = quota_sessions
         self._clock = clock or (lambda: datetime.now(timezone.utc))
+        self._runtime_attestation = runtime_attestation or MissingRuntimeAttestation()
+        self._dispatch_guard = dispatch_guard
 
     @staticmethod
     def _decode(record: ControlRecord) -> RotationControllerState:
@@ -393,6 +398,9 @@ class RotationController:
         record: ControlRecord,
         state: RotationControllerState,
         run,
+        *,
+        decision_weekly: RotationWeeklyEvidence,
+        current_member: UsageAccountIdentity,
     ) -> RotationControllerState:
         child = await self.controls.get(state.member_switch_run_id)
         effect_claimed = self._start_claimed(child, state, run)
@@ -464,6 +472,29 @@ class RotationController:
                 code=f"rotation_remove_preflight_failed:{exc}",
                 attention=True,
             )
+
+        def require_fresh_weekly() -> None:
+            assessment = decision_weekly.assess(current_member, now=_utc(self._clock()))
+            if assessment.state != "exhausted":
+                raise ValueError(f"rotation_dispatch_weekly:{assessment.reason or assessment.state}")
+
+        async def prepare_effect() -> None:
+            require_fresh_weekly()
+            await self._quota_request(quota_operation_id, "remove")
+            try:
+                # Admission and the durable quota write can both wait. No
+                # asynchronous work may separate this check from start.
+                if self._dispatch_guard is not None:
+                    await self._dispatch_guard()
+                require_fresh_weekly()
+                assert state.p4_provenance is not None
+                self._runtime_attestation.require(state.p4_provenance)
+            except ValueError:
+                # We have not contacted Companion; undo only this accounting
+                # reservation's possible effect, retaining the durable record.
+                await self._quota_outcome(quota_operation_id, "remove", "authoritative_non_effect")
+                raise
+
         try:
             # The child command claims the durable start intent BEFORE any
             # external Companion mutation.  Controller/P3 accounting follows
@@ -476,7 +507,7 @@ class RotationController:
                     action="start",
                 ),
                 rotation_controller_id=state.id,
-                pre_effect=lambda: self._quota_request(quota_operation_id, "remove"),
+                pre_effect=prepare_effect,
             )
         except ControlConflict as exc:
             child = await self.controls.get(state.member_switch_run_id)
@@ -815,7 +846,9 @@ class RotationController:
                         record, state, code="rotation_child_run_identity_mismatch", attention=True
                     )
 
-        return await self._start_child(record, state, run)
+        return await self._start_child(
+            record, state, run, decision_weekly=decision_weekly, current_member=current_member
+        )
 
     async def _cancel_preeffect_run(self, state: RotationControllerState, run) -> bool:
         if run.phase == "completed" and run.pending_action is None:
@@ -876,7 +909,7 @@ class RotationController:
                 return latest or run
         return run
 
-    async def resume(self, controller_id: str) -> RotationControllerState:
+    async def resume(self, controller_id: str, *, pre_effect_attention: bool = False) -> RotationControllerState:
         record = await self.controls.get(controller_id)
         if record is None:
             raise ControlConflict("rotation_controller_not_found")
@@ -886,7 +919,12 @@ class RotationController:
         # A prior process may have terminalized the controller after the child
         # durably claimed ``finish`` but before its release receipt settled.  A
         # terminal controller must not make that owned cleanup unrecoverable.
-        if state.phase in {"completed", "needs_attention"}:
+        concurrent_start_claimed = (
+            state.phase == "needs_attention"
+            and state.terminal_reason == "rotation_prestart_interrupted_requires_attention"
+            and self._start_claimed(None, state, run)
+        )
+        if state.phase in {"completed", "needs_attention"} and not concurrent_start_claimed:
             if run is None or run.pending_action != "finish":
                 return state
             reconciled = await self._reconcile_child(state, run)
@@ -921,6 +959,14 @@ class RotationController:
             return state
 
         if state.remove_state == "not_attempted":
+            child = await self.controls.get(state.member_switch_run_id) if run is not None else None
+            if pre_effect_attention and not self._start_claimed(child, state, run):
+                # The single-evaluation worker cannot reconstruct reset authority
+                # from stored display facts. Keep the binding, snapshots and quota
+                # for explicit recovery rather than pretending to evaluate forever.
+                return await self._retain_attention(
+                    record, state, code="rotation_prestart_interrupted_requires_attention"
+                )
             if run is None:
                 # Snapshot publication is durable, but it is not authority to
                 # start later.  A new scheduler evaluation must bring fresh G1
@@ -937,7 +983,6 @@ class RotationController:
                         ),
                     )
                 return state
-            child = await self.controls.get(state.member_switch_run_id)
             if not self._start_claimed(child, state, run):
                 # Never cross a fresh external-effect boundary from resume()
                 # using stored foundation/P4 facts.  The next evaluate call must
@@ -1033,6 +1078,7 @@ class RotationController:
         invite_observation = settlement.invite_response_observation if settlement is not None else None
         updates: dict[str, object] = {
             "member_switch_operation_id": operation.operation_id,
+            "remove_response_observation": operation.remove_response_observation,
             "invite_response_observation": invite_observation,
             "last_code": operation.code,
         }
@@ -1080,7 +1126,17 @@ class RotationController:
             and operation.removed_email.casefold() == state.outgoing_email.casefold()
             and operation.removed_user_id == state.outgoing_user_id
         )
-        if removed_exact and state.remove_state == "unknown":
+        # The qualified Companion publishes removed_* as intent BEFORE DELETE,
+        # including on failures. Only this post-verification producer trace
+        # proves the outgoing workspace membership was observed absent.
+        removal_observed = removed_exact and any(
+            entry.stage == "verifying_removal"
+            and entry.code == "outgoing_workspace_absence_observed"
+            and entry.action is None
+            and entry.status is None
+            for entry in operation.trace
+        )
+        if removal_observed and state.remove_state == "unknown":
             await self._quota_outcome(state.quota_operation_id or "", "remove", "confirmed")
             state = state.model_copy(update={"remove_state": "confirmed"})
             updates["remove_state"] = "confirmed"
@@ -1120,6 +1176,13 @@ class RotationController:
                 updates.update(invite_state="confirmed", phase="invite_sent")
             else:
                 updates["phase"] = "invite_effect_unknown"
+
+        if _response_capture_failed(operation.remove_response_observation):
+            assert operation.remove_response_observation is not None
+            updates.update(
+                phase="needs_attention",
+                terminal_reason=f"rotation_remove_telemetry_{operation.remove_response_observation.capture_state}",
+            )
 
         if _response_capture_failed(invite_observation):
             assert invite_observation is not None

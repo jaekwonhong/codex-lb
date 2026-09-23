@@ -178,7 +178,10 @@ class CompanionClient:
         return await self._required("POST", "/previews", Preview, request)
 
     async def start(self, request: StartRequest) -> StartReceipt:
-        return await self._required("POST", "/operations", StartReceipt, request)
+        # A dedicated path makes an old Companion reject the request instead
+        # of silently ignoring an unknown JSON canary flag on /operations.
+        path = "/canary-operations" if request.canary else "/operations"
+        return await self._required("POST", path, StartReceipt, request)
 
     async def lookup(self, client_flow_id: str) -> StartReceipt | None:
         return await self._request(

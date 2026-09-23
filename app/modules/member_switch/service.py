@@ -495,6 +495,8 @@ class MemberSwitchService:
     ) -> RunView:
         if not rotation_controller_id.strip():
             raise ControlConflict("rotation_controller_identity_missing")
+        if request.action == "start" and pre_effect is None:
+            raise ControlConflict("rotation_dispatch_guard_required")
         return await self._command(
             run_id,
             request,
@@ -561,6 +563,11 @@ class MemberSwitchService:
                 raise ControlConflict("catalog_identity_mismatch")
             self.auth.bind_catalog(current_catalog)
             self.auth.validate_identity(state.identity, state.preview.remove_email)
+            if rotation_controller_id is not None and not {
+                "member_rotation_canary_effect_gate_v1",
+                "member_rotation_managed_remove_telemetry_v1",
+            }.issubset(current_catalog.capabilities):
+                raise ControlConflict("rotation_canary_capability_required")
             admission = await self.companion.admission()
             if not admission.can_start:
                 raise ControlConflict(admission.code)
@@ -607,7 +614,11 @@ class MemberSwitchService:
                     await self._save(record, state)
                     raise ControlConflict("rotation_pre_effect_hook_failed") from exc
             receipt = await self.companion.start(
-                StartRequest(preview_token=state.preview.preview_token, client_flow_id=state.id)
+                StartRequest(
+                    preview_token=state.preview.preview_token,
+                    client_flow_id=state.id,
+                    canary=rotation_controller_id is not None,
+                )
             )
             if receipt.accepted != bool(receipt.operation_id):
                 raise ControlConflict("invalid_start_receipt")

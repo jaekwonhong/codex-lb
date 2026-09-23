@@ -7,21 +7,45 @@ cd "${repo_root}"
 "${repo_root}/scripts/qualify_beta_patch_packet.sh"
 
 uv run pytest -q \
+  tests/unit/test_background_loop_harness.py \
+  tests/unit/test_member_rotation_effect_boundaries.py \
   tests/unit/test_weekly_usage_observation.py \
   tests/unit/test_rotation_reset_credit_resolution.py \
   tests/unit/test_member_rotation_quota_history.py \
   tests/unit/test_member_rotation_foundation_integration.py \
   tests/unit/test_member_usage_snapshot_repository.py \
   tests/unit/test_member_rotation_controller.py \
+  tests/unit/test_member_rotation_runtime.py \
+  tests/unit/test_member_rotation_scheduler.py \
+  tests/unit/test_member_rotation_host_observation.py \
   tests/unit/test_member_switch_control.py \
   tests/unit/test_member_switch_continuation.py \
   tests/unit/test_member_rotation_beta9_candidate_gate.py \
   tests/unit/test_member_rotation_p7_qualification.py \
+  tests/integration/test_rotation_reset_credit_admission.py \
   tests/integration/test_member_rotation_local_extension_schema.py \
   tests/integration/test_member_rotation_operator_api.py \
   tests/integration/test_member_rotation_g2_operator_adapter.py
 
 uv run ruff check \
+  app/modules/member_rotation_operator/repository.py \
+  app/modules/rate_limit_reset_credits/api.py \
+  tests/unit/test_member_rotation_effect_boundaries.py \
+  tests/unit/test_background_loop_harness.py \
+  tests/integration/test_rotation_reset_credit_admission.py \
+  tests/integration/test_member_rotation_operator_api.py \
+  app/modules/member_switch/schemas.py \
+  app/modules/member_switch/runtime_attestation.py \
+  app/modules/member_switch/rotation_plan.py \
+  app/modules/member_switch/rotation_scheduler.py \
+  app/modules/member_switch/rotation_worker.py \
+  app/modules/member_switch/admission.py \
+  app/modules/member_switch/service.py \
+  app/modules/rate_limit_reset_credits/rotation_resolution.py \
+  scripts/member_rotation_host_observation.py \
+  tests/unit/test_member_rotation_runtime.py \
+  tests/unit/test_member_rotation_scheduler.py \
+  tests/unit/test_member_rotation_host_observation.py \
   app/modules/member_switch/rotation_controller.py \
   app/modules/member_rotation_operator/adapter.py \
   app/db/migrate.py \
@@ -35,6 +59,24 @@ uv run ruff check \
   tests/integration/test_member_rotation_g2_operator_adapter.py
 
 uv run ty check \
+  app/modules/member_rotation_operator/repository.py \
+  app/modules/rate_limit_reset_credits/api.py \
+  tests/unit/test_member_rotation_effect_boundaries.py \
+  tests/unit/test_background_loop_harness.py \
+  tests/integration/test_rotation_reset_credit_admission.py \
+  tests/integration/test_member_rotation_operator_api.py \
+  app/modules/member_switch/schemas.py \
+  app/modules/member_switch/runtime_attestation.py \
+  app/modules/member_switch/rotation_plan.py \
+  app/modules/member_switch/rotation_scheduler.py \
+  app/modules/member_switch/rotation_worker.py \
+  app/modules/member_switch/admission.py \
+  app/modules/member_switch/service.py \
+  app/modules/rate_limit_reset_credits/rotation_resolution.py \
+  scripts/member_rotation_host_observation.py \
+  tests/unit/test_member_rotation_runtime.py \
+  tests/unit/test_member_rotation_scheduler.py \
+  tests/unit/test_member_rotation_host_observation.py \
   app/modules/member_switch/rotation_controller.py \
   app/modules/member_rotation_operator/adapter.py \
   app/db/migrate.py \

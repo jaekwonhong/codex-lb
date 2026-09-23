@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -17,13 +18,16 @@ from app.db.models import (
 )
 from app.modules.member_auth_handoff.usage_snapshot_repository import (
     FinalUsageSnapshotInput,
+    HistoricalUsageConflict,
     MemberUsageSnapshotRepository,
+    retained_five_hour_state,
 )
 
 pytestmark = pytest.mark.unit
 
 WORKSPACE_ID = "cdp-1"
 WORKSPACE_ACCOUNT_ID = "4865cea4-fb0b-41f3-917c-b226b2acdfb0"
+PROVENANCE_OBSERVED_AT = datetime(2026, 9, 13, 0, 0, tzinfo=timezone.utc)
 
 
 @dataclass
@@ -285,3 +289,285 @@ async def test_missing_final_window_is_rejected_without_partial_history(
 
         count = int(await session.scalar(select(func.count()).select_from(WorkspaceMemberFinalUsageSnapshot)) or 0)
         assert count == 0
+
+
+def _epoch_identity(epoch: str) -> dict[str, str]:
+    return {
+        "workspace_id": WORKSPACE_ID,
+        "workspace_account_id": WORKSPACE_ACCOUNT_ID,
+        "account_id": "local-account-1",
+        "preset_id": "member-a",
+        "email": "member-a@example.com",
+        "user_id": "user-MemberA",
+        "membership_epoch": epoch,
+    }
+
+
+def _versioned_provenance(**changes: object) -> dict[str, object]:
+    provenance: dict[str, object] = {
+        "schema_version": 2,
+        "five_hour_availability": "observed",
+        "evaluation_id": "evaluation-1",
+        "workspace_id": WORKSPACE_ID,
+        "source_account_id": "local-account-1",
+        "source_workspace_account_id": WORKSPACE_ACCOUNT_ID,
+        "source_user_id": "user-MemberA",
+        "source_email": "member-a@example.com",
+        "fetch_id": "fetch-1",
+        "requested_workspace_account_id": WORKSPACE_ACCOUNT_ID,
+        "account_workspace_id": "metadata-workspace-1",
+        "payload_workspace_id": "metadata-workspace-1",
+        "credential_source": "stored",
+        "started_at": (PROVENANCE_OBSERVED_AT - timedelta(seconds=1)).isoformat(),
+        "observed_at": PROVENANCE_OBSERVED_AT.isoformat(),
+    }
+    provenance.update(changes)
+    return provenance
+
+
+def _provenance_observations(provenance: str, *, weekly_only: bool) -> tuple[FinalUsageSnapshotInput, ...]:
+    observations = tuple(replace(item, fetch_provenance=provenance) for item in _observations(PROVENANCE_OBSERVED_AT))
+    return observations[1:] if weekly_only else observations
+
+
+async def _seed_snapshot_epoch(
+    session: AsyncSession,
+    identity: dict[str, str],
+    observations: tuple[FinalUsageSnapshotInput, ...],
+) -> None:
+    """Represent already committed historical rows without new-input validation."""
+    session.add_all(
+        [
+            WorkspaceMemberFinalUsageSnapshot(
+                **identity,
+                logical_window=item.logical_window,
+                source_window=item.source_window,
+                used_percent=item.used_percent,
+                reset_at=item.reset_at,
+                window_minutes=item.window_minutes,
+                observed_at=item.observed_at.replace(tzinfo=None),
+                retained_at=PROVENANCE_OBSERVED_AT.replace(tzinfo=None),
+                fetch_provenance=item.fetch_provenance,
+                fetch_succeeded=item.fetch_succeeded,
+                usage_written=item.usage_written,
+            )
+            for item in observations
+        ]
+    )
+    await session.commit()
+
+
+@pytest.mark.parametrize("preexisting", [False, True], ids=["new-retention", "existing-history"])
+@pytest.mark.parametrize(
+    ("provenance", "weekly_only", "expected_state"),
+    [
+        pytest.param("live_upstream_fetch", False, "observed", id="opaque-text"),
+        pytest.param(
+            '{"source":"live_upstream_fetch","fetch_id":"legacy-fetch"}',
+            False,
+            "observed",
+            id="opaque-json-object",
+        ),
+        pytest.param("{}", False, "observed", id="opaque-empty-object"),
+        pytest.param('["live_upstream_fetch","legacy-fetch"]', False, "observed", id="opaque-array"),
+        pytest.param('"live_upstream_fetch"', False, "observed", id="opaque-json-string"),
+        pytest.param('{"schema_version":1,"fetch_id":"legacy-fetch"}', False, "observed", id="explicit-v1"),
+        pytest.param(
+            json.dumps(
+                {
+                    key: value
+                    for key, value in _versioned_provenance(schema_version=1).items()
+                    if key != "five_hour_availability"
+                }
+            ),
+            False,
+            "observed",
+            id="first-party-v1-shape",
+        ),
+        pytest.param(json.dumps(_versioned_provenance()), False, "observed", id="v2-observed"),
+        pytest.param(
+            json.dumps(_versioned_provenance(five_hour_availability="not_provided")),
+            True,
+            "not_provided",
+            id="v2-weekly-only",
+        ),
+    ],
+)
+async def test_supported_provenance_preserves_epoch_on_retry_and_new_session_recovery(
+    session_factory: async_sessionmaker[AsyncSession],
+    provenance: str,
+    weekly_only: bool,
+    expected_state: str,
+    preexisting: bool,
+) -> None:
+    identity = _epoch_identity("compatible-provenance")
+    observations = _provenance_observations(provenance, weekly_only=weekly_only)
+    async with session_factory() as session:
+        repository = MemberUsageSnapshotRepository(session, clock=lambda: PROVENANCE_OBSERVED_AT)
+        if preexisting:
+            await _seed_snapshot_epoch(session, identity, observations)
+            original = tuple(await repository.list_history())
+        else:
+            original = await repository.retain_final_snapshots(**identity, observations=observations)
+        assert await repository.retain_final_snapshots(**identity, observations=observations) == original
+        assert len(original) == (1 if weekly_only else 2)
+        assert retained_five_hour_state(original) == expected_state
+        assert all(item.fetch_provenance == provenance for item in original)
+
+    async with session_factory() as session:
+        repository = MemberUsageSnapshotRepository(session, clock=lambda: PROVENANCE_OBSERVED_AT + timedelta(days=10))
+        assert await repository.recover_final_snapshot_epoch(**identity) == original
+        assert await repository.retain_final_snapshots(**identity, observations=observations) == original
+        changed = tuple(replace(item, used_percent=item.used_percent + 1) for item in observations)
+        with pytest.raises(HistoricalUsageConflict):
+            await repository.retain_final_snapshots(**identity, observations=changed)
+        assert tuple(await repository.list_history()) == original
+        assert await repository.recover_final_snapshot_epoch(**identity) == original
+
+
+async def _assert_provenance_rejected(
+    session_factory: async_sessionmaker[AsyncSession],
+    provenance: str,
+    *,
+    weekly_only: bool,
+) -> None:
+    identity = _epoch_identity("invalid-provenance")
+    observations = _provenance_observations(provenance, weekly_only=weekly_only)
+    async with session_factory() as session:
+        repository = MemberUsageSnapshotRepository(session, clock=lambda: PROVENANCE_OBSERVED_AT)
+        with pytest.raises(ValueError):
+            await repository.retain_final_snapshots(**identity, observations=observations)
+        assert await repository.list_history() == []
+        await _seed_snapshot_epoch(session, identity, observations)
+        original = await repository.list_history()
+        assert retained_five_hour_state(original) == "unknown"
+
+    async with session_factory() as session:
+        repository = MemberUsageSnapshotRepository(session, clock=lambda: PROVENANCE_OBSERVED_AT)
+        with pytest.raises(HistoricalUsageConflict):
+            await repository.recover_final_snapshot_epoch(**identity)
+        with pytest.raises(ValueError):
+            await repository.retain_final_snapshots(**identity, observations=observations)
+        assert await repository.list_history() == original
+
+
+@pytest.mark.parametrize("weekly_only", [False, True], ids=["complete-pair", "weekly-only"])
+@pytest.mark.parametrize(
+    "version",
+    [None, True, False, 0, -1, 3, 1.0, 2.0, "1", "2", [], {}],
+    ids=[
+        "null",
+        "true",
+        "false",
+        "zero",
+        "negative",
+        "future",
+        "float-v1",
+        "float-v2",
+        "text-v1",
+        "text-v2",
+        "list",
+        "dict",
+    ],
+)
+async def test_invalid_explicit_versions_never_use_legacy_fallback(
+    session_factory: async_sessionmaker[AsyncSession], version: object, weekly_only: bool
+) -> None:
+    await _assert_provenance_rejected(
+        session_factory,
+        json.dumps(
+            _versioned_provenance(
+                schema_version=version, five_hour_availability="not_provided" if weekly_only else "observed"
+            )
+        ),
+        weekly_only=weekly_only,
+    )
+
+
+@pytest.mark.parametrize("weekly_only", [False, True], ids=["complete-pair", "weekly-only"])
+@pytest.mark.parametrize(
+    "provenance",
+    [
+        pytest.param('{"schema_version":2}', id="partial-v2"),
+        pytest.param('{"five_hour_availability":"observed"}', id="untagged-observed"),
+        pytest.param('{"five_hour_availability":"not_provided"}', id="untagged-absence"),
+        pytest.param(
+            json.dumps({key: value for key, value in _versioned_provenance().items() if key != "schema_version"}),
+            id="v2-missing-schema",
+        ),
+        pytest.param(
+            json.dumps(
+                {
+                    key: value
+                    for key, value in _versioned_provenance().items()
+                    if key not in {"schema_version", "five_hour_availability"}
+                }
+            ),
+            id="versioned-binding-missing-tags",
+        ),
+        pytest.param(
+            json.dumps(
+                {key: value for key, value in _versioned_provenance().items() if key != "five_hour_availability"}
+            ),
+            id="v2-missing-availability",
+        ),
+        pytest.param(json.dumps(_versioned_provenance(schema_version=1)), id="v1-with-observed-availability"),
+        pytest.param(
+            json.dumps(_versioned_provenance(schema_version=1, five_hour_availability="not_provided")),
+            id="v1-with-absence-availability",
+        ),
+        pytest.param(json.dumps(_versioned_provenance(five_hour_availability="unknown")), id="unknown-availability"),
+        pytest.param(json.dumps(_versioned_provenance(five_hour_availability=None)), id="null-availability"),
+        pytest.param(json.dumps(_versioned_provenance(five_hour_availability=True)), id="boolean-availability"),
+        pytest.param(json.dumps(_versioned_provenance(source_account_id="another-account")), id="v2-wrong-account"),
+        pytest.param(
+            json.dumps(_versioned_provenance(requested_workspace_account_id="another-workspace")),
+            id="v2-wrong-requested-workspace",
+        ),
+        pytest.param(
+            json.dumps(_versioned_provenance(observed_at="2026-09-12T00:00:00Z")), id="v2-wrong-observation-time"
+        ),
+        pytest.param('{"schema_version":2', id="truncated-versioned-object"),
+        pytest.param('{"five_hour_availability":', id="truncated-availability-object"),
+        pytest.param('[{"schema_version":2', id="truncated-json-array"),
+        pytest.param('{"schema_version":3,"schema_version":1}', id="duplicate-version-fallback"),
+        pytest.param(r'{"schema_version":3,"schema_\u0076ersion":1}', id="duplicate-escaped-version"),
+        pytest.param(
+            json.dumps(_versioned_provenance()).replace(
+                '"schema_version": 2', '"schema_version": true, "schema_version": 2'
+            ),
+            id="duplicate-malformed-version",
+        ),
+        pytest.param(
+            json.dumps(_versioned_provenance()).replace(
+                '"five_hour_availability": "observed"',
+                '"five_hour_availability": "not_provided", "five_hour_availability": "observed"',
+            ),
+            id="duplicate-conflicting-availability",
+        ),
+    ],
+)
+async def test_partial_malformed_or_conflicting_versioned_provenance_fails_closed(
+    session_factory: async_sessionmaker[AsyncSession], provenance: str, weekly_only: bool
+) -> None:
+    await _assert_provenance_rejected(session_factory, provenance, weekly_only=weekly_only)
+
+
+@pytest.mark.parametrize(
+    ("provenance", "weekly_only"),
+    [
+        pytest.param("live_upstream_fetch", True, id="opaque-text-weekly-only"),
+        pytest.param('{"source":"live_upstream_fetch","fetch_id":"legacy-fetch"}', True, id="opaque-json-weekly-only"),
+        pytest.param('{"schema_version":1,"fetch_id":"legacy-fetch"}', True, id="v1-weekly-only"),
+        pytest.param(json.dumps(_versioned_provenance()), True, id="v2-observed-without-five-hour"),
+        pytest.param(
+            json.dumps(_versioned_provenance(five_hour_availability="not_provided")),
+            False,
+            id="v2-absence-with-five-hour",
+        ),
+    ],
+)
+async def test_provenance_never_relaxes_required_window_set(
+    session_factory: async_sessionmaker[AsyncSession], provenance: str, weekly_only: bool
+) -> None:
+    await _assert_provenance_rejected(session_factory, provenance, weekly_only=weekly_only)

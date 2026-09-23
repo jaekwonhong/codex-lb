@@ -1,0 +1,5 @@
+- [x] Implement signed host evidence validation and the final dispatch gate.
+- [x] Add a host-side read-only evidence producer.
+- [x] Connect a default-off single-evaluation scheduler to P1/P2/P3/P5.
+- [x] Verify expiry, mismatch, OFF, cancellation, duplicate/restart, and no-replay boundaries.
+- [x] Record local qualification, limitations and remaining release prerequisites.

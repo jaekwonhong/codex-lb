@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
@@ -15,9 +16,13 @@ from app.core.usage.weekly_observation import (
     UsageAccountIdentity,
     UsageFetchProvenance,
 )
-from app.db.models import Base
+from app.db.models import Base, WorkspaceMemberFinalUsageSnapshot
 from app.modules.member_auth_handoff.rotation_events import RotationQuotaDecision, RotationQuotaRepository
-from app.modules.member_auth_handoff.usage_snapshot_repository import MemberUsageSnapshotRepository
+from app.modules.member_auth_handoff.usage_snapshot_repository import (
+    HistoricalUsageConflict,
+    MemberUsageSnapshotRepository,
+    retained_five_hour_state,
+)
 from app.modules.member_switch.rotation_foundation import (
     FinalUsageRetentionUnavailable,
     RotationEvaluationIdentity,
@@ -590,3 +595,100 @@ def test_final_usage_retention_fails_closed_without_exact_same_fetch_evidence(
     with pytest.raises(FinalUsageRetentionUnavailable) as exc_info:
         final_usage_snapshot_inputs(receipt, EVALUATION, MEMBER, now=NOW)
     assert exc_info.value.code == code
+
+
+async def test_weekly_only_retention_recovery_is_immutable_and_invalidation_preserves_absence(session_factory):
+    receipt = replace(_receipt(), five_hour_window=None, five_hour_not_provided=True)
+    inputs = final_usage_snapshot_inputs(receipt, EVALUATION, MEMBER, now=NOW)
+    assert len(inputs) == 1 and inputs[0].logical_window == "weekly"
+    assert json.loads(inputs[0].fetch_provenance)["five_hour_availability"] == "not_provided"
+    identity = dict(
+        workspace_id=WORKSPACE_ID,
+        workspace_account_id=WORKSPACE_ACCOUNT_ID,
+        account_id=MEMBER.account_id,
+        preset_id="member-a",
+        email=MEMBER.email,
+        user_id=MEMBER.user_id or "",
+        membership_epoch="weekly-only",
+    )
+    async with session_factory() as session:
+        repo = MemberUsageSnapshotRepository(session, clock=lambda: NOW)
+        first = await repo.retain_final_snapshots(**identity, observations=inputs)
+        repeat = await repo.retain_final_snapshots(**identity, observations=inputs)
+        assert repeat == first
+        assert retained_five_hour_state(first) == "not_provided"
+        with pytest.raises(HistoricalUsageConflict):
+            await repo.retain_final_snapshots(
+                **identity, observations=final_usage_snapshot_inputs(_receipt(), EVALUATION, MEMBER, now=NOW)
+            )
+    async with session_factory() as session:
+        repo = MemberUsageSnapshotRepository(session, clock=lambda: NOW)
+        recovered = await repo.recover_final_snapshot_epoch(**identity)
+        assert recovered == first
+        invalidated = await repo.invalidate_historical_reset_schedules(cutoff_at=NOW)
+        assert invalidated.affected_count == 1
+        history = await repo.list_history(workspace_account_id=WORKSPACE_ACCOUNT_ID)
+        assert retained_five_hour_state(history) == "not_provided"
+        assert history[0].reset_at == first[0].reset_at and history[0].effective_reset_at is None
+
+
+@pytest.mark.parametrize(
+    "corruption", ["legacy", "observed", "wrong_identity", "wrong_time", "malformed", "unknown_version"]
+)
+async def test_weekly_only_corrupt_epoch_is_not_absence_or_recoverable(session_factory, corruption):
+    receipt = replace(_receipt(), five_hour_window=None, five_hour_not_provided=True)
+    inputs = final_usage_snapshot_inputs(receipt, EVALUATION, MEMBER, now=NOW)
+    identity = dict(
+        workspace_id=WORKSPACE_ID,
+        workspace_account_id=WORKSPACE_ACCOUNT_ID,
+        account_id=MEMBER.account_id,
+        preset_id="member-a",
+        email=MEMBER.email,
+        user_id=MEMBER.user_id or "",
+        membership_epoch="corrupt-weekly-only",
+    )
+    async with session_factory() as session:
+        repo = MemberUsageSnapshotRepository(session, clock=lambda: NOW)
+        saved = await repo.retain_final_snapshots(**identity, observations=inputs)
+        row = await session.get(WorkspaceMemberFinalUsageSnapshot, saved[0].id)
+        assert row is not None
+        provenance = json.loads(row.fetch_provenance)
+        if corruption == "legacy":
+            provenance["schema_version"] = 1
+        elif corruption == "observed":
+            provenance["five_hour_availability"] = "observed"
+        elif corruption == "wrong_identity":
+            provenance["source_user_id"] = "other-member"
+        elif corruption == "wrong_time":
+            provenance["observed_at"] = "2020-01-01T00:00:00Z"
+        elif corruption == "unknown_version":
+            provenance["schema_version"] = 3
+        row.fetch_provenance = "{bad-json" if corruption == "malformed" else json.dumps(provenance)
+        await session.commit()
+        history = await repo.list_history(workspace_account_id=WORKSPACE_ACCOUNT_ID)
+        assert retained_five_hour_state(history) == "unknown"
+        with pytest.raises(HistoricalUsageConflict):
+            await repo.recover_final_snapshot_epoch(**identity)
+
+
+@pytest.mark.parametrize("failure", ["stale", "wrong_identity", "failed", "missing_weekly", "contradictory"])
+def test_explicit_five_hour_absence_does_not_relax_other_evidence(failure):
+    receipt = replace(_receipt(), five_hour_window=None, five_hour_not_provided=True)
+    assert receipt.provenance is not None
+    if failure == "stale":
+        receipt = replace(
+            receipt,
+            provenance=replace(
+                receipt.provenance, started_at=NOW - timedelta(days=1), observed_at=NOW - timedelta(days=1)
+            ),
+        )
+    elif failure == "wrong_identity":
+        receipt = replace(receipt, provenance=replace(receipt.provenance, identity=replace(MEMBER, user_id="other")))
+    elif failure == "failed":
+        receipt = replace(receipt, fetch_succeeded=False)
+    elif failure == "missing_weekly":
+        receipt = replace(receipt, weekly_window=None)
+    else:
+        receipt = replace(receipt, five_hour_window=_receipt().five_hour_window)
+    with pytest.raises(FinalUsageRetentionUnavailable):
+        final_usage_snapshot_inputs(receipt, EVALUATION, MEMBER, now=NOW)

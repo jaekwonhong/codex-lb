@@ -1,0 +1,5 @@
+- [x] Implement same-response optional 5H classification and receipt propagation.
+- [x] Implement immutable Weekly-only retention and validated restart recovery without relaxing Weekly identity/freshness.
+- [x] Expose not_provided in operator API, current member projection and history UI.
+- [x] Verify paired/Weekly-only/unknown/corrupt evidence, offline controller no-replay, API and UI.
+- [x] Sync specs, record qualification limits, validate and archive.

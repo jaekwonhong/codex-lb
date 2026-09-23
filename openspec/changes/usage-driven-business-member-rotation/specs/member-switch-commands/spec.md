@@ -38,7 +38,7 @@ An observed undocumented upstream threshold or ordinal SHALL remain telemetry un
 
 ### Requirement: Removed-member Usage history remains immutable evidence
 
-Before an admitted removal is sent, the system SHALL durably retain the outgoing member's latest classified 5H and Weekly observations, including raw used percentage, window duration, original reset timestamp, observation timestamp, source/provenance, workspace/member identity sufficient for exact internal correlation, and the membership epoch or equivalent boundary needed to prevent later account reuse from overwriting that historical membership record. Failure to persist the required final snapshot SHALL block the removal.
+Before an admitted removal is sent, the system SHALL durably retain the outgoing member's latest classified Weekly observation and either its same-fetch classified 5H observation or explicit versioned 5H absence evidence, including raw used percentage, window duration, original reset timestamp, observation timestamp, source/provenance, workspace/member identity sufficient for exact internal correlation, and the membership epoch or equivalent boundary needed to prevent later account reuse from overwriting that historical membership record. Failure to persist the required final snapshot SHALL block the removal.
 
 A historical Reset-schedule clear action SHALL NOT delete the original snapshot, mutate its original usage/reset values, consume a reset credit, or clear member-change/effect history. It SHALL create durable invalidation evidence with a fixed cutoff and SHALL affect only the effective/display Reset schedule of eligible historical snapshots observed at or before that cutoff. Snapshots created after the cutoff SHALL remain unaffected.
 
@@ -54,6 +54,14 @@ A historical Reset-schedule clear action SHALL NOT delete the original snapshot,
 - **THEN** the original timestamp and Usage values remain stored as evidence
 - **AND** the effective Reset schedule is hidden/invalidated only for eligible snapshots observed at or before T
 - **AND** no reset credit or member-change counter is altered
+
+#### Scenario: Weekly-only history and restart recovery
+- **GIVEN** a successful identity-bound Weekly-only fetch proves 5H not_provided
+- **WHEN** final retention commits the membership epoch
+- **THEN** it SHALL persist one Weekly row with versioned identity-bound absence provenance
+- **AND** recovery SHALL validate provenance and the expected row set before reusing that epoch
+- **AND** incomplete legacy pairs SHALL NOT be reinterpreted as absence
+
 
 ### Requirement: Remove and invite response telemetry preserves typed uncertainty
 

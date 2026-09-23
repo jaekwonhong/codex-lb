@@ -80,22 +80,34 @@ function blockerLabel(code: string): string {
     companion_provenance_mismatch: "Companion provenance가 확인되지 않았습니다.",
     controller_snapshot_unavailable: "Controller 상태 snapshot이 아직 연결되지 않았습니다.",
     invalid_next_candidate: "Controller가 보고한 다음 후보가 등록된 member 후보와 일치하지 않습니다.",
+    rotation_prestart_interrupted_requires_attention: "교체 시작 전 작업이 중단되어 운영자 복구가 필요합니다.",
   };
   return labels[code] ?? code;
 }
 
-function UsageHistoryWindow({ label, value }: { label: string; value: HistoricalUsageWindow | null }) {
-  if (!value) {
+function UsageHistoryWindow({ label, value, fiveHourState }: {
+  label: string;
+  value: HistoricalUsageWindow | null;
+  fiveHourState?: RotationWorkspaceOperator["history"][number]["fiveHourState"];
+}) {
+  const notProvided = label === "5H" && fiveHourState === "not_provided";
+  const unverified = label === "5H" && fiveHourState !== "observed";
+  if (notProvided || !value) {
     return (
       <div className="rounded-md border p-3 text-xs text-muted-foreground">
         <p className="font-medium text-foreground">{label}</p>
-        <p className="mt-1">Final Usage evidence 없음</p>
+        <p className="mt-1">{notProvided ? "미제공 · 해당 조회 응답에 5H 없음" : "미확인 · Final Usage evidence 없음"}</p>
       </div>
     );
   }
   return (
     <div className="rounded-md border p-3 text-xs">
-      <p className="font-medium">{label} final Usage: {value.usedPercent.toFixed(1)}%</p>
+      {unverified ? (
+        <p className="font-medium text-amber-700 dark:text-amber-300">{label} 미확인 · Final Usage evidence 검증 불가</p>
+      ) : null}
+      <p className="font-medium">
+        {unverified ? `${label} 보존된 원본 Usage (미검증)` : `${label} final Usage`}: {value.usedPercent.toFixed(1)}%
+      </p>
       <p className="mt-1 text-muted-foreground">Original Reset: {formatEpoch(value.originalResetAt)}</p>
       <p className="text-muted-foreground">
         Effective Reset: {value.resetScheduleInvalidated ? "—" : formatEpoch(value.effectiveResetAt)}
@@ -177,8 +189,8 @@ function WorkspaceCard({
         <div className="rounded-lg border p-3">
           <p className="text-xs font-medium text-muted-foreground">5H Usage state</p>
           <p className="mt-1 text-sm font-medium">
-            {fiveHour.state === "observed" ? "관측됨" : fiveHour.state}
-            {fiveHour.usedPercent != null ? ` · ${fiveHour.usedPercent.toFixed(1)}% used` : ""}
+            {fiveHour.state === "observed" ? "관측됨" : fiveHour.state === "not_provided" ? "미제공" : `미확인 · ${fiveHour.state}`}
+            {fiveHour.state === "observed" && fiveHour.usedPercent != null ? ` · ${fiveHour.usedPercent.toFixed(1)}% used` : ""}
           </p>
           <p className="mt-1 text-[11px] text-muted-foreground">표시용 관측값이며 Weekly eligibility 판정에 사용하지 않습니다.</p>
         </div>
@@ -197,8 +209,8 @@ function WorkspaceCard({
             <ShieldCheck className="h-4 w-4" aria-hidden="true" />
             <p className="text-sm font-medium">Internal rotation guard</p>
           </div>
-          <p className="mt-2 text-sm">24H {workspace.quota.count24h} / {workspace.quota.limit24h}</p>
-          <p className="text-sm">7D {workspace.quota.count168h} / {workspace.quota.limit168h}</p>
+          <p className="mt-2 text-sm">24H {workspace.quota.count24H} / {workspace.quota.limit24H}</p>
+          <p className="text-sm">7D {workspace.quota.count168H} / {workspace.quota.limit168H}</p>
           <p className="mt-2 text-[11px] text-muted-foreground">
             내부 안전 정책입니다. OpenAI 서버 한도로 표시하지 않습니다.
           </p>
@@ -267,7 +279,7 @@ function WorkspaceCard({
                 <p className="text-[11px] text-muted-foreground">Final snapshot retained: {formatDate(entry.retainedAt)}</p>
               </div>
               <div className="mt-3 grid gap-2 md:grid-cols-2">
-                <UsageHistoryWindow label="5H" value={entry.fiveHour} />
+                <UsageHistoryWindow label="5H" value={entry.fiveHour} fiveHourState={entry.fiveHourState} />
                 <UsageHistoryWindow label="Weekly" value={entry.weekly} />
               </div>
             </div>

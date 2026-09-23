@@ -142,6 +142,7 @@ async def test_failed_fetch_does_not_borrow_old_weekly_row(account, monkeypatch)
     monkeypatch.setattr(updater_module, "fetch_usage", AsyncMock(side_effect=UsageFetchError(503, "Synthetic failure")))
     repo = _repo(account)
     result = await UsageUpdater(repo).force_refresh_result(account)
+    assert result.five_hour_not_provided is False
     assert result.fetch_succeeded is False and result.usage_written is False
     assert result.five_hour_window is None and result.weekly_window is None and result.fetch_provenance is None
     assert (
@@ -296,3 +297,29 @@ async def test_401_retry_binds_refreshed_credential_and_workspace_header(account
     assert observation.provenance.identity == usage_account_identity(account)
     assert observation.assess(initial_identity, now=datetime.now(timezone.utc)).reason == "identity_mismatch"
     assert observation.assess(usage_account_identity(account), now=datetime.now(timezone.utc)).state == "exhausted"
+
+
+@pytest.mark.parametrize("primary_only", [True, False])
+async def test_rotation_receipt_proves_weekly_only_absence_without_old_five_hour(account, monkeypatch, primary_only):
+    fetch = AsyncMock(return_value=_payload(primary_only=primary_only))
+    monkeypatch.setattr(updater_module, "fetch_usage", fetch)
+    result = await UsageUpdater(_repo(account)).force_refresh_result(account)
+    receipt = result.rotation_usage_observation
+    assert result.five_hour_not_provided and receipt.five_hour_not_provided
+    assert receipt.five_hour_window is None
+    assert receipt.weekly_window is not None and receipt.provenance is not None
+    assert (
+        receipt.weekly_observation.assess(usage_account_identity(account), now=datetime.now(timezone.utc)).state
+        == "exhausted"
+    )
+    assert fetch.await_count == 1
+
+
+async def test_legacy_confirmation_clears_absence_evidence(account, monkeypatch):
+    monkeypatch.setattr(updater_module, "fetch_usage", AsyncMock(return_value=_payload(primary_only=True)))
+    monkeypatch.setattr(updater_module, "observe_successful_usage", AsyncMock(return_value=True))
+    updater = UsageUpdater(_repo(account))
+    monkeypatch.setattr(updater, "_confirm_zero_usage", AsyncMock())
+    result = await updater._refresh_account(account, usage_account_id=account.chatgpt_account_id)
+    assert result.fetch_provenance is None
+    assert result.five_hour_not_provided is False

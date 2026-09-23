@@ -68,6 +68,7 @@ def test_background_loop_seam_is_explicit_and_complete() -> None:
         "build_data_retention_scheduler",
         "build_telemetry_scheduler",
         "build_account_deletion_scheduler",
+        "build_member_rotation_scheduler",
     )
     patched = set(BACKGROUND_LOOP_BUILDERS)
     live = set(LIVE_MAINTENANCE_LOOP_BUILDERS)
@@ -81,6 +82,14 @@ def test_background_loop_seam_is_explicit_and_complete() -> None:
 @pytest.mark.asyncio
 async def test_ambient_account_deletion_scheduler_is_noop() -> None:
     scheduler = main_module.build_account_deletion_scheduler()
+    assert isinstance(scheduler, _NoopScheduler)
+    assert await scheduler.start() is None
+    assert await scheduler.stop() is None
+
+
+@pytest.mark.asyncio
+async def test_ambient_member_rotation_scheduler_is_noop() -> None:
+    scheduler = main_module.build_member_rotation_scheduler()
     assert isinstance(scheduler, _NoopScheduler)
     assert await scheduler.start() is None
     assert await scheduler.stop() is None

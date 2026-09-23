@@ -14,7 +14,7 @@ export const FoundationStateSchema = z.enum([
 ]);
 
 export const WeeklyStateSchema = z.enum(["unknown", "available", "exhausted"]);
-export const FiveHourStateSchema = z.enum(["observed", "unknown", "stale", "missing"]);
+export const FiveHourStateSchema = z.enum(["observed", "not_provided", "unknown", "stale", "missing"]);
 export const ResetOperatorStateSchema = z.enum([
   "resolution_required",
   "redeem_in_progress",
@@ -56,15 +56,15 @@ export const RotationFoundationSchema = z.object({
   weeklyReason: z.string().nullable(),
   resetStatus: z.string().nullable(),
   quotaCode: z.string().nullable(),
-  count24h: z.number().int().nullable(),
-  count168h: z.number().int().nullable(),
+  count24H: z.number().int().nullable(),
+  count168H: z.number().int().nullable(),
 });
 
 export const RotationQuotaSchema = z.object({
-  count24h: z.number().int().nonnegative(),
-  limit24h: z.number().int().positive(),
-  count168h: z.number().int().nonnegative(),
-  limit168h: z.number().int().positive(),
+  count24H: z.number().int().nonnegative(),
+  limit24H: z.number().int().positive(),
+  count168H: z.number().int().nonnegative(),
+  limit168H: z.number().int().positive(),
   countBasis: z.string(),
   historyComplete: z.boolean(),
   coverageStartedAt: z.string().nullable(),
@@ -88,6 +88,7 @@ export const RemovedMemberHistorySchema = z.object({
   membershipEpoch: z.string(),
   removedAt: z.string().nullable(),
   retainedAt: z.string(),
+  fiveHourState: z.enum(["observed", "not_provided", "unknown"]).default("unknown"),
   fiveHour: HistoricalUsageWindowSchema.nullable(),
   weekly: HistoricalUsageWindowSchema.nullable(),
 });

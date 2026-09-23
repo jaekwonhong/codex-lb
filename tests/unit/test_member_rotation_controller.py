@@ -43,6 +43,7 @@ from app.modules.member_switch.rotation_foundation import (
     bind_rotation_weekly_evidence,
     reserve_rotation_quota,
 )
+from app.modules.member_switch.runtime_attestation import HostRuntimeObservation
 from app.modules.member_switch.schemas import (
     P4_TYPED_TELEMETRY_BINARY_SHA256,
     P4_TYPED_TELEMETRY_CONTRACT,
@@ -61,6 +62,7 @@ from app.modules.member_switch.schemas import (
     MembershipObservation,
     MembershipObservationMember,
     Operation,
+    OperationTraceEntry,
     OwnerAuthTarget,
     Preview,
     StartReceipt,
@@ -91,6 +93,24 @@ class MutableClock:
 
     def __call__(self) -> datetime:
         return self.current
+
+
+class SyntheticRuntimeAttestation:
+    def __init__(self, clock):
+        self.clock = clock
+
+    def require(self, expected):
+        assert expected.qualified
+        return HostRuntimeObservation(
+            endpoint="http://127.0.0.1:53418/member-switch/v1/account-pool",
+            provenance=expected,
+            pid=1,
+            process_started="synthetic",
+            executable_device=1,
+            executable_inode=1,
+            observed_at=self.clock(),
+            expires_at=self.clock() + timedelta(seconds=30),
+        )
 
 
 class RotationFakeAuth:
@@ -128,8 +148,8 @@ class RotationFakeCompanion:
             target_user_id="user-Target",
             stage="removing",
             code="removing",
-            removed_email=None,
-            removed_user_id=None,
+            removed_email=OUTGOING.email,
+            removed_user_id=OUTGOING.user_id,
             membership_state="unknown",
             updated_at=NOW,
         )
@@ -151,6 +171,8 @@ class RotationFakeCompanion:
                 "durable_client_flow",
                 "durable_participant_commands_v1",
                 "managed_member_switch_v1",
+                "member_rotation_canary_effect_gate_v1",
+                "member_rotation_managed_remove_telemetry_v1",
             ],
             workspaces=[
                 Workspace(
@@ -233,6 +255,7 @@ class RotationFakeCompanion:
         )
 
     async def start(self, request) -> StartReceipt:
+        assert request.canary is True
         self.start_calls += 1
         self.receipt = self.start_receipt
         if self.lose_start_response:
@@ -272,7 +295,9 @@ async def rotation_context(tmp_path):
     companion = RotationFakeCompanion()
     switch = MemberSwitchService(controls, cast(CompanionPort, companion), cast(AuthHandoffPort, RotationFakeAuth()))
     clock = MutableClock()
-    controller = RotationController(controls, switch, sessions, sessions, clock=clock)
+    controller = RotationController(
+        controls, switch, sessions, sessions, clock=clock, runtime_attestation=SyntheticRuntimeAttestation(clock)
+    )
     yield controller, switch, controls, companion, sessions, clock
     await engine.dispose()
 
@@ -373,6 +398,14 @@ def joined_operation(*, capture_state: str = "json") -> Operation:
             "removedUserId": OUTGOING.user_id,
             "membershipState": "active",
             "updatedAt": NOW,
+            "trace": [
+                {
+                    "sequence": 1,
+                    "stage": "verifying_removal",
+                    "code": "outgoing_workspace_absence_observed",
+                    "at": NOW,
+                }
+            ],
             "invitationSettlement": {
                 "invitationIssued": True,
                 "automaticObservationAttempts": 2,
@@ -653,7 +686,9 @@ async def test_lost_start_response_restart_reconciles_without_replay(rotation_co
     assert companion.start_calls == 1
 
     companion.lose_start_response = False
-    restarted = RotationController(controls, switch, sessions, sessions, clock=clock)
+    restarted = RotationController(
+        controls, switch, sessions, sessions, clock=clock, runtime_attestation=SyntheticRuntimeAttestation(clock)
+    )
     state = await restarted.resume(state.id)
     assert companion.start_calls == 1
     assert state.remove_state == "unknown"
@@ -695,7 +730,9 @@ async def test_restart_after_child_creation_resumes_same_durable_start_claim(rot
     child = await switch.get(before_restart.member_switch_run_id)
     assert child is not None and child.pending_action == "start"
 
-    restarted = RotationController(controls, switch, sessions, sessions, clock=clock)
+    restarted = RotationController(
+        controls, switch, sessions, sessions, clock=clock, runtime_attestation=SyntheticRuntimeAttestation(clock)
+    )
     resumed = await restarted.resume(controller_id)
     assert companion.start_calls == 0
     assert resumed.remove_state == "unknown"
@@ -723,7 +760,14 @@ async def test_companion_restart_with_missing_receipt_never_replays_start(rotati
     restarted_switch = MemberSwitchService(
         controls, cast(CompanionPort, restarted_companion), cast(AuthHandoffPort, RotationFakeAuth())
     )
-    restarted_controller = RotationController(controls, restarted_switch, sessions, sessions, clock=clock)
+    restarted_controller = RotationController(
+        controls,
+        restarted_switch,
+        sessions,
+        sessions,
+        clock=clock,
+        runtime_attestation=SyntheticRuntimeAttestation(clock),
+    )
     resumed = await restarted_controller.resume(state.id)
     assert resumed.phase == "removal_effect_unknown"
     assert restarted_companion.start_calls == 0
@@ -746,8 +790,12 @@ async def test_concurrent_resume_workers_never_replay_start(rotation_context) ->
     assert companion.start_calls == 1
     companion.lose_start_response = False
 
-    worker_a = RotationController(controls, switch, sessions, sessions, clock=clock)
-    worker_b = RotationController(controls, switch, sessions, sessions, clock=clock)
+    worker_a = RotationController(
+        controls, switch, sessions, sessions, clock=clock, runtime_attestation=SyntheticRuntimeAttestation(clock)
+    )
+    worker_b = RotationController(
+        controls, switch, sessions, sessions, clock=clock, runtime_attestation=SyntheticRuntimeAttestation(clock)
+    )
     first, second = await asyncio.gather(worker_a.resume(state.id), worker_b.resume(state.id))
 
     assert companion.start_calls == 1
@@ -982,7 +1030,7 @@ async def test_unclaimed_preview_requires_fresh_foundation_after_restart(rotatio
     _, weekly, reset = evidence("fresh-boundary")
     quota = await admitted_quota(sessions, clock, weekly, reset, operation_id="quota-fresh-boundary")
 
-    async def crash_before_start(record, state, run):
+    async def crash_before_start(record, state, run, **kwargs):
         raise RuntimeError("synthetic pre-start crash")
 
     monkeypatch.setattr(controller, "_start_child", crash_before_start)
@@ -1001,7 +1049,14 @@ async def test_unclaimed_preview_requires_fresh_foundation_after_restart(rotatio
     child = await controls.get(rotation_run_id("fresh-boundary"))
     assert child is not None and child.pending_action is None
 
-    restarted = RotationController(controls, controller.member_switch, sessions, sessions, clock=clock)
+    restarted = RotationController(
+        controls,
+        controller.member_switch,
+        sessions,
+        sessions,
+        clock=clock,
+        runtime_attestation=SyntheticRuntimeAttestation(clock),
+    )
     resumed = await restarted.resume(controller_id)
     assert resumed.phase == "foundation_evaluating"
     assert companion.start_calls == 0
@@ -1026,7 +1081,7 @@ async def test_unclaimed_preview_requalifies_p4_before_start(rotation_context, m
     _, weekly, reset = evidence("p4-requalify")
     quota = await admitted_quota(sessions, clock, weekly, reset, operation_id="quota-p4-requalify")
 
-    async def crash_before_start(record, state, run):
+    async def crash_before_start(record, state, run, **kwargs):
         raise RuntimeError("synthetic pre-start crash")
 
     monkeypatch.setattr(controller, "_start_child", crash_before_start)
@@ -1043,7 +1098,14 @@ async def test_unclaimed_preview_requalifies_p4_before_start(rotation_context, m
     assert companion.start_calls == 0
 
     monkeypatch.setattr(member_switch_schemas, "P4_TYPED_TELEMETRY_VERSION", "2.11.48")
-    restarted = RotationController(controls, controller.member_switch, sessions, sessions, clock=clock)
+    restarted = RotationController(
+        controls,
+        controller.member_switch,
+        sessions,
+        sessions,
+        clock=clock,
+        runtime_attestation=SyntheticRuntimeAttestation(clock),
+    )
     stored = await restarted.get(rotation_controller_id("p4-requalify"))
     assert stored is not None and not stored.p4_provenance_verified
     state = await restarted.evaluate_and_start(
@@ -1087,7 +1149,9 @@ async def test_committed_snapshot_without_child_is_reused_after_fresh_evaluation
     assert await controls.get(before.member_switch_run_id) is None
 
     monkeypatch.setattr(switch, "create_rotation_run", original_create)
-    restarted = RotationController(controls, switch, sessions, sessions, clock=clock)
+    restarted = RotationController(
+        controls, switch, sessions, sessions, clock=clock, runtime_attestation=SyntheticRuntimeAttestation(clock)
+    )
     resumed = await restarted.resume(controller_id)
     assert resumed.last_code == "rotation_fresh_evaluation_required"
     assert companion.start_calls == 0
@@ -1170,7 +1234,9 @@ async def test_crash_after_quota_completion_recovers_from_terminal_quota(rotatio
         row = await session.get(MemberRotationQuotaOperation, quota.operation_id)
         assert row is not None and row.completed_at is not None
 
-    restarted = RotationController(controls, switch, sessions, sessions, clock=clock)
+    restarted = RotationController(
+        controls, switch, sessions, sessions, clock=clock, runtime_attestation=SyntheticRuntimeAttestation(clock)
+    )
     state = await restarted.resume(rotation_controller_id("quota-completion-crash"))
     assert state.phase == "completed"
     assert state.remove_state == "confirmed"
@@ -1200,7 +1266,9 @@ async def test_pending_finish_reconciles_after_restart_without_second_finalize(r
     assert run is not None and run.pending_action == "finish"
 
     companion.lose_finalize_response = False
-    restarted = RotationController(controls, switch, sessions, sessions, clock=clock)
+    restarted = RotationController(
+        controls, switch, sessions, sessions, clock=clock, runtime_attestation=SyntheticRuntimeAttestation(clock)
+    )
     state = await restarted.resume(state.id)
     assert state.phase == "completed"
     assert companion.finalize_calls == 1
@@ -1230,12 +1298,210 @@ async def test_final_usage_receipt_reassesses_weekly_before_remove(rotation_cont
         assert row is not None and row.reservation_released_at is not None
 
 
+@pytest.mark.parametrize("capture_state", ["json", "json_parse_failure", "transport_failure"])
+async def test_managed_remove_telemetry_is_retained_separately_without_replay(rotation_context, capture_state) -> None:
+    controller, _, controls, companion, sessions, clock = rotation_context
+    _, weekly, reset = evidence("remove-telemetry")
+    quota = await admitted_quota(sessions, clock, weekly, reset, operation_id="quota-remove-telemetry")
+    observation = MemberMutationResponseObservation.model_validate(
+        {
+            "event": "remove_response",
+            "captureState": capture_state,
+            "httpStatus": 200,
+            "fields": {"seat_count": 5, "ok": True, "notice": None},
+        }
+    )
+    companion.operation_snapshot = joined_operation().model_copy(update={"remove_response_observation": observation})
+    state = await controller.evaluate_and_start(
+        weekly=weekly,
+        reset=reset,
+        quota=quota,
+        current_member=OUTGOING,
+        final_usage_receipt=receipt(),
+        membership_epoch="epoch-remove-telemetry",
+        p4_provenance=p4_provenance(),
+    )
+    assert state.remove_response_observation == observation
+    assert state.invite_response_observation is not None
+    assert state.invite_response_observation.event == "invite_response"
+    assert state.phase == ("completed" if capture_state == "json" else "needs_attention")
+    restarted = RotationController(
+        controls,
+        controller.member_switch,
+        sessions,
+        sessions,
+        clock=clock,
+        runtime_attestation=SyntheticRuntimeAttestation(clock),
+    )
+    state = await restarted.resume(state.id)
+    assert state.remove_response_observation == observation
+    assert type(state.remove_response_observation.fields["seat_count"]) is int
+    assert type(state.remove_response_observation.fields["ok"]) is bool
+    assert state.remove_response_observation.fields["notice"] is None
+    assert companion.start_calls == 1
+
+
+@pytest.mark.parametrize("delay_boundary", ["admission", "quota_accounting"])
+@pytest.mark.parametrize("expiry", ["freshness", "reset"])
+async def test_weekly_evidence_expiring_during_start_preparation_never_dispatches(
+    rotation_context, monkeypatch, delay_boundary, expiry
+) -> None:
+    controller, _, controls, companion, sessions, clock = rotation_context
+    _, weekly, reset = evidence("dispatch-expired")
+    final_receipt = receipt()
+    if expiry == "reset":
+        assert final_receipt.weekly_window is not None
+        final_receipt = replace(
+            final_receipt,
+            weekly_window=replace(final_receipt.weekly_window, reset_at=int(NOW.timestamp()) + 10),
+        )
+    quota = await admitted_quota(sessions, clock, weekly, reset, operation_id="quota-dispatch-expired")
+    elapsed_seconds = 180 if expiry == "freshness" else 10
+
+    if delay_boundary == "admission":
+        original_admission = companion.admission
+
+        async def delayed_admission():
+            result = await original_admission()
+            # The child exists by the final start admission, after snapshots.
+            if await controls.get(rotation_run_id(weekly.evaluation.evaluation_id)) is not None:
+                clock.current = NOW + timedelta(seconds=elapsed_seconds)
+            return result
+
+        monkeypatch.setattr(companion, "admission", delayed_admission)
+    else:
+        original_accounting = controller._quota_request
+
+        async def delayed_accounting(operation_id, effect):
+            await original_accounting(operation_id, effect)
+            clock.current = NOW + timedelta(seconds=elapsed_seconds)
+
+        monkeypatch.setattr(controller, "_quota_request", delayed_accounting)
+
+    state = await controller.evaluate_and_start(
+        weekly=weekly,
+        reset=reset,
+        quota=quota,
+        current_member=OUTGOING,
+        final_usage_receipt=final_receipt,
+        membership_epoch="epoch-dispatch-expired",
+        p4_provenance=p4_provenance(),
+    )
+    assert companion.start_calls == 0
+    assert state.phase == "needs_attention"
+    child = await controls.get(state.member_switch_run_id)
+    assert child is not None and child.active_scope is None and child.pending_action is None
+    async with sessions() as session:
+        operation = await session.get(MemberRotationQuotaOperation, quota.operation_id)
+        assert operation is not None and operation.reservation_released_at is not None
+        assert operation.remove_effect == (
+            "not_attempted" if delay_boundary == "admission" else "authoritative_non_effect"
+        )
+        snapshots = (await session.scalars(select(WorkspaceMemberFinalUsageSnapshot))).all()
+        assert len(snapshots) == 2
+    restarted = RotationController(
+        controls,
+        controller.member_switch,
+        sessions,
+        sessions,
+        clock=clock,
+        runtime_attestation=SyntheticRuntimeAttestation(clock),
+    )
+    await restarted.resume(state.id)
+    assert companion.start_calls == 0
+
+
+@pytest.mark.parametrize("operation_stage", ["removing", "verifying_removal", "failed"])
+async def test_removal_identity_without_absence_proof_keeps_unknown_quota_after_restart(
+    rotation_context, operation_stage
+) -> None:
+    controller, _, controls, companion, sessions, clock = rotation_context
+    _, weekly, reset = evidence("removal-intent")
+    quota = await admitted_quota(sessions, clock, weekly, reset, operation_id="quota-removal-intent")
+    companion.operation_snapshot = companion.removing_operation().model_copy(
+        update={
+            "stage": operation_stage,
+            "code": "unexpected_error" if operation_stage == "failed" else operation_stage,
+        }
+    )
+    state = await controller.evaluate_and_start(
+        weekly=weekly,
+        reset=reset,
+        quota=quota,
+        current_member=OUTGOING,
+        final_usage_receipt=receipt(),
+        membership_epoch="epoch-removal-intent",
+        p4_provenance=p4_provenance(),
+    )
+    assert state.remove_state == "unknown"
+    clock.current = NOW + timedelta(days=8)
+    restarted = RotationController(
+        controls,
+        controller.member_switch,
+        sessions,
+        sessions,
+        clock=clock,
+        runtime_attestation=SyntheticRuntimeAttestation(clock),
+    )
+    state = await restarted.resume(state.id)
+    assert state.remove_state == "unknown"
+    assert companion.start_calls == 1
+    async with sessions() as session:
+        operation = await session.get(MemberRotationQuotaOperation, quota.operation_id)
+        assert operation is not None and operation.remove_effect == "unknown"
+        assert operation.reservation_released_at is None
+        counts = await RotationQuotaRepository(session, clock=clock).snapshot(
+            workspace_account_id=WORKSPACE_ACCOUNT_ID, observed_at=clock()
+        )
+        assert (counts.count_24h, counts.count_168h) == (1, 1)
+
+
+@pytest.mark.parametrize("proof_kind", ["absence", "wrong_stage", "command", "wrong_member"])
+async def test_removal_confirmation_requires_exact_identity_and_authoritative_trace(
+    rotation_context, proof_kind
+) -> None:
+    controller, _, _, companion, sessions, clock = rotation_context
+    _, weekly, reset = evidence("removal-proof")
+    quota = await admitted_quota(sessions, clock, weekly, reset, operation_id="quota-removal-proof")
+    trace = OperationTraceEntry(
+        sequence=5,
+        stage="removing" if proof_kind == "wrong_stage" else "verifying_removal",
+        code="outgoing_workspace_absence_observed",
+        at=NOW,
+        action="remove" if proof_kind == "command" else None,
+    )
+    companion.operation_snapshot = companion.removing_operation().model_copy(
+        update={
+            "stage": "needs_attention",
+            "code": "recipient_unavailable",
+            "trace": [trace],
+            "removed_user_id": "another-user" if proof_kind == "wrong_member" else OUTGOING.user_id,
+        }
+    )
+    state = await controller.evaluate_and_start(
+        weekly=weekly,
+        reset=reset,
+        quota=quota,
+        current_member=OUTGOING,
+        final_usage_receipt=receipt(),
+        membership_epoch="epoch-removal-proof",
+        p4_provenance=p4_provenance(),
+    )
+    expected = "confirmed" if proof_kind == "absence" else "unknown"
+    assert state.remove_state == expected
+    assert state.invite_state == "not_attempted"
+    async with sessions() as session:
+        operation = await session.get(MemberRotationQuotaOperation, quota.operation_id)
+        assert operation is not None and operation.remove_effect == expected
+        assert operation.reservation_released_at is None
+
+
 async def test_fresh_re_evaluation_starts_existing_unclaimed_preview(rotation_context, monkeypatch) -> None:
     controller, _, controls, companion, sessions, clock = rotation_context
     _, weekly, reset = evidence("owned-preview")
     quota = await admitted_quota(sessions, clock, weekly, reset, operation_id="quota-owned-preview")
 
-    async def crash_before_start(record, state, run):
+    async def crash_before_start(record, state, run, **kwargs):
         raise RuntimeError("synthetic pre-start crash")
 
     original_start_child = controller._start_child
@@ -1295,10 +1561,14 @@ async def test_released_quota_blocks_child_start_before_external_effect(rotation
     assert run is not None and run.active_scope is None
 
 
-async def test_snapshot_commit_before_parent_publication_recovers_existing_epoch(rotation_context, monkeypatch) -> None:
+@pytest.mark.parametrize("weekly_only", [False, True])
+async def test_snapshot_commit_before_parent_publication_recovers_existing_epoch(
+    rotation_context, monkeypatch, weekly_only
+) -> None:
     controller, switch, controls, companion, sessions, clock = rotation_context
     _, weekly, reset = evidence("snapshot-publish-gap")
     quota = await admitted_quota(sessions, clock, weekly, reset, operation_id="quota-snapshot-publish-gap")
+    final_receipt = replace(receipt(), five_hour_window=None, five_hour_not_provided=True) if weekly_only else receipt()
     original_persist = controller._persist
 
     async def crash_before_snapshot_publication(record, state):
@@ -1313,7 +1583,7 @@ async def test_snapshot_commit_before_parent_publication_recovers_existing_epoch
             reset=reset,
             quota=quota,
             current_member=OUTGOING,
-            final_usage_receipt=receipt(),
+            final_usage_receipt=final_receipt,
             membership_epoch="epoch-snapshot-publish-gap",
             p4_provenance=p4_provenance(),
         )
@@ -1329,7 +1599,7 @@ async def test_snapshot_commit_before_parent_publication_recovers_existing_epoch
                 )
             )
         ).all()
-        assert len(rows) == 2
+        assert len(rows) == (1 if weekly_only else 2)
         original_ids = sorted(row.id for row in rows)
 
     monkeypatch.setattr(controller, "_persist", original_persist)
@@ -1365,7 +1635,20 @@ async def test_snapshot_commit_before_parent_publication_recovers_existing_epoch
                 )
             )
         ).all()
-        assert len(rows) == 2
+        assert len(rows) == (1 if weekly_only else 2)
+
+    # A repeat after publication uses the same child operation without dispatch replay.
+    repeated = await controller.evaluate_and_start(
+        weekly=weekly,
+        reset=reset,
+        quota=quota,
+        current_member=OUTGOING,
+        final_usage_receipt=fresh,
+        membership_epoch="epoch-snapshot-publish-gap",
+        p4_provenance=p4_provenance(),
+    )
+    assert repeated.final_snapshot_ids == state.final_snapshot_ids
+    assert companion.start_calls == 1
 
 
 async def test_start_pre_effect_accounting_failure_never_calls_companion_and_releases_child_scope(
@@ -1431,7 +1714,7 @@ async def test_stale_cleanup_cannot_release_quota_after_peer_claims_start(rotati
     quota = await admitted_quota(sessions, clock, weekly, reset, operation_id="quota-cleanup-race")
     original_start_child = controller._start_child
 
-    async def crash_before_start(record, state, run):
+    async def crash_before_start(record, state, run, **kwargs):
         raise RuntimeError("synthetic pre-start crash")
 
     monkeypatch.setattr(controller, "_start_child", crash_before_start)
@@ -1449,8 +1732,12 @@ async def test_stale_cleanup_cannot_release_quota_after_peer_claims_start(rotati
     controller_id = rotation_controller_id("cleanup-race")
     await controller.resume(controller_id)
 
-    stale = RotationController(controls, switch, sessions, sessions, clock=clock)
-    healthy = RotationController(controls, switch, sessions, sessions, clock=clock)
+    stale = RotationController(
+        controls, switch, sessions, sessions, clock=clock, runtime_attestation=SyntheticRuntimeAttestation(clock)
+    )
+    healthy = RotationController(
+        controls, switch, sessions, sessions, clock=clock, runtime_attestation=SyntheticRuntimeAttestation(clock)
+    )
     cleanup_entered = asyncio.Event()
     allow_cleanup = asyncio.Event()
     original_cleanup = stale._cancel_preeffect_run

@@ -71,7 +71,7 @@ class ClassifiedUsageWindowObservation:
 
 
 # P1 originally exposed only Weekly evidence. Keep that public name while G1
-# adds the same-fetch 5H window needed by immutable pre-removal retention.
+# adds an optional same-fetch 5H window for immutable pre-removal retention.
 WeeklyWindowObservation = ClassifiedUsageWindowObservation
 FiveHourWindowObservation = ClassifiedUsageWindowObservation
 
@@ -165,6 +165,8 @@ class RotationUsageObservation:
     provenance: UsageFetchProvenance | None = None
     five_hour_window: FiveHourWindowObservation | None = None
     weekly_window: WeeklyWindowObservation | None = None
+    # True only when this successful response explicitly proves Weekly-only shape.
+    five_hour_not_provided: bool = False
 
     @property
     def weekly_observation(self) -> WeeklyUsageObservation:
@@ -257,6 +259,23 @@ def five_hour_window_from_payload(
             )
         )
     return candidates[0] if len(candidates) == 1 else None
+
+
+def five_hour_not_provided_by_payload(payload: UsagePayload) -> bool:
+    """Prove absence only from an unambiguous Weekly-only base response.
+
+    Inspect raw slots before display normalization. An unknown-duration sibling,
+    duplicate window, or missing rate-limit envelope is not absence evidence.
+    Plan labels and persisted usage never participate in this classification.
+    """
+    if payload.rate_limit is None:
+        return False
+    windows = [
+        window
+        for window in (payload.rate_limit.primary_window, payload.rate_limit.secondary_window)
+        if window is not None
+    ]
+    return len(windows) == 1 and is_weekly_window_minutes(window_minutes(windows[0].limit_window_seconds))
 
 
 def _utc(value: datetime) -> datetime:

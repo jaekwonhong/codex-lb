@@ -109,6 +109,7 @@ from app.modules.health import api as health_api
 from app.modules.member_auth_handoff import api as member_auth_handoff_api
 from app.modules.member_rotation_operator import api as member_rotation_operator_api
 from app.modules.member_switch import api as member_switch_api
+from app.modules.member_switch.rotation_scheduler import build_member_rotation_scheduler
 from app.modules.model_sources import api as model_sources_api
 from app.modules.oauth import api as oauth_api
 from app.modules.proxy import api as proxy_api
@@ -695,6 +696,7 @@ async def lifespan(app: FastAPI):
     account_deletion_scheduler = build_account_deletion_scheduler()
     data_retention_scheduler = build_data_retention_scheduler()
     telemetry_scheduler = build_telemetry_scheduler()
+    member_rotation_scheduler = build_member_rotation_scheduler()
     # Hold the instance: this lifespan owns it (and keeps it strongly rooted)
     # even if a nested lifespan on another loop replaces the module-global
     # singleton in the meantime; shutdown below stops exactly this instance.
@@ -713,6 +715,7 @@ async def lifespan(app: FastAPI):
     await account_deletion_scheduler.start()
     await data_retention_scheduler.start()
     await telemetry_scheduler.start()
+    await member_rotation_scheduler.start()
     if settings.metrics_enabled and PROMETHEUS_AVAILABLE:
         import uvicorn
 
@@ -918,6 +921,7 @@ async def lifespan(app: FastAPI):
         # and is stopped by release(), which then owns renewal for its bounded
         # drain. It is a no-op when leader election is disabled.
         get_leader_election().start_release_keeper()
+        await member_rotation_scheduler.stop()
         await quota_planner_scheduler.stop()
         await auth_guardian_scheduler.stop()
         await automations_scheduler.stop()

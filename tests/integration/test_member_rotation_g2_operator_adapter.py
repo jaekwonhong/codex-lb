@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -160,3 +161,86 @@ async def test_g2_operator_uses_durable_p5_snapshot_without_authorizing_effects(
     assert workspace["controller"]["status"] == "needs_attention"
     assert workspace["controller"]["companionStatus"] == "qualified"
     assert "reset_reconciliation_pending" in workspace["blockerCodes"]
+
+
+@pytest.mark.parametrize("valid_absence", [True, False])
+@pytest.mark.parametrize("outgoing_current", [True, False])
+async def test_operator_weekly_only_absence_is_identity_bound(async_client, valid_absence, outgoing_current):
+    state = _controller_state()
+    state.final_snapshot_ids = ["weekly-only"]
+    if not outgoing_current:
+        state.remove_state = "confirmed"
+    provenance = (
+        json.dumps(
+            {
+                "schema_version": 2,
+                "five_hour_availability": "not_provided",
+                "evaluation_id": state.evaluation_id,
+                "workspace_id": WORKSPACE_ID,
+                "source_account_id": state.outgoing_account_id,
+                "source_workspace_account_id": WORKSPACE_ACCOUNT_ID,
+                "source_user_id": OUTGOING_USER,
+                "source_email": OUTGOING_EMAIL,
+                "fetch_id": "weekly-only-fetch",
+                "requested_workspace_account_id": WORKSPACE_ACCOUNT_ID,
+                "account_workspace_id": "metadata",
+                "payload_workspace_id": "metadata",
+                "credential_source": "stored",
+                "started_at": NOW.isoformat(),
+                "observed_at": NOW.isoformat(),
+            }
+        )
+        if valid_absence
+        else "legacy-incomplete"
+    )
+    async with SessionLocal() as session:
+        session.add(
+            MemberSwitchControlRecord(
+                id=state.id,
+                kind="rotation",
+                active_scope=None,
+                revision=1,
+                payload=state.model_dump_json(),
+                pending_action=None,
+                command_id=None,
+                command_hash=None,
+            )
+        )
+        session.add(
+            WorkspaceMemberFinalUsageSnapshot(
+                id="weekly-only",
+                workspace_id=WORKSPACE_ID,
+                workspace_account_id=WORKSPACE_ACCOUNT_ID,
+                account_id=state.outgoing_account_id,
+                preset_id=OUTGOING_PRESET,
+                email=OUTGOING_EMAIL,
+                user_id=OUTGOING_USER,
+                membership_epoch=state.membership_epoch,
+                logical_window="weekly",
+                source_window="primary",
+                used_percent=100,
+                reset_at=1_800_500_000,
+                window_minutes=10080,
+                observed_at=NOW.replace(tzinfo=None),
+                retained_at=NOW.replace(tzinfo=None),
+                fetch_provenance=provenance,
+                fetch_succeeded=True,
+                usage_written=False,
+            )
+        )
+        await session.commit()
+    set_rotation_operator_snapshot_adapter(DurableRotationOperatorSnapshotAdapter())
+    try:
+        response = await async_client.get("/api/member-rotation/operator")
+    finally:
+        set_rotation_operator_snapshot_adapter(NullRotationOperatorSnapshotAdapter())
+    assert response.status_code == 200
+    workspace = next(item for item in response.json()["workspaces"] if item["workspaceId"] == WORKSPACE_ID)
+    expected = "not_provided" if valid_absence else "unknown"
+    assert workspace["fiveHourUsage"]["state"] == (expected if outgoing_current else "missing")
+    assert workspace["fiveHourUsage"]["usedPercent"] is None
+    assert workspace["fiveHourUsage"]["resetAt"] is None
+    assert workspace["history"][0]["fiveHourState"] == expected
+    assert workspace["history"][0]["fiveHour"] is None
+    assert workspace["history"][0]["weekly"]["usedPercent"] == 100
+    assert workspace["automaticRotationEnabled"] is False

@@ -20,6 +20,9 @@ P4_TYPED_TELEMETRY_CONTRACT = "member_rotation_typed_telemetry_v1"
 P4_TYPED_TELEMETRY_VERSION = "2.11.47"
 P4_TYPED_TELEMETRY_BINARY_SHA256 = "0f7b665e47f1b2cd4959814afe3ee68fe0aa5cc25a264e295997d3499290f1ce"
 P4_TYPED_TELEMETRY_OPS_COMMIT = "47ac829a23b9811537bcd2d21ae9b8003c9c464a"
+CANARY_TELEMETRY_VERSION = "2.11.48-canary.1"
+CANARY_TELEMETRY_BINARY_SHA256 = "1ec90e2b7315a9a19d718b03ff7c8ec54e90ff72aa9ca92b83a060fe0456b2d1"
+CANARY_TELEMETRY_SOURCE_SHA256 = "b6f6c753595bbc09afcfb267e1d3a3660bf6fe54cb105b931095b4a19e6ef6e8"
 
 
 class AdmissionBlocker(DashboardModel):
@@ -167,6 +170,7 @@ class Preview(DashboardModel):
 class StartRequest(DashboardModel):
     preview_token: str
     client_flow_id: str
+    canary: bool = False
 
 
 class StartReceipt(DashboardModel):
@@ -251,6 +255,7 @@ class Operation(DashboardModel):
     updated_at: datetime
     trace: list[OperationTraceEntry] = Field(default_factory=list)
     invitation_settlement: InvitationSettlement | None = None
+    remove_response_observation: MemberMutationResponseObservation | None = None
 
 
 class RecipientReceipt(DashboardModel):
@@ -442,15 +447,24 @@ class CompanionTypedTelemetryProvenance(DashboardModel):
     contract: str
     version: str
     binary_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    ops_commit: str = Field(pattern=r"^[a-f0-9]{40}$")
+    ops_commit: str | None = Field(default=None, pattern=r"^[a-f0-9]{40}$")
+    source_manifest_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
     @property
     def qualified(self) -> bool:
+        if self.version == CANARY_TELEMETRY_VERSION:
+            return (
+                self.contract == P4_TYPED_TELEMETRY_CONTRACT
+                and self.binary_sha256 == CANARY_TELEMETRY_BINARY_SHA256
+                and self.source_manifest_sha256 == CANARY_TELEMETRY_SOURCE_SHA256
+                and self.ops_commit is None
+            )
         return (
             self.contract == P4_TYPED_TELEMETRY_CONTRACT
             and self.version == P4_TYPED_TELEMETRY_VERSION
             and self.binary_sha256 == P4_TYPED_TELEMETRY_BINARY_SHA256
             and self.ops_commit == P4_TYPED_TELEMETRY_OPS_COMMIT
+            and self.source_manifest_sha256 is None
         )
 
 

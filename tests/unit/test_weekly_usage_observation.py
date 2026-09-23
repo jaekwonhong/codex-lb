@@ -12,6 +12,7 @@ from app.core.usage.weekly_observation import (
     UsageAccountIdentity,
     UsageFetchProvenance,
     WeeklyUsageObservation,
+    five_hour_not_provided_by_payload,
     five_hour_window_from_payload,
     weekly_window_from_payload,
 )
@@ -259,3 +260,36 @@ def test_two_five_hour_shaped_slots_are_ambiguous_for_retention() -> None:
         )
     )
     assert five_hour_window_from_payload(payload, observed_at=NOW) is None
+
+
+@pytest.mark.parametrize("plan", [None, "business", "plus", "pro", "future-plan"])
+@pytest.mark.parametrize("slot", ["primary_window", "secondary_window"])
+@pytest.mark.parametrize("explicit_null", [False, True])
+def test_weekly_only_absence_uses_response_not_plan(plan, slot, explicit_null) -> None:
+    sibling = "secondary_window" if slot == "primary_window" else "primary_window"
+    raw = {slot: {"used_percent": 100, "limit_window_seconds": 604800, "reset_at": RESET}}
+    if explicit_null:
+        raw[sibling] = None
+    payload = UsagePayload.model_validate({"plan_type": plan, "rate_limit": raw})
+    assert five_hour_not_provided_by_payload(payload)
+    assert five_hour_window_from_payload(payload, observed_at=NOW) is None
+    assert weekly_window_from_payload(payload, observed_at=NOW) is not None
+
+
+@pytest.mark.parametrize(
+    "rate_limit",
+    [
+        None,
+        RateLimitPayload(),
+        RateLimitPayload(primary_window=UsageWindow()),
+        RateLimitPayload(primary_window=_window(18000)),
+        RateLimitPayload(primary_window=_window(), secondary_window=UsageWindow()),
+        RateLimitPayload(primary_window=_window(), secondary_window=_window(-1)),
+        RateLimitPayload(primary_window=_window(), secondary_window=_window(12345)),
+        RateLimitPayload(primary_window=_window(), secondary_window=_window()),
+        RateLimitPayload(primary_window=_window(18000), secondary_window=_window(18000)),
+        RateLimitPayload(primary_window=_window(18000), secondary_window=_window()),
+    ],
+)
+def test_missing_or_ambiguous_windows_do_not_prove_absence(rate_limit) -> None:
+    assert not five_hour_not_provided_by_payload(UsagePayload(rate_limit=rate_limit))

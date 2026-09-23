@@ -20,7 +20,7 @@ FoundationState = Literal[
     "invalid_evidence",
 ]
 WeeklyState = Literal["unknown", "available", "exhausted"]
-FiveHourState = Literal["observed", "unknown", "stale", "missing"]
+FiveHourState = Literal["observed", "not_provided", "unknown", "stale", "missing"]
 ResetOperatorState = Literal[
     "resolution_required",
     "redeem_in_progress",
@@ -95,6 +95,7 @@ class RemovedMemberHistoryView(DashboardModel):
     membership_epoch: str
     removed_at: datetime | None = None
     retained_at: datetime
+    five_hour_state: Literal["observed", "not_provided", "unknown"] = "unknown"
     five_hour: HistoricalUsageWindowView | None = None
     weekly: HistoricalUsageWindowView | None = None
 

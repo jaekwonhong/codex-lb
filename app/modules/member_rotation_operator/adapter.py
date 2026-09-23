@@ -11,14 +11,18 @@ from sqlalchemy import select
 from app.db.models import (
     MemberRotationQuotaOperation,
     MemberSwitchControlRecord,
-    WorkspaceMemberFinalUsageSnapshot,
 )
 from app.db.session import SessionLocal
+from app.modules.member_auth_handoff.usage_snapshot_repository import (
+    HistoricalUsageConflict,
+    MemberUsageSnapshotRepository,
+    retained_five_hour_state,
+)
 from app.modules.member_switch.policy import membership_confirmed
 from app.modules.member_switch.rotation_foundation import RotationFoundationReadModel, RotationFoundationState
 from app.modules.member_switch.schemas import RotationControllerState, RunState
 
-FiveHourState = Literal["observed", "unknown", "stale", "missing"]
+FiveHourState = Literal["observed", "not_provided", "unknown", "stale", "missing"]
 ResetOperatorState = Literal[
     "resolution_required",
     "redeem_in_progress",
@@ -173,24 +177,29 @@ class DurableRotationOperatorSnapshotAdapter:
             )
 
             five_hour: OperatorFiveHourObservation | None = None
-            if current_member == outgoing and state.final_snapshot_ids:
-                snapshot_rows = list(
-                    (
-                        await session.scalars(
-                            select(WorkspaceMemberFinalUsageSnapshot).where(
-                                WorkspaceMemberFinalUsageSnapshot.id.in_(state.final_snapshot_ids)
-                            )
-                        )
-                    ).all()
-                )
-                five = next((row for row in snapshot_rows if row.logical_window == "5h"), None)
-                if five is not None:
-                    five_hour = OperatorFiveHourObservation(
-                        state="observed",
-                        used_percent=five.used_percent,
-                        reset_at=five.reset_at,
-                        observed_at=_aware_utc(five.observed_at),
+            if outgoing is not None and current_member == outgoing and state.final_snapshot_ids:
+                try:
+                    snapshot_rows = await MemberUsageSnapshotRepository(session).recover_final_snapshot_epoch(
+                        workspace_id=workspace_id,
+                        workspace_account_id=workspace_account_id,
+                        account_id=state.outgoing_account_id,
+                        preset_id=outgoing.preset_id,
+                        email=outgoing.email,
+                        user_id=outgoing.user_id,
+                        membership_epoch=state.membership_epoch,
                     )
+                except HistoricalUsageConflict:
+                    snapshot_rows = None
+                if snapshot_rows and {row.id for row in snapshot_rows} == set(state.final_snapshot_ids):
+                    five = next((row for row in snapshot_rows if row.logical_window == "5h"), None)
+                    five_hour = OperatorFiveHourObservation(
+                        state=retained_five_hour_state(snapshot_rows),
+                        used_percent=None if five is None else five.used_percent,
+                        reset_at=None if five is None else five.reset_at,
+                        observed_at=_aware_utc(snapshot_rows[0].observed_at),
+                    )
+                else:
+                    five_hour = OperatorFiveHourObservation(state="unknown")
 
             try:
                 foundation_state = RotationFoundationState(state.foundation_state)

@@ -8,7 +8,7 @@ The exhaustion decision SHALL use the unrounded numeric usage value, not the rou
 
 `fetch_succeeded` and `usage_written` SHALL remain independent facts. A successful fetch that writes no row because the value is unchanged MAY provide fresh evidence when the returned Weekly observation is attributable to that fetch. A failed fetch MUST NOT make previously stored Weekly data fresh merely because it remains visible.
 
-When rotation captures the outgoing member's final retained Usage evidence, the usage-owned fetch receipt SHALL expose the classified 5H and Weekly windows from the same successful upstream response together with one immutable fetch provenance record. The retention path SHALL NOT reconstruct either final window from persisted Usage rows. If either required window is missing, unclassified, or not attributable to the exact current member and successful fetch, membership mutation SHALL remain blocked.
+When rotation captures the outgoing member's final retained Usage evidence, the usage-owned fetch receipt SHALL expose the classified Weekly window and either the classified 5H window or explicit 5H not_provided evidence from the same successful upstream response together with one immutable fetch provenance record. The retention path SHALL NOT reconstruct either final window from persisted Usage rows. 5H not_provided SHALL be established only by one classified Weekly window with a null or omitted sibling in that response; plan labels, failed fetches and malformed or ambiguous windows SHALL NOT establish absence. If Weekly or required present 5H evidence is missing, unclassified, or not attributable to the exact current member and successful fetch, membership mutation SHALL remain blocked.
 
 #### Scenario: Weekly-only quota arrives in the primary slot
 - **GIVEN** the current member maps exactly to an account
@@ -44,6 +44,12 @@ When rotation captures the outgoing member's final retained Usage evidence, the 
 - **WHEN** rotation prepares the immutable pre-removal Usage snapshot
 - **THEN** both windows carry the same fetch provenance and their original source-slot/window metadata
 - **AND** `usage_written=false` does not invalidate that same-fetch evidence
-- **BUT WHEN** the response omits either required window or the fetch fails
+- **BUT WHEN** the response lacks Weekly, lacks both 5H and explicit absence evidence, or the fetch fails
 - **THEN** persisted rows from an earlier fetch are not substituted
 - **AND** the removal prerequisite remains unsatisfied
+
+#### Scenario: Weekly-only retention captures absence
+- **GIVEN** a successful identity-bound fetch returns one classified Weekly window with a null or omitted sibling
+- **WHEN** final retention is prepared
+- **THEN** the receipt SHALL carry explicit same-fetch 5H not_provided evidence
+- **AND** it SHALL NOT fabricate zero usage, reuse an older 5H row, or infer permanent account policy

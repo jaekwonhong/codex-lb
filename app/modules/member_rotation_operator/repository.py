@@ -68,18 +68,19 @@ class MemberRotationOperatorRepository:
             )
             self._session.add(row)
             try:
+                await self._session.flush()
+                saved = RotationIntentRecord(
+                    workspace_id=row.workspace_id,
+                    workspace_account_id=row.workspace_account_id,
+                    enabled=row.automatic_rotation_enabled,
+                    version=row.version,
+                    updated_at=row.updated_at,
+                )
                 await self._session.commit()
             except IntegrityError as exc:
                 await self._session.rollback()
                 raise RotationIntentConflict("rotation intent changed; reload before saving") from exc
-            await self._session.refresh(row)
-            return RotationIntentRecord(
-                workspace_id=row.workspace_id,
-                workspace_account_id=row.workspace_account_id,
-                enabled=row.automatic_rotation_enabled,
-                version=row.version,
-                updated_at=row.updated_at,
-            )
+            return saved
 
         if current.workspace_account_id != workspace_account_id:
             raise RotationIntentConflict("workspace identity changed for stored rotation control")
@@ -98,22 +99,30 @@ class MemberRotationOperatorRepository:
                 version=next_version,
                 updated_at=utcnow(),
             )
-            .execution_options(synchronize_session=False)
+            .returning(
+                MemberRotationWorkspaceControl.workspace_id,
+                MemberRotationWorkspaceControl.workspace_account_id,
+                MemberRotationWorkspaceControl.automatic_rotation_enabled,
+                MemberRotationWorkspaceControl.version,
+                MemberRotationWorkspaceControl.updated_at,
+            )
+            .execution_options(synchronize_session="fetch")
         )
-        if (getattr(result, "rowcount", 0) or 0) != 1:
+        updated = result.one_or_none()
+        if updated is None:
             await self._session.rollback()
             raise RotationIntentConflict("rotation intent changed; reload before saving")
-        await self._session.commit()
-        row = await self._session.get(MemberRotationWorkspaceControl, workspace_id)
-        if row is None:
-            raise RuntimeError("rotation intent disappeared after update")
-        return RotationIntentRecord(
-            workspace_id=row.workspace_id,
-            workspace_account_id=row.workspace_account_id,
-            enabled=row.automatic_rotation_enabled,
-            version=row.version,
-            updated_at=row.updated_at,
+        # Capture this write's values before commit; a cached ORM row or a later
+        # writer must not change the successful response and its CAS version.
+        saved = RotationIntentRecord(
+            workspace_id=updated.workspace_id,
+            workspace_account_id=updated.workspace_account_id,
+            enabled=updated.automatic_rotation_enabled,
+            version=updated.version,
+            updated_at=updated.updated_at,
         )
+        await self._session.commit()
+        return saved
 
     async def unresolved_effect_codes(self, *, workspace_account_id: str) -> tuple[str, ...]:
         rows = list(

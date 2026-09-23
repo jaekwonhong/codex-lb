@@ -39,7 +39,7 @@ durable member-switch start claim SHALL use receipt/read-only reconciliation and
 SHALL NOT claim a new start merely because the prior response was lost.
 
 #### Scenario: Final Usage snapshot committed before process restart
-- **GIVEN** the exact outgoing 5H and Weekly snapshot epoch was durably committed
+- **GIVEN** the exact outgoing Weekly snapshot epoch with same-fetch 5H observation or versioned absence evidence was durably committed
 - **AND** the process restarted before member-switch start
 - **WHEN** the controller resumes the same evaluation and membership epoch
 - **THEN** the immutable P3 snapshot is reused idempotently
@@ -93,7 +93,7 @@ P6 SHALL display the local rolling rotation guard as 24H observed count out of 3
 
 ### Requirement: Historical member Usage preserves original evidence separately from effective reset display
 
-P6 SHALL continue to expose retained final 5H and Weekly Usage for removed membership epochs. When a historical reset schedule has been invalidated at a cutoff, the original `reset_at` SHALL remain visible as retained evidence while the effective reset display SHALL indicate that no current reset schedule applies. Historical reset invalidation SHALL NOT be described as resetting Usage, consuming a reset credit, mutating OpenAI state, or deleting rotation history.
+P6 SHALL continue to expose retained final Weekly Usage and either retained 5H Usage or validated not_provided state for removed membership epochs. Missing legacy 5H rows SHALL remain unknown. When a historical reset schedule has been invalidated at a cutoff, the original `reset_at` SHALL remain visible as retained evidence while the effective reset display SHALL indicate that no current reset schedule applies. Historical reset invalidation SHALL NOT be described as resetting Usage, consuming a reset credit, mutating OpenAI state, or deleting rotation history.
 
 #### Scenario: Historical reset schedule was invalidated
 - **GIVEN** a removed member snapshot retains an original Weekly `reset_at`

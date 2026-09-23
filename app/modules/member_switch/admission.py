@@ -9,6 +9,7 @@ from app.modules.member_switch.repository import (
     ControlRecord,
     MemberSwitchControlRepository,
 )
+from app.modules.member_switch.rotation_plan import SCHEDULE_BINDING_ID, CanaryPlan
 from app.modules.member_switch.schemas import (
     AUTH_ENROLLMENT_PROTOCOL,
     CONTROL_PROTOCOL,
@@ -175,6 +176,14 @@ async def local_admission(
                     child is None or child.kind != "run" or child.active_scope != GLOBAL_SCOPE
                 ):
                     code = "rotation_effect_owner_missing"
+        elif record.kind == "rotation_schedule":
+            try:
+                CanaryPlan.model_validate_json(record.payload)
+            except ValidationError:
+                code = "stored_rotation_schedule_review_required"
+            else:
+                if record.id != SCHEDULE_BINDING_ID or record.active_scope is not None or record.pending_action:
+                    code = "stored_rotation_schedule_review_required"
         else:
             code = "unknown_control_record"
         if code:

@@ -1,0 +1,3 @@
+A successful response with one Weekly window and a null or omitted sibling establishes absence only for that fetch. It does not establish a permanent subscription policy. Unknown or ambiguous durations do not establish absence. Existing complete pairs remain readable; missing legacy rows remain incomplete. New provenance version 2 binds availability to the original member/fetch identity and observation time. A Weekly-only epoch never invents zero usage or inherits older 5H data. This source-only qualification leaves the deployed matched-OFF baseline unchanged.
+
+Verified source scope and remaining deployment/review work: [qualification context](../../../specs/member-switch-commands/optional-five-hour-20260919.md).

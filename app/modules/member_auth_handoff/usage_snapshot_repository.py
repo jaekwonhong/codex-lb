@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import json
+import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+from pydantic import AwareDatetime, BaseModel, Field, JsonValue
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -61,6 +64,130 @@ class HistoricalUsageSnapshotView:
     usage_written: bool
     retained_at: datetime
     reset_invalidation_id: str | None
+
+
+class _VersionedFetchProvenance(BaseModel):
+    schema_version: Literal[2]
+    five_hour_availability: Literal["observed", "not_provided"]
+    evaluation_id: str = Field(min_length=1)
+    workspace_id: str = Field(min_length=1)
+    source_account_id: str = Field(min_length=1)
+    source_workspace_account_id: str = Field(min_length=1)
+    source_user_id: str = Field(min_length=1)
+    source_email: str = Field(min_length=1)
+    fetch_id: str = Field(min_length=1)
+    requested_workspace_account_id: str = Field(min_length=1)
+    account_workspace_id: str | None
+    payload_workspace_id: str | None
+    credential_source: Literal["stored"]
+    started_at: AwareDatetime
+    observed_at: AwareDatetime
+
+
+def _provenance_object(pairs: list[tuple[str, JsonValue]]) -> dict[str, JsonValue]:
+    values: dict[str, JsonValue] = {}
+    for key, value in pairs:
+        if key in {"schema_version", "five_hour_availability"} and key in values:
+            raise ValueError("final usage provenance has duplicate version metadata")
+        values[key] = value
+    return values
+
+
+def _normalized_inputs(observations: Sequence[FinalUsageSnapshotInput]) -> dict[str, FinalUsageSnapshotInput]:
+    by_window: dict[str, FinalUsageSnapshotInput] = {item.logical_window: item for item in observations}
+    if not observations or len(by_window) != len(observations):
+        raise ValueError("final usage retention requires one 5h and one weekly observation or proven 5h absence")
+    provenance_text = observations[0].fetch_provenance.strip()
+    try:
+        raw = json.loads(provenance_text, object_pairs_hook=_provenance_object)
+    except json.JSONDecodeError as exc:
+        if provenance_text.startswith(("{", "[")):
+            raise ValueError("final usage provenance JSON is malformed") from exc
+        raw = None  # Legacy opaque provenance only supports a complete pair.
+    provenance = None
+    if isinstance(raw, dict):
+        if "schema_version" in raw:
+            version = raw["schema_version"]
+            # bool and float equality must not select a supported integer version.
+            if type(version) is not int or version not in {1, 2}:
+                raise ValueError("final usage provenance version is invalid or unsupported")
+            if version == 2:
+                provenance = _VersionedFetchProvenance.model_validate_json(provenance_text)
+            elif "five_hour_availability" in raw:
+                raise ValueError("legacy final usage provenance contains versioned availability")
+        elif "five_hour_availability" in raw or {"evaluation_id", "requested_workspace_account_id"} <= raw.keys():
+            # Recognizable versioned evidence cannot become opaque by losing its tag.
+            raise ValueError("final usage provenance version is missing")
+    required = {"weekly"} if provenance and provenance.five_hour_availability == "not_provided" else _REQUIRED_WINDOWS
+    if set(by_window) != required:
+        raise ValueError("final usage retention requires one 5h and one weekly observation or proven 5h absence")
+    for item in observations:
+        if not item.source_window.strip() or not item.fetch_provenance.strip():
+            raise ValueError("final usage observation metadata is incomplete")
+        if item.window_minutes <= 0 or not item.fetch_succeeded:
+            raise ValueError("final usage observation is not eligible for retention")
+        if item.fetch_provenance.strip() != provenance_text or to_utc_naive(item.observed_at) != to_utc_naive(
+            observations[0].observed_at
+        ):
+            raise ValueError("final usage observation provenance mismatch")
+        if provenance is not None:
+            if (
+                provenance.workspace_id != item.source_workspace_id
+                or provenance.source_account_id != item.source_account_id
+                or provenance.source_workspace_account_id != item.source_workspace_account_id
+                or provenance.requested_workspace_account_id != item.source_workspace_account_id
+                or provenance.source_user_id != item.source_user_id
+                or provenance.source_email != item.source_email.strip().casefold()
+                or to_utc_naive(provenance.observed_at) != to_utc_naive(item.observed_at)
+                or to_utc_naive(provenance.started_at) > to_utc_naive(provenance.observed_at)
+                or (
+                    provenance.account_workspace_id is not None
+                    and provenance.payload_workspace_id is not None
+                    and provenance.account_workspace_id != provenance.payload_workspace_id
+                )
+            ):
+                raise ValueError("final usage observation provenance identity mismatch")
+            if (
+                item.window_minutes != (300 if item.logical_window == "5h" else 10080)
+                or not math.isfinite(item.used_percent)
+                or item.used_percent < 0
+                or item.reset_at is None
+                or item.reset_at <= provenance.observed_at.timestamp()
+            ):
+                raise ValueError("final usage observation window is invalid")
+    return by_window
+
+
+def _view_input(row: HistoricalUsageSnapshotView) -> FinalUsageSnapshotInput:
+    if row.logical_window not in {"5h", "weekly"}:
+        raise ValueError("invalid retained window")
+    return FinalUsageSnapshotInput(
+        logical_window="5h" if row.logical_window == "5h" else "weekly",
+        source_window=row.source_window,
+        source_workspace_id=row.workspace_id,
+        source_workspace_account_id=row.workspace_account_id,
+        source_account_id=row.account_id,
+        source_user_id=row.user_id,
+        source_email=row.email,
+        used_percent=row.used_percent,
+        reset_at=row.reset_at,
+        window_minutes=row.window_minutes,
+        observed_at=row.observed_at,
+        fetch_provenance=row.fetch_provenance,
+        fetch_succeeded=row.fetch_succeeded,
+        usage_written=row.usage_written,
+    )
+
+
+def retained_five_hour_state(
+    rows: Sequence[HistoricalUsageSnapshotView],
+) -> Literal["observed", "not_provided", "unknown"]:
+    """Share recovery validation with display; a missing row alone proves nothing."""
+    try:
+        normalized = _normalized_inputs([_view_input(row) for row in rows])
+    except ValueError:
+        return "unknown"
+    return "observed" if "5h" in normalized else "not_provided"
 
 
 def _view(row: WorkspaceMemberFinalUsageSnapshot) -> HistoricalUsageSnapshotView:
@@ -129,20 +256,6 @@ class MemberUsageSnapshotRepository:
             await self._session.execute(text("BEGIN IMMEDIATE"))
 
     @staticmethod
-    def _normalized_inputs(
-        observations: list[FinalUsageSnapshotInput] | tuple[FinalUsageSnapshotInput, ...],
-    ) -> dict[str, FinalUsageSnapshotInput]:
-        by_window: dict[str, FinalUsageSnapshotInput] = {item.logical_window: item for item in observations}
-        if set(by_window) != _REQUIRED_WINDOWS or len(by_window) != len(observations):
-            raise ValueError("final usage retention requires one 5h and one weekly observation")
-        for item in observations:
-            if not item.source_window.strip() or not item.fetch_provenance.strip():
-                raise ValueError("final usage observation metadata is incomplete")
-            if item.window_minutes <= 0 or not item.fetch_succeeded:
-                raise ValueError("final usage observation is not eligible for retention")
-        return by_window
-
-    @staticmethod
     def _same_evidence(
         row: WorkspaceMemberFinalUsageSnapshot,
         *,
@@ -185,8 +298,8 @@ class MemberUsageSnapshotRepository:
         user_id: str,
         membership_epoch: str,
         observations: list[FinalUsageSnapshotInput] | tuple[FinalUsageSnapshotInput, ...],
-    ) -> tuple[HistoricalUsageSnapshotView, HistoricalUsageSnapshotView]:
-        normalized = self._normalized_inputs(observations)
+    ) -> tuple[HistoricalUsageSnapshotView, ...]:
+        normalized = _normalized_inputs(observations)
         normalized_email = email.strip().casefold()
         identity = (
             workspace_id,
@@ -225,7 +338,7 @@ class MemberUsageSnapshotRepository:
                 ).all()
             )
             if existing:
-                if len(existing) != 2 or {row.logical_window for row in existing} != _REQUIRED_WINDOWS:
+                if len(existing) != len(normalized) or {row.logical_window for row in existing} != set(normalized):
                     await self._session.rollback()
                     raise HistoricalUsageConflict("historical usage epoch is incomplete")
                 for row in existing:
@@ -243,12 +356,12 @@ class MemberUsageSnapshotRepository:
                         await self._session.rollback()
                         raise HistoricalUsageConflict("historical usage epoch contains different evidence")
                 ordered = sorted(existing, key=lambda row: 0 if row.logical_window == "5h" else 1)
-                views = (_view(ordered[0]), _view(ordered[1]))
+                views = tuple(_view(row) for row in ordered)
                 await self._session.rollback()
                 return views
 
             rows: list[WorkspaceMemberFinalUsageSnapshot] = []
-            for logical_window in ("5h", "weekly"):
+            for logical_window in sorted(normalized):
                 item = normalized[logical_window]
                 rows.append(
                     WorkspaceMemberFinalUsageSnapshot(
@@ -275,7 +388,7 @@ class MemberUsageSnapshotRepository:
             await self._session.commit()
             for row in rows:
                 await self._session.refresh(row)
-            return _view(rows[0]), _view(rows[1])
+            return tuple(_view(row) for row in rows)
 
     async def recover_final_snapshot_epoch(
         self,
@@ -287,7 +400,7 @@ class MemberUsageSnapshotRepository:
         email: str,
         user_id: str,
         membership_epoch: str,
-    ) -> tuple[HistoricalUsageSnapshotView, HistoricalUsageSnapshotView] | None:
+    ) -> tuple[HistoricalUsageSnapshotView, ...] | None:
         """Recover an already committed immutable epoch after parent-state loss.
 
         The historical table's unique key is narrower than the full source
@@ -310,8 +423,10 @@ class MemberUsageSnapshotRepository:
         )
         if not rows:
             return None
-        if len(rows) != 2 or {row.logical_window for row in rows} != _REQUIRED_WINDOWS:
-            raise HistoricalUsageConflict("historical usage epoch is incomplete")
+        try:
+            _normalized_inputs([_view_input(_view(row)) for row in rows])
+        except ValueError as exc:
+            raise HistoricalUsageConflict("historical usage epoch is incomplete or invalid") from exc
         if any(
             row.workspace_id != workspace_id
             or row.account_id != account_id
@@ -327,7 +442,7 @@ class MemberUsageSnapshotRepository:
         ):
             raise HistoricalUsageConflict("historical usage epoch provenance mismatch")
         ordered = sorted(rows, key=lambda row: 0 if row.logical_window == "5h" else 1)
-        return _view(ordered[0]), _view(ordered[1])
+        return tuple(_view(row) for row in ordered)
 
     async def invalidate_historical_reset_schedules(
         self,

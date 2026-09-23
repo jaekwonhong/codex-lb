@@ -1,0 +1,4 @@
+- [x] Reconcile the rotation delta with current Beta and record KEEP/REDUCE/DROP decisions.
+- [x] Register exact reproducible Canary artifact/source identity without reusing a historical owning commit.
+- [x] Verify new-artifact dispatch and altered-source/binary rejection while retaining OFF behavior.
+- [x] Run combined current-Beta and rotation qualification; archive source and evidence.

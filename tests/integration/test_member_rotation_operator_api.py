@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import shutil
+import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from sqlalchemy import func, select
@@ -45,8 +48,8 @@ class _SnapshotAdapter:
                 weekly_reason=None,
                 reset_status="reconciliation_pending",
                 quota_code=None,
-                count_24h=None,
-                count_168h=None,
+                count_24h=2,
+                count_168h=5,
             ),
             current_member=OperatorMemberIdentity(
                 preset_id="cdp-1-allnz-jk",
@@ -91,6 +94,7 @@ def _reset_snapshot_adapter():
 async def test_operator_read_is_default_off_and_does_not_persist_control(async_client):
     response = await async_client.get("/api/member-rotation/operator")
     assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
     payload = response.json()
     assert payload["schemaVersion"] == 1
     assert payload["workspaces"]
@@ -130,6 +134,91 @@ async def test_explicit_intent_write_is_cas_scoped_and_status_reads_only_the_sav
     # P6 has no effect command endpoint; enabling intent alone reports an integration boundary.
     assert workspace["controller"]["status"] == "integration_pending"
     assert "controller_snapshot_unavailable" in workspace["blockerCodes"]
+
+
+@pytest.mark.asyncio
+async def test_sequential_intent_updates_return_committed_values_and_versions(async_client):
+    endpoint = f"/api/member-rotation/operator/workspaces/{WORKSPACE_ID}/intent"
+    returned_version = 0
+    for enabled in (True, False, True):
+        saved = await async_client.put(endpoint, json={"enabled": enabled, "expectedVersion": returned_version})
+        assert saved.status_code == 200
+        assert saved.json() == {
+            "workspaceId": WORKSPACE_ID,
+            "workspaceAccountId": WORKSPACE_ACCOUNT_ID,
+            "enabled": enabled,
+            "version": returned_version + 1,
+        }
+        returned_version = saved.json()["version"]
+        listed = await async_client.get("/api/member-rotation/operator")
+        assert listed.status_code == 200
+        workspace = next(item for item in listed.json()["workspaces"] if item["workspaceId"] == WORKSPACE_ID)
+        assert workspace["automaticRotationEnabled"] is enabled
+        assert workspace["controlVersion"] == returned_version
+
+    stale = await async_client.put(endpoint, json={"enabled": False, "expectedVersion": returned_version - 1})
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "rotation_intent_conflict"
+
+
+@pytest.mark.asyncio
+async def test_intent_update_keeps_stored_workspace_identity_binding(async_client):
+    async with SessionLocal() as session:
+        session.add(
+            MemberRotationWorkspaceControl(
+                workspace_id=WORKSPACE_ID,
+                workspace_account_id="previous-workspace-account",
+                automatic_rotation_enabled=False,
+                version=1,
+            )
+        )
+        await session.commit()
+
+    response = await async_client.put(
+        f"/api/member-rotation/operator/workspaces/{WORKSPACE_ID}/intent",
+        json={"enabled": True, "expectedVersion": 1},
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "rotation_intent_conflict"
+    async with SessionLocal() as session:
+        row = await session.get(MemberRotationWorkspaceControl, WORKSPACE_ID)
+        assert row is not None
+        assert row.workspace_account_id == "previous-workspace-account"
+        assert row.automatic_rotation_enabled is False
+        assert row.version == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_foundation", [False, True], ids=["default-off", "non-null-foundation"])
+async def test_actual_operator_response_parses_in_typescript_client(async_client, with_foundation):
+    frontend = Path(__file__).resolve().parents[2] / "frontend"
+    node = shutil.which("node")
+    if node is None or not (frontend / "node_modules/typescript/package.json").is_file():
+        pytest.skip("Operator wire contract requires Node and the installed frontend dependencies")
+    if with_foundation:
+        set_rotation_operator_snapshot_adapter(_SnapshotAdapter())
+    response = await async_client.get("/api/member-rotation/operator")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    workspace = next(item for item in response.json()["workspaces"] if item["workspaceId"] == WORKSPACE_ID)
+    assert workspace["automaticRotationEnabled"] is False
+    if with_foundation:
+        assert workspace["foundation"]["count24H"] == 2
+        assert workspace["foundation"]["count168H"] == 5
+    else:
+        assert workspace["foundation"] is None
+
+    # Pass unmodified ASGI response bytes through the product TS schema and API
+    # client, rather than maintaining a separate hand-written wire fixture.
+    checked = subprocess.run(
+        [node, str(frontend / "src/features/member-rotation/operator-wire-contract.cjs")],
+        input=response.text,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    assert checked.returncode == 0, checked.stdout + checked.stderr
 
 
 @pytest.mark.asyncio

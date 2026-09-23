@@ -91,6 +91,24 @@ async def test_missing_client_receipt_is_observation_not_start_permission(monkey
     assert [call[0] for call in calls] == ["session", "GET"]
 
 
+@pytest.mark.parametrize("status", [404, 409])
+async def test_canary_uses_dedicated_endpoint_without_manual_fallback(monkeypatch, status):
+    calls = intercept(
+        monkeypatch, FakeResponse(status, {"accepted": False, "code": "unsupported", "operationId": None})
+    )
+    client = CompanionClient("http://127.0.0.1:53418/member-switch/v1/account-pool")
+    request = StartRequest(preview_token="synthetic", client_flow_id="flow-id", canary=True)
+    if status == 404:
+        with pytest.raises(ControlConflict, match="companion_request_unavailable"):
+            await client.start(request)
+    else:
+        assert not (await client.start(request)).accepted
+    posts = [call for call in calls if call[0] == "POST"]
+    assert len(posts) == 1
+    assert posts[0][1].endswith("/canary-operations")
+    assert posts[0][2]["json"]["canary"] is True
+
+
 async def test_membership_observation_uses_managed_post_and_interactive_timeout(monkeypatch):
     calls = intercept(
         monkeypatch,

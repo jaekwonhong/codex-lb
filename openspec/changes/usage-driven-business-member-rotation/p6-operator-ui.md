@@ -10,7 +10,7 @@ The status path uses three sources with separate meanings:
 2. P3 `RotationQuotaRepository.snapshot()` and `MemberUsageSnapshotRepository.list_history()` supply local rolling counts and immutable removed-member final Usage.
 3. `RotationOperatorSnapshotAdapter` is an additive, read-only P5 integration seam for current member, 5H display evidence, controller/reset progress, next candidate, invitation-vs-membership state, Companion status, and removed-at timestamps.
 
-The default adapter returns no P5 snapshot. When automatic rotation intent is enabled before P5 integration, the UI reports `integration_pending` / `controller_snapshot_unavailable`; it does not substitute Accounts Usage, telemetry, or the manual member-switch catalog as eligibility evidence.
+The default adapter is `DurableRotationOperatorSnapshotAdapter`, which projects retained P5 controller/run evidence without invoking a controller or any effect. When no matching durable snapshot exists (or a null adapter is explicitly installed), enabled intent reports `integration_pending` / `controller_snapshot_unavailable`; the UI does not substitute Accounts Usage, telemetry, or the manual member-switch catalog as eligibility evidence.
 
 ## Intent and effect separation
 
@@ -36,7 +36,7 @@ P5 must not treat this setting alone as effect authority. It still needs G1 admi
 
 ## P5 integration note
 
-P6 does not depend on a P5 branch or private persistence schema. P5 can implement the public `RotationOperatorSnapshotAdapter` after its controller contract stabilizes. The adapter is intentionally read-only and has no action method. Required future P5 mappings are:
+The public `RotationOperatorSnapshotAdapter` remains additive and read-only, with no action method. G2 now supplies a durable implementation, and P6 consumes its projected facts through this boundary. The current mappings include:
 
 - exact current member identity;
 - a display-only 5H observation;
@@ -46,4 +46,8 @@ P6 does not depend on a P5 branch or private persistence schema. P5 can implemen
 - Companion capability/provenance attention;
 - removed-at timestamp keyed by P3 membership epoch.
 
-Until these are supplied, the UI keeps the missing portions explicit rather than deriving them locally.
+Missing portions remain explicit rather than being derived locally. The current single-evaluation adapter only supplies its selected controller's removed-at mapping; multi-controller historical aggregation and explicit outgoing-evidence attribution remain separate review observations, not claims of this correction.
+
+The operator frontend uses the canonical backend numeric-window aliases `count24H`, `limit24H`, `count168H` and `limit168H`. A successful intent write returns its committed enabled value and version; sequential writes use the version from that successful response. Wire-contract tests must feed actual backend serialization to the client, not only manually constructed component data.
+
+Interrupted pre-start worker evaluation is surfaced as `needs_attention` with an explicit blocker, preserving quota, snapshots and the fixed evaluation binding. It never exposes an effect-replay control. The [current release notes](../../specs/member-switch-commands/off-deployment-20260920.md) distinguish deployed b98/e55 OFF evidence from subsequent undeployed correction source.

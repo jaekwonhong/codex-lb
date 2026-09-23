@@ -78,6 +78,7 @@ BACKGROUND_LOOP_BUILDERS: tuple[str, ...] = (
     "build_data_retention_scheduler",
     "build_telemetry_scheduler",
     "build_account_deletion_scheduler",
+    "build_member_rotation_scheduler",
 )
 
 

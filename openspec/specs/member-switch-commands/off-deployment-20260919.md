@@ -1,0 +1,17 @@
+# Matched OFF deployment and release decision — 2026-09-19
+
+Normative contract: [member-switch commands](spec.md). Detailed evidence and host tools are retained in the operations workspace at `/Users/nowtech/Documents/codex-lb-server/artifacts/rotation-off-deployment-20260919/`.
+
+The matched current-baseline backend `c409eac1...` and Companion `2.11.48-canary.1` are deployed with rotation OFF. The backend source identity is the canonical uncommitted manifest `d22f72c7...` over base `62cd34ce...`; the Companion canonical source manifest is `b6f6c753...` and binary SHA256 is `1ec90e2b...`. Historical P4 or inherited tree labels do not substitute for these identities.
+
+Retained source qualification covers 541 tests, Ruff/ty, 66 specs, independent reviews and exact runtime hashes. Shared PostgreSQL was qualified through an isolated physical copy/restore, 75-table/schema fingerprints, six candidate/predecessor readiness passes and 11 sequence safety checks. Stable and production PostgreSQL were not replaced by this deployment.
+
+A candidate-specific first-start gate blocks startup until atomic publication and verifies the same PID1 epoch/network namespace at release. The host signer keeps its private key outside backend mounts. A dedicated installed Python runtime replaced a development-checkout interpreter that stalled on a macOS folder-access request; the key and OS permissions were unchanged. Real LaunchAgent renewal and backend signature/freshness checks passed. Required host policy/helper reads subsequently recovered.
+
+Current pinned operations tooling uses the shared lock, exact current database/schema/artifact/storage identities, a private journal, a fresh gate namespace for recreation and a retained predecessor. Candidate restart is disabled and stop is proved before recovery. An unproven stop/recovery preserves a needs-review lock. Qualification is isolated; no production lane recreation is claimed by that tooling evidence. Use the operations packet's `current-operations.md`, not the historical beta.7 mutation wrappers.
+
+Q3 remains **NOT RUN / NOT ADMITTED**. Fresh current-member observation showed Weekly usage 100% and a ready candidate preview, but the same fetch lacked 5H data (`five_hour_missing`). Consequently later activation checks were not reached. Example: a response whose primary window lasts 604800 seconds and whose secondary window is null supplies Weekly only; it must not be stored as a 5H+Weekly final snapshot. No plan, enabled intent, reset, member removal or invitation was issued. Durable execution records and the at-most-one budget are retained.
+
+Q4 is **NO-GO for automatic-rotation release; retain the matched pair OFF**. The final operations and independent audit evidence is retained in the operations packet. This does not qualify live replacement or close the conditional canary item in the umbrella feature change. Future admission needs valid same-fetch inputs, fresh membership/identity/admission/intent/runtime checks and actual operational need. A successful normal reset must end evaluation without replacement. Unknown effects or an interrupted fixed binding must never be retried under a new evaluation ID.
+
+Companion remains ad-hoc signed, without Developer ID/notarization. Full-host reboot, off-host/PITR recovery and a source commit/PR/merge are outside the evidence claimed here. Historical sealed manifests retain their original checkpoint status.

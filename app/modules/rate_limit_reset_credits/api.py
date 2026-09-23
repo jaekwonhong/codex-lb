@@ -74,6 +74,7 @@ router = APIRouter(
 
 FetchFn = Callable[..., Awaitable[ResetCreditsResponse]]
 ConsumeFn = Callable[..., Awaitable[ConsumeResetCreditResponse]]
+BeforeConsumeFn = Callable[[Account], Awaitable[None]]
 RefreshUsageFn = Callable[[Account], Awaitable[None]]
 ResolveRouteFn = Callable[[Account], Awaitable[ResolvedUpstreamRoute | None]]
 
@@ -217,6 +218,7 @@ async def _redeem_soonest_reset_credit(
     lock_session: AsyncSession | None = None,
     fetch_fn: FetchFn | None = None,
     consume_fn: ConsumeFn | None = None,
+    before_consume: BeforeConsumeFn | None = None,
     auth_manager: AuthManager | None = None,
     refresh_usage: RefreshUsageFn | None = None,
     resolve_route: ResolveRouteFn | None = None,
@@ -238,6 +240,7 @@ async def _redeem_soonest_reset_credit(
                 encryptor=encryptor,
                 effective_fetch_fn=effective_fetch_fn,
                 effective_consume_fn=effective_consume_fn,
+                before_consume=before_consume,
                 auth_manager=auth_manager,
                 refresh_usage=refresh_usage,
                 resolve_route=resolve_route,
@@ -320,6 +323,7 @@ async def _redeem_soonest_reset_credit_locked(
     encryptor: TokenEncryptor,
     effective_fetch_fn: FetchFn,
     effective_consume_fn: ConsumeFn,
+    before_consume: BeforeConsumeFn | None,
     auth_manager: AuthManager | None,
     refresh_usage: RefreshUsageFn | None,
     resolve_route: ResolveRouteFn | None,
@@ -400,6 +404,10 @@ async def _redeem_soonest_reset_credit_locked(
         # leaves a durable pin any replica can reuse.
         credit_id = await pin_redeem_request(account.id, redeem_request_id, credit.id)
 
+    # Discovery and the durable pin may wait. Revalidate at the final consume
+    # boundary; a rejected admission leaves its pin intact for no-replay callers.
+    if before_consume is not None:
+        await before_consume(redeem_account)
     try:
         result = await effective_consume_fn(
             access_token,

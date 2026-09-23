@@ -417,7 +417,7 @@ def final_usage_snapshot_inputs(
     *,
     now: datetime,
     not_before: datetime | None = None,
-) -> tuple[FinalUsageSnapshotInput, FinalUsageSnapshotInput]:
+) -> tuple[FinalUsageSnapshotInput, ...]:
     """Build immutable P3 inputs only from one exact, fresh P1 fetch receipt."""
     if not evaluation.member.matches(current_member):
         raise FinalUsageRetentionUnavailable("identity_mismatch")
@@ -433,58 +433,48 @@ def final_usage_snapshot_inputs(
     weekly = receipt.weekly_window
     if provenance is None:
         raise FinalUsageRetentionUnavailable("fetch_not_observed")
-    if five_hour is None:
+    if five_hour is None and not receipt.five_hour_not_provided:
         raise FinalUsageRetentionUnavailable("five_hour_missing")
+    if five_hour is not None and receipt.five_hour_not_provided:
+        raise FinalUsageRetentionUnavailable("five_hour_evidence_conflict")
     if weekly is None:
         raise FinalUsageRetentionUnavailable("weekly_missing")
-    current_time = _utc(now)
-    five_hour_used = five_hour.raw_used_percent
-    if five_hour_used is None or not math.isfinite(five_hour_used) or five_hour_used < 0:
-        raise FinalUsageRetentionUnavailable("five_hour_usage_invalid")
-    if five_hour.window_minutes != 300:
-        raise FinalUsageRetentionUnavailable("five_hour_window_invalid")
-    if five_hour.reset_at is None:
-        raise FinalUsageRetentionUnavailable("five_hour_reset_missing")
-    if five_hour.reset_at <= current_time.timestamp():
-        raise FinalUsageRetentionUnavailable("five_hour_reset_elapsed")
-    assert weekly.raw_used_percent is not None
-    assert weekly.window_minutes is not None
+    if five_hour is not None:
+        five_hour_used = five_hour.raw_used_percent
+        if five_hour_used is None or not math.isfinite(five_hour_used) or five_hour_used < 0:
+            raise FinalUsageRetentionUnavailable("five_hour_usage_invalid")
+        if five_hour.window_minutes != 300:
+            raise FinalUsageRetentionUnavailable("five_hour_window_invalid")
+        if five_hour.reset_at is None:
+            raise FinalUsageRetentionUnavailable("five_hour_reset_missing")
+        if five_hour.reset_at <= _utc(now).timestamp():
+            raise FinalUsageRetentionUnavailable("five_hour_reset_elapsed")
     provenance_text = _provenance_json(receipt, evaluation)
-    source_email = evaluation.member.email.strip().casefold()
-    return (
-        FinalUsageSnapshotInput(
-            logical_window="5h",
-            source_window=five_hour.source_slot,
-            source_workspace_id=evaluation.workspace_id,
-            source_workspace_account_id=evaluation.workspace_account_id,
-            source_account_id=evaluation.member.account_id,
-            source_user_id=evaluation.member.user_id or "",
-            source_email=source_email,
-            used_percent=five_hour_used,
-            reset_at=five_hour.reset_at,
-            window_minutes=five_hour.window_minutes,
-            observed_at=provenance.observed_at,
-            fetch_provenance=provenance_text,
-            fetch_succeeded=receipt.fetch_succeeded,
-            usage_written=receipt.usage_written,
-        ),
-        FinalUsageSnapshotInput(
-            logical_window="weekly",
-            source_window=weekly.source_slot,
-            source_workspace_id=evaluation.workspace_id,
-            source_workspace_account_id=evaluation.workspace_account_id,
-            source_account_id=evaluation.member.account_id,
-            source_user_id=evaluation.member.user_id or "",
-            source_email=source_email,
-            used_percent=weekly.raw_used_percent,
-            reset_at=weekly.reset_at,
-            window_minutes=weekly.window_minutes,
-            observed_at=provenance.observed_at,
-            fetch_provenance=provenance_text,
-            fetch_succeeded=receipt.fetch_succeeded,
-            usage_written=receipt.usage_written,
-        ),
-    )
+    result: list[FinalUsageSnapshotInput] = []
+    for logical_window, window in (("5h", five_hour), ("weekly", weekly)):
+        if window is None:
+            continue
+        assert window.raw_used_percent is not None
+        assert window.window_minutes is not None
+        result.append(
+            FinalUsageSnapshotInput(
+                logical_window="5h" if logical_window == "5h" else "weekly",
+                source_window=window.source_slot,
+                source_workspace_id=evaluation.workspace_id,
+                source_workspace_account_id=evaluation.workspace_account_id,
+                source_account_id=evaluation.member.account_id,
+                source_user_id=evaluation.member.user_id or "",
+                source_email=evaluation.member.email.strip().casefold(),
+                used_percent=window.raw_used_percent,
+                reset_at=window.reset_at,
+                window_minutes=window.window_minutes,
+                observed_at=provenance.observed_at,
+                fetch_provenance=provenance_text,
+                fetch_succeeded=receipt.fetch_succeeded,
+                usage_written=receipt.usage_written,
+            )
+        )
+    return tuple(result)
 
 
 def _quota_fields(quota: RotationQuotaReservationEvidence | None) -> _QuotaFields:
@@ -506,7 +496,8 @@ def _provenance_json(
         raise FinalUsageRetentionUnavailable("fetch_not_observed")
     return json.dumps(
         {
-            "schema_version": 1,
+            "schema_version": 2,
+            "five_hour_availability": "not_provided" if receipt.five_hour_not_provided else "observed",
             "evaluation_id": evaluation.evaluation_id,
             "workspace_id": evaluation.workspace_id,
             "source_account_id": evaluation.member.account_id,

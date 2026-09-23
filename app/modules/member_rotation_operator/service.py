@@ -18,6 +18,7 @@ from app.modules.member_auth_handoff.rotation_events import RotationQuotaReposit
 from app.modules.member_auth_handoff.usage_snapshot_repository import (
     HistoricalUsageSnapshotView,
     MemberUsageSnapshotRepository,
+    retained_five_hour_state,
 )
 from app.modules.member_rotation_operator.adapter import (
     OperatorMemberIdentity,
@@ -188,6 +189,7 @@ class MemberRotationOperatorService:
                     membership_epoch=membership_epoch,
                     removed_at=removed_at_map.get(membership_epoch),
                     retained_at=max(item.retained_at for item in items),
+                    five_hour_state=retained_five_hour_state(items),
                     five_hour=_history_window(by_window["5h"]) if "5h" in by_window else None,
                     weekly=_history_window(by_window["weekly"]) if "weekly" in by_window else None,
                 )

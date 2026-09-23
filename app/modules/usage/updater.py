@@ -32,6 +32,7 @@ from app.core.usage.weekly_observation import (
     UsageFetchProvenance,
     WeeklyUsageObservation,
     WeeklyWindowObservation,
+    five_hour_not_provided_by_payload,
     five_hour_window_from_payload,
     weekly_window_from_payload,
 )
@@ -151,6 +152,7 @@ class AccountRefreshResult:
     fetch_provenance: UsageFetchProvenance | None = None
     five_hour_window: FiveHourWindowObservation | None = None
     weekly_window: WeeklyWindowObservation | None = None
+    five_hour_not_provided: bool = False
 
     @property
     def weekly_observation(self) -> WeeklyUsageObservation:
@@ -168,6 +170,7 @@ class AccountRefreshResult:
             usage_written=self.usage_written,
             provenance=self.fetch_provenance,
             five_hour_window=self.five_hour_window,
+            five_hour_not_provided=self.five_hour_not_provided,
             weekly_window=self.weekly_window,
         )
 
@@ -737,6 +740,7 @@ class UsageUpdater:
             started_at=fetch_started_at,
             observed_at=observed_at,
         )
+        five_hour_not_provided = five_hour_not_provided_by_payload(payload)
         five_hour_window = five_hour_window_from_payload(payload, observed_at=observed_at)
         weekly_window = weekly_window_from_payload(payload, observed_at=observed_at)
 
@@ -821,6 +825,7 @@ class UsageUpdater:
                 usage_written=additional_synced,
                 fetch_provenance=fetch_provenance,
                 five_hour_window=five_hour_window,
+                five_hour_not_provided=five_hour_not_provided,
                 weekly_window=weekly_window,
             )
         # Treat both None and empty rate_limit (both windows absent) as
@@ -841,6 +846,7 @@ class UsageUpdater:
                     usage_written=additional_synced,
                     fetch_provenance=fetch_provenance,
                     five_hour_window=five_hour_window,
+                    five_hour_not_provided=five_hour_not_provided,
                     weekly_window=weekly_window,
                 )
         if primary is None and secondary is None and monthly is None:
@@ -849,6 +855,7 @@ class UsageUpdater:
                 usage_written=additional_synced,
                 fetch_provenance=fetch_provenance,
                 five_hour_window=five_hour_window,
+                five_hour_not_provided=five_hour_not_provided,
                 weekly_window=weekly_window,
             )
         credits_has, credits_unlimited, credits_balance = _credits_snapshot(payload)
@@ -912,6 +919,7 @@ class UsageUpdater:
                 # payload. The earlier receipt cannot represent the final state.
                 # P1 uses force_weekly_observation(), which bypasses this hook.
                 fetch_provenance = None
+                five_hour_not_provided = False
                 five_hour_window = None
                 weekly_window = None
         await self._recover_quota_status_from_usage(account, primary=primary, secondary=secondary, monthly=monthly)
@@ -919,6 +927,7 @@ class UsageUpdater:
             usage_written=usage_written,
             fetch_provenance=fetch_provenance,
             five_hour_window=five_hour_window,
+            five_hour_not_provided=five_hour_not_provided,
             weekly_window=weekly_window,
         )
 

@@ -7,6 +7,7 @@ import {
   updateMemberRotationIntent,
 } from "@/features/member-rotation/api";
 import { MemberRotationPanel } from "@/features/member-rotation/components/member-rotation-panel";
+import { RemovedMemberHistorySchema } from "@/features/member-rotation/schemas";
 import type {
   RotationOperatorResponse,
   RotationWorkspaceOperator,
@@ -46,10 +47,10 @@ function workspace(
     },
     resetCredit: { state: "confirmed_no_redeemable_credit", detail: null },
     quota: {
-      count24h: 2,
-      limit24h: 3,
-      count168h: 6,
-      limit168h: 7,
+      count24H: 2,
+      limit24H: 3,
+      count168H: 6,
+      limit168H: 7,
       countBasis: "observed_local",
       historyComplete: false,
       coverageStartedAt: "2026-09-10T00:00:00Z",
@@ -62,8 +63,8 @@ function workspace(
       weeklyReason: null,
       resetStatus: null,
       quotaCode: null,
-      count24h: null,
-      count168h: null,
+      count24H: null,
+      count168H: null,
     },
     controller: {
       status: "idle",
@@ -109,6 +110,85 @@ describe("member rotation operator panel", () => {
     });
   });
 
+  it.each(["not_provided", "unknown"] as const)("distinguishes %s from zero usage in live state and history", async (state) => {
+    getStatus.mockResolvedValue(response([
+      workspace("weekly-only", {
+        fiveHourUsage: { state, usedPercent: null, resetAt: null, observedAt: "2026-09-19T10:00:00Z" },
+        history: [{
+          email: "removed@example.com", userId: "removed", presetId: "removed", membershipEpoch: "epoch-optional",
+          removedAt: null, retainedAt: "2026-09-19T10:00:00Z", fiveHourState: state, fiveHour: null,
+          weekly: {
+            logicalWindow: "weekly", sourceWindow: "primary", usedPercent: 100,
+            originalResetAt: 1_800_500_000, effectiveResetAt: 1_800_500_000,
+            observedAt: "2026-09-19T10:00:00Z", retainedAt: "2026-09-19T10:00:00Z", resetScheduleInvalidated: false,
+          },
+        }],
+      }),
+    ]));
+    renderWithProviders(<MemberRotationPanel readOnly={false} />);
+    const card = await screen.findByTestId("rotation-workspace-weekly-only");
+    expect(within(card).getByText(state === "not_provided" ? "미제공" : "미확인 · unknown")).toBeInTheDocument();
+    expect(within(card).getByText(state === "not_provided" ? "미제공 · 해당 조회 응답에 5H 없음" : "미확인 · Final Usage evidence 없음")).toBeInTheDocument();
+    expect(within(card).queryByText(/5H final Usage:/)).not.toBeInTheDocument();
+    expect(within(card).queryByText(/0.0% used/)).not.toBeInTheDocument();
+    expect(within(card).getByText("Weekly final Usage: 100.0%")).toBeInTheDocument();
+    expect(updateIntent).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["incomplete legacy 5H-only", false, false],
+    ["invalid v2 pair", true, false],
+    ["invalidated unknown evidence", true, true],
+  ] as const)("labels %s as unverified in the 5H block while retaining raw evidence", async (_case, paired, invalidated) => {
+    const rawWindow = {
+      logicalWindow: "5h" as const, sourceWindow: "primary", usedPercent: 98.5,
+      originalResetAt: 1_800_000_000, effectiveResetAt: invalidated ? null : 1_800_000_000,
+      observedAt: "2026-09-19T10:00:00Z", retainedAt: "2026-09-19T10:00:00Z",
+      resetScheduleInvalidated: invalidated,
+    };
+    getStatus.mockResolvedValue(response([
+      workspace("unknown-history", {
+        history: [{
+          email: "removed@example.com", userId: "removed", presetId: "removed", membershipEpoch: "unknown-epoch",
+          removedAt: null, retainedAt: rawWindow.retainedAt, fiveHourState: "unknown", fiveHour: rawWindow,
+          weekly: paired ? { ...rawWindow, logicalWindow: "weekly", sourceWindow: "secondary", usedPercent: 100 } : null,
+        }],
+      }),
+    ]));
+    renderWithProviders(<MemberRotationPanel readOnly={false} />);
+    const card = await screen.findByTestId("rotation-workspace-unknown-history");
+    const label = within(card).getByText("5H 보존된 원본 Usage (미검증): 98.5%");
+    const block = label.parentElement!;
+    expect(block).toHaveTextContent("5H 미확인");
+    expect(within(block).queryByText(/5H final Usage:/)).not.toBeInTheDocument();
+    expect(within(block).getByText(/Original Reset:/)).toBeInTheDocument();
+    if (invalidated) {
+      expect(within(block).getByText("Effective Reset: —")).toBeInTheDocument();
+      expect(within(block).getByText(/원본 증거는 보존됨/)).toBeInTheDocument();
+    }
+    expect(updateIntent).not.toHaveBeenCalled();
+  });
+
+  it("defaults an omitted legacy state to unknown without concealing its raw value", async () => {
+    const history = RemovedMemberHistorySchema.parse({
+      email: "removed@example.com", userId: "removed", presetId: "removed", membershipEpoch: "legacy-epoch",
+      removedAt: null, retainedAt: "2026-09-19T10:00:00Z", weekly: null,
+      fiveHour: {
+        logicalWindow: "5h", sourceWindow: "primary", usedPercent: 98.5,
+        originalResetAt: 1_800_000_000, effectiveResetAt: 1_800_000_000,
+        observedAt: "2026-09-19T10:00:00Z", retainedAt: "2026-09-19T10:00:00Z", resetScheduleInvalidated: false,
+      },
+    });
+    expect(history.fiveHourState).toBe("unknown");
+    getStatus.mockResolvedValue(response([workspace("legacy-default", { history: [history] })]));
+    renderWithProviders(<MemberRotationPanel readOnly={false} />);
+    const card = await screen.findByTestId("rotation-workspace-legacy-default");
+    const block = within(card).getByText("5H 보존된 원본 Usage (미검증): 98.5%").parentElement!;
+    expect(block).toHaveTextContent("5H 미확인");
+    expect(within(block).queryByText(/5H final Usage:/)).not.toBeInTheDocument();
+    expect(updateIntent).not.toHaveBeenCalled();
+  });
+
   it("does not query identity-bearing operator state without accounts:write", () => {
     renderWithProviders(<MemberRotationPanel readOnly />);
     expect(screen.getByText(/accounts:write 권한이 필요합니다/)).toBeInTheDocument();
@@ -123,10 +203,10 @@ describe("member rotation operator panel", () => {
     getStatus.mockResolvedValue(response([
       workspace("workspace-a", {
         quota: {
-          count24h: day,
-          limit24h: dayLimit,
-          count168h: week,
-          limit168h: weekLimit,
+          count24H: day,
+          limit24H: dayLimit,
+          count168H: week,
+          limit168H: weekLimit,
           countBasis: "observed_local",
           historyComplete: false,
           coverageStartedAt: "2026-09-10T00:00:00Z",
@@ -171,8 +251,8 @@ describe("member rotation operator panel", () => {
           weeklyReason: "fixture",
           resetStatus: null,
           quotaCode: null,
-          count24h: null,
-          count168h: null,
+          count24H: null,
+          count168H: null,
         },
       }),
     ]));
@@ -193,8 +273,8 @@ describe("member rotation operator panel", () => {
           weeklyReason: "reset_elapsed",
           resetStatus: "reconciliation_pending",
           quotaCode: null,
-          count24h: null,
-          count168h: null,
+          count24H: null,
+          count168H: null,
         },
         blockerCodes: ["reset_reconciliation_pending"],
       }),
@@ -209,8 +289,8 @@ describe("member rotation operator panel", () => {
           weeklyReason: null,
           resetStatus: "usage_recovered",
           quotaCode: null,
-          count24h: null,
-          count168h: null,
+          count24H: null,
+          count168H: null,
         },
       }),
     ]));
@@ -234,6 +314,7 @@ describe("member rotation operator panel", () => {
           membershipEpoch: "epoch-1",
           removedAt: "2026-09-12T09:30:00Z",
           retainedAt: "2026-09-12T09:29:58Z",
+          fiveHourState: "observed",
           fiveHour: {
             logicalWindow: "5h",
             sourceWindow: "primary",
@@ -329,6 +410,36 @@ describe("member rotation operator panel", () => {
     renderWithProviders(<MemberRotationPanel readOnly={false} />);
     expect(await screen.findByText("Invite 전송됨 · 멤버십 등록은 아직 미확인")).toBeInTheDocument();
     expect(screen.queryByText("멤버십 등록 확인됨")).not.toBeInTheDocument();
+  });
+
+  it("shows interrupted pre-start recovery as attention while retaining the G1 foundation", async () => {
+    const retained = workspace("interrupted");
+    getStatus.mockResolvedValue(response([
+      workspace("interrupted", {
+        foundation: {
+          ...retained.foundation!,
+          state: "admission_ready",
+          admissionReady: true,
+          attentionRequired: false,
+        },
+        controller: {
+          ...retained.controller,
+          status: "needs_attention",
+          reason: "rotation_prestart_interrupted_requires_attention",
+          removeEffect: "not_attempted",
+          inviteEffect: "not_attempted",
+        },
+        blockerCodes: ["rotation_prestart_interrupted_requires_attention"],
+      }),
+    ]));
+    renderWithProviders(<MemberRotationPanel readOnly={false} />);
+
+    const card = await screen.findByTestId("rotation-workspace-interrupted");
+    expect(within(card).getByText("Foundation: Foundation 준비됨")).toBeInTheDocument();
+    expect(within(card).getByText("확인 필요")).toBeInTheDocument();
+    expect(within(card).getByRole("alert")).toHaveTextContent("교체 시작 전 작업이 중단되어 운영자 복구가 필요합니다.");
+    expect(within(card).queryByRole("button", { name: /retry|재시도|remove|invite/i })).not.toBeInTheDocument();
+    expect(updateIntent).not.toHaveBeenCalled();
   });
 
   it("keeps all safety attention states visible without an effect retry control", async () => {

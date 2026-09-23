@@ -1,0 +1,6 @@
+- [x] Implement durable one-workflow canary and distinct effect claims.
+- [x] Invoke the claims at actual Companion remove/invite boundaries and suppress the manual-only identity-missing DELETE retry.
+- [x] Preserve typed remove responses through operation persistence and backend projection.
+- [x] Test duplicate/concurrent claims, restart, ambiguity, persistence failure, and manual compatibility.
+- [x] Run Companion/backend regressions, static/spec checks, and independent review.
+- [x] Record candidate provenance and remaining matched-release prerequisites.

@@ -43,11 +43,12 @@ class WeeklyRecoveryState(StrEnum):
 
 
 class FreshWeeklyObserver(Protocol):
-    async def __call__(self) -> WeeklyRecoveryState: ...
+    def __call__(self) -> Awaitable[WeeklyRecoveryState]: ...
 
 
 class UsageRefreshResult(Protocol):
-    fetch_succeeded: bool
+    @property
+    def fetch_succeeded(self) -> bool: ...
 
 
 class RotationUsageRefresher(Protocol):
@@ -94,6 +95,14 @@ class _ReconciliationSeed:
     error_code: str | None = None
 
 
+class _ResetCreditAdmissionError(Exception):
+    """Keep admission failures out of authority-error reconciliation."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        super().__init__(str(error))
+
+
 SleepFn = Callable[[float], Awaitable[None]]
 
 
@@ -127,6 +136,7 @@ async def resolve_rotation_reset_credit(
     resolve_route: reset_credits_api.ResolveRouteFn | None = None,
     fetch_fn: reset_credits_api.FetchFn | None = None,
     consume_fn: reset_credits_api.ConsumeFn | None = None,
+    before_consume: reset_credits_api.BeforeConsumeFn | None = None,
     sleep_fn: SleepFn = asyncio.sleep,
 ) -> RotationResetCreditResolution:
     """Resolve a reset opportunity for one already-exhausted rotation evaluation.
@@ -139,6 +149,10 @@ async def resolve_rotation_reset_credit(
     reconciliation instead. P2 owns a short-lived database coordination session
     around the central redeem call so PostgreSQL advisory transaction locks and
     SQLite claims are released before bounded Weekly reconciliation begins.
+
+    ``before_consume`` revalidates the refreshed account after durable pinning,
+    immediately before consume. Its failures propagate without reconciliation;
+    the pin remains intact and a retry still cannot issue another consume.
 
     ``RECONCILIATION_PENDING`` is terminal for this exhausted-member evaluation:
     G1 must not call the resolver again merely to clear ambiguity or consume a
@@ -164,6 +178,7 @@ async def resolve_rotation_reset_credit(
             resolve_route=effective_resolve_route,
             fetch_fn=fetch_fn,
             consume_fn=consume_fn,
+            before_consume=before_consume,
         )
 
     if isinstance(authority_result, RotationResetCreditResolution):
@@ -200,7 +215,18 @@ async def _resolve_authority_once(
     resolve_route: reset_credits_api.ResolveRouteFn | None,
     fetch_fn: reset_credits_api.FetchFn | None,
     consume_fn: reset_credits_api.ConsumeFn | None,
+    before_consume: reset_credits_api.BeforeConsumeFn | None,
 ) -> RotationResetCreditResolution | _ReconciliationSeed:
+    async def require_consume_admission(account: Account) -> None:
+        if before_consume is None:
+            return
+        try:
+            await before_consume(account)
+        except Exception as exc:
+            # A guard can raise a domain error also used by the reset authority.
+            # Preserve its origin so denial cannot become no-credit or recovery.
+            raise _ResetCreditAdmissionError(exc) from exc
+
     try:
         outcome = await reset_credits_api._redeem_soonest_reset_credit(
             account=account,
@@ -209,6 +235,7 @@ async def _resolve_authority_once(
             lock_session=coordination_session,
             fetch_fn=fetch_fn,
             consume_fn=consume_fn,
+            before_consume=require_consume_admission if before_consume is not None else None,
             auth_manager=auth_manager,
             refresh_usage=refresh_usage,
             resolve_route=resolve_route,
@@ -216,6 +243,8 @@ async def _resolve_authority_once(
             skip_if_redeem_request_pinned=True,
             allow_fresh_discovery=True,
         )
+    except _ResetCreditAdmissionError as exc:
+        raise exc.error from None
     except reset_credits_api.ResetCreditRedeemRequestAlreadyPinned as exc:
         return _ReconciliationSeed(
             redeem_evidence=RotationResetCreditRedeemEvidence.DURABLY_PINNED,
