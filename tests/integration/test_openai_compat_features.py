@@ -334,6 +334,44 @@ async def test_v1_responses_preserves_explicit_prompt_cache_for_model_source(asy
 
 
 @pytest.mark.asyncio
+async def test_v1_responses_model_source_preserves_plain_reasoning_items(async_client, monkeypatch):
+    await _import_account(async_client, "acc_reasoning_source", "reasoning-source@example.com")
+
+    seen = {}
+    source = object()
+
+    async def fake_select(model, api_key, *, raw_model=None, require_streaming=False):
+        return source, model
+
+    async def fake_source_response(request, payload, *, source, api_key, rate_limit_headers):
+        seen["payload"] = payload.model_dump_for_forwarding()
+        return JSONResponse({"id": "resp_reasoning_source", "status": "completed", "output": []})
+
+    monkeypatch.setattr(proxy_api_module, "_select_responses_model_source", fake_select)
+    monkeypatch.setattr(proxy_api_module, "_source_responses_response", fake_source_response)
+
+    reasoning_item = {
+        "type": "reasoning",
+        "id": "source_reasoning",
+        "content": [{"type": "reasoning_text", "text": "source-local reasoning"}],
+        "encrypted_content": None,
+    }
+    payload = {
+        "model": "qwen3.8-flash-next",
+        "input": [
+            reasoning_item,
+            {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},
+        ],
+        "stream": True,
+    }
+
+    resp = await async_client.post("/v1/responses", json=payload)
+
+    assert resp.status_code == 200
+    assert seen["payload"]["input"][0] == reasoning_item
+
+
+@pytest.mark.asyncio
 async def test_v1_responses_normalizes_prompt_cache_aliases(async_client, monkeypatch):
     await _import_account(async_client, "acc_prompt_cache_alias", "prompt-cache-alias@example.com")
 

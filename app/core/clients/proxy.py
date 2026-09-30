@@ -67,6 +67,7 @@ from app.core.openai.parsing import (
 from app.core.openai.requests import (
     ResponsesCompactRequest,
     ResponsesRequest,
+    omit_subscription_incompatible_reasoning_input_items,
     validate_compact_input_wire_budget,
 )
 from app.core.resilience.circuit_breaker import (
@@ -2749,6 +2750,7 @@ async def _stream_responses_with_session(
     retryable_same_contract: bool | None = None
     client_session = session
     payload_dict = dict(payload.to_payload())
+    omit_subscription_incompatible_reasoning_input_items(payload_dict)
     apply_codex_installation_metadata(payload_dict, codex_installation_id)
     if settings.image_inline_fetch_enabled:
         payload_dict = await _inline_input_image_urls(

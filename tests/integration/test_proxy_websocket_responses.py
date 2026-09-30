@@ -1934,6 +1934,13 @@ def test_backend_responses_websocket_proxies_and_persists_conversation_id(
         "call_id": "call_shell_1",
         "output": "/repo",
     }
+    source_reasoning = {
+        "type": "reasoning",
+        "id": "source_reasoning",
+        "summary": [],
+        "content": [{"type": "reasoning_text", "text": "hidden source reasoning"}],
+        "encrypted_content": None,
+    }
     request_payload = {
         "type": "response.create",
         "model": "gpt-5.6-sol",
@@ -1952,6 +1959,7 @@ def test_backend_responses_websocket_proxies_and_persists_conversation_id(
             {"type": "message", "role": "developer", "content": "use repository tools"},
             custom_tool_call,
             custom_tool_output,
+            source_reasoning,
             {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
         ],
         "stream": True,

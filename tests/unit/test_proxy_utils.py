@@ -38834,6 +38834,96 @@ async def test_files_finalize_pinned_initial_selection_does_not_fall_back(monkey
     assert request_logs.calls[0]["account_id"] is None
 
 
+def test_response_create_serializers_omit_subscription_incompatible_reasoning_items():
+    source_reasoning = {
+        "type": "reasoning",
+        "id": "source_reasoning",
+        "content": [{"type": "reasoning_text", "text": "hidden source reasoning"}],
+        "encrypted_content": None,
+    }
+    assistant_message = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "visible answer"}],
+    }
+    portable_reasoning = {
+        "type": "reasoning",
+        "id": "rs_subscription",
+        "content": [],
+        "encrypted_content": "ciphertext",
+    }
+    input_items = [source_reasoning, assistant_message, portable_reasoning]
+    payload = ResponsesRequest.model_validate(
+        {"model": "gpt-6-astra", "instructions": "", "input": input_items, "stream": True}
+    )
+    request_state = proxy_service._WebSocketRequestState(
+        request_id="req_cross_provider_reasoning",
+        model="gpt-6-astra",
+        service_tier=None,
+        reasoning_effort="low",
+        api_key_reservation=None,
+        started_at=time.monotonic(),
+        request_text="",
+    )
+
+    plain_payload = json.loads(
+        proxy_service._response_create_text(
+            payload,
+            include_type_field=True,
+            client_metadata=None,
+        )
+    )
+    guarded_text = proxy_service._response_create_text_with_size_guard(
+        payload,
+        include_type_field=True,
+        client_metadata=None,
+        request_state=request_state,
+        transport=proxy_service._REQUEST_TRANSPORT_WEBSOCKET,
+    )
+
+    assert guarded_text is not None
+    guarded_payload = json.loads(guarded_text)
+    expected_input = [assistant_message, portable_reasoning]
+    assert plain_payload["input"] == expected_input
+    assert guarded_payload["input"] == expected_input
+    assert payload.input == input_items
+
+
+def test_prepare_response_bridge_request_state_omits_subscription_incompatible_reasoning_items():
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    source_reasoning = {
+        "type": "reasoning",
+        "id": "source_reasoning",
+        "content": [{"type": "reasoning_text", "text": "hidden source reasoning"}],
+        "encrypted_content": None,
+    }
+    assistant_message = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "visible answer"}],
+    }
+    input_items = [source_reasoning, assistant_message]
+    payload = ResponsesRequest.model_validate(
+        {"model": "gpt-6-astra", "instructions": "", "input": input_items, "stream": True}
+    )
+
+    request_state, text_data = service._prepare_response_bridge_request_state(
+        payload,
+        api_key=None,
+        api_key_reservation=None,
+        include_type_field=True,
+        attach_event_queue=False,
+        transport=proxy_service._REQUEST_TRANSPORT_WEBSOCKET,
+        client_metadata=None,
+    )
+
+    upstream_payload = json.loads(text_data)
+    assert request_state.input_item_count == 2
+    assert upstream_payload["input"] == [assistant_message]
+    assert payload.input == input_items
+
+
 def test_prepare_response_bridge_request_state_dedupes_replayed_previous_response_tool_calls_before_serializing():
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))

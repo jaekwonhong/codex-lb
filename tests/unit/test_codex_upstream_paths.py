@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import json
 import socket
 from typing import Any, cast
 from unittest.mock import AsyncMock
@@ -481,6 +482,50 @@ async def test_stream_responses_uses_codex_client_when_route_is_resolved(route: 
 
 
 @pytest.mark.asyncio
+async def test_stream_responses_http_omits_subscription_incompatible_reasoning_items(
+    route: ResolvedUpstreamRoute,
+) -> None:
+    client = _CodexClient(_StreamResponse())
+    source_reasoning = {
+        "type": "reasoning",
+        "id": "source_reasoning",
+        "content": [{"type": "reasoning_text", "text": "hidden source reasoning"}],
+        "encrypted_content": None,
+    }
+    assistant_message = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "visible answer"}],
+    }
+    portable_reasoning = {
+        "type": "reasoning",
+        "id": "rs_subscription",
+        "content": [],
+        "encrypted_content": "ciphertext",
+    }
+    input_items = [source_reasoning, assistant_message, portable_reasoning]
+    payload = ResponsesRequest(model="gpt-6-astra", instructions="Reply.", input=input_items, stream=True)
+
+    events = [
+        event
+        async for event in stream_responses(
+            payload,
+            {"user-agent": "codex"},
+            "access",
+            "chatgpt_account",
+            session=cast(Any, object()),
+            upstream_stream_transport_override="http",
+            route=route,
+            codex_client=cast(Any, client),
+        )
+    ]
+
+    assert events == ['data: {"type":"response.completed","response":{"id":"resp_1"}}\n\n']
+    assert client.calls[0]["json"]["input"] == [assistant_message, portable_reasoning]
+    assert payload.input == input_items
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_websocket_transport_uses_codex_client_when_route_is_resolved(
     route: ResolvedUpstreamRoute,
 ) -> None:
@@ -509,6 +554,45 @@ async def test_stream_responses_websocket_transport_uses_codex_client_when_route
     assert client.calls[0]["route"] is route
     assert '"type":"response.create"' in str(client.websocket.sent[0])
     assert trace.endpoint_id == "ep_1"
+
+
+@pytest.mark.asyncio
+async def test_stream_responses_websocket_omits_subscription_incompatible_reasoning_items(
+    route: ResolvedUpstreamRoute,
+) -> None:
+    client = _WsCodexClient()
+    source_reasoning = {
+        "type": "reasoning",
+        "id": "source_reasoning",
+        "content": [{"type": "reasoning_text", "text": "hidden source reasoning"}],
+        "encrypted_content": None,
+    }
+    assistant_message = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "visible answer"}],
+    }
+    input_items = [source_reasoning, assistant_message]
+    payload = ResponsesRequest(model="gpt-6-astra", instructions="Reply.", input=input_items, stream=True)
+
+    events = [
+        event
+        async for event in stream_responses(
+            payload,
+            {"user-agent": "codex"},
+            "access",
+            "chatgpt_account",
+            session=cast(Any, object()),
+            upstream_stream_transport_override="websocket",
+            route=route,
+            codex_client=cast(Any, client),
+        )
+    ]
+
+    assert events == ['event: response.completed\ndata: {"type":"response.completed"}\n\n']
+    sent_payload = json.loads(cast(str, client.websocket.sent[0]))
+    assert sent_payload["input"] == [assistant_message]
+    assert payload.input == input_items
 
 
 @pytest.mark.asyncio

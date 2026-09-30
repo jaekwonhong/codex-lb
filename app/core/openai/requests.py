@@ -191,6 +191,43 @@ def extract_input_file_ids(input_value: JsonValue) -> set[str]:
     return file_ids
 
 
+def omit_subscription_incompatible_reasoning_input_items(payload: MutableJsonObject) -> int:
+    """Omit reasoning items that the subscription Responses endpoint cannot replay.
+
+    OpenAI-compatible model sources can emit plain reasoning items with visible
+    reasoning_text content or source-local item IDs. Those shapes are useful to
+    the downstream client but are not portable back into the subscription
+    upstream. Keep subscription-compatible empty-content reasoning items
+    untouched and preserve every non-reasoning input item.
+    """
+
+    input_value = payload.get("input")
+    if not is_json_list(input_value):
+        return 0
+
+    sanitized_input: list[JsonValue] = []
+    removed_count = 0
+    for item in input_value:
+        if not is_json_mapping(item) or item.get("type") != "reasoning":
+            sanitized_input.append(item)
+            continue
+
+        content = item.get("content")
+        item_id = item.get("id")
+        content_is_subscription_compatible = content is None or content == []
+        id_is_subscription_compatible = item_id in (None, "") or (
+            isinstance(item_id, str) and item_id.startswith("rs_")
+        )
+        if content_is_subscription_compatible and id_is_subscription_compatible:
+            sanitized_input.append(item)
+            continue
+        removed_count += 1
+
+    if removed_count > 0:
+        payload["input"] = sanitized_input
+    return removed_count
+
+
 def _append_input_image_file_references(
     references: list[InputImageFileReference],
     value: JsonValue,

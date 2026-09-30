@@ -45,6 +45,7 @@ from app.core.errors import (
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import (
     ResponsesRequest,
+    omit_subscription_incompatible_reasoning_input_items,
 )
 from app.core.resilience.overload import is_local_overload_error_code
 from app.core.types import JsonValue
@@ -380,6 +381,7 @@ class _HTTPBridgeRequestSubmitMixin:
                 deduped_replayed_input_fingerprint = _fingerprint_input_items(replayed_input_items)
                 payload = payload.model_copy(update={"input": deduped_input_items})
         upstream_payload = dict(payload.to_payload())
+        omit_subscription_incompatible_reasoning_input_items(upstream_payload)
         upstream_payload.pop("stream", None)
         upstream_payload.pop("background", None)
         if include_type_field:
