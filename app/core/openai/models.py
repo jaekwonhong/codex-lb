@@ -40,6 +40,7 @@ class OpenAIError(BaseModel):
     plan_type: StrictStr | None = None
     resets_at: StrictInt | StrictFloat | None = None
     resets_in_seconds: StrictInt | StrictFloat | None = None
+    availability_reason: StrictStr | None = None
 
     def model_post_init(self, __context: object) -> None:
         self._param_state = OpenAIErrorParam(

@@ -879,10 +879,11 @@ async def run_sticky_selection_path(
             )
             if result.account is None:
                 selection_error_code = "hard_affinity_saturated"
-                selection_resets_at = None
+                selection_resets_at = result.resets_at
                 result = SelectionResult(
                     None,
                     result.error_message or "Hard affinity owner account is unavailable",
+                    resets_at=selection_resets_at,
                 )
             else:
                 selection_error_code = None

@@ -60,6 +60,7 @@ class OpenAIErrorDetail(TypedDict, total=False):
     plan_type: str
     resets_at: int | float
     resets_in_seconds: int | float
+    availability_reason: str
 
 
 class OpenAIErrorEnvelope(TypedDict):

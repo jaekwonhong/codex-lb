@@ -3431,15 +3431,33 @@ def _mark_http_bridge_reader_handoff_reconnect_failed(session: Any, old_reader: 
         session.closed = True
 
 
-def _http_bridge_previous_response_owner_unavailable_error() -> ProxyResponseError:
-    return ProxyResponseError(
-        502,
-        openai_error(
-            "previous_response_owner_unavailable",
-            "Previous response owner account is unavailable; retry later.",
-            error_type="server_error",
-        ),
-    )
+def _http_bridge_previous_response_owner_unavailable_error(
+    selection: Any = None,
+    *,
+    now: float | None = None,
+) -> ProxyResponseError:
+    message = "Previous response owner account is unavailable; retry later."
+    reason = getattr(selection, "error_code", None)
+    if isinstance(reason, str) and reason in {
+        "usage_limit_reached",
+        "continuity_owner_unavailable",
+        "hard_affinity_saturated",
+        "account_stream_cap",
+        "account_response_create_cap",
+    }:
+        message += f" Availability reason: {reason}."
+    else:
+        reason = None
+    payload = openai_error("previous_response_owner_unavailable", message, error_type="server_error")
+    if reason is not None:
+        payload["error"]["availability_reason"] = reason
+    resets_at = getattr(selection, "resets_at", None)
+    retry_after = None
+    if isinstance(resets_at, int | float) and not isinstance(resets_at, bool) and math.isfinite(resets_at):
+        retry_after = max(0, math.ceil(resets_at - (time.time() if now is None else now)))
+        payload["error"]["resets_at"] = resets_at
+        payload["error"]["resets_in_seconds"] = retry_after
+    return ProxyResponseError(502, payload, retry_after_seconds=retry_after)
 
 
 def _http_bridge_reconnect_selection_failure(
@@ -3447,7 +3465,7 @@ def _http_bridge_reconnect_selection_failure(
     required_preferred_account_id: str | None,
 ) -> ProxyResponseError:
     if required_preferred_account_id is not None:
-        return _http_bridge_previous_response_owner_unavailable_error()
+        return _http_bridge_previous_response_owner_unavailable_error(selection)
     status_code, error_payload = selection_failure_response(selection)
     return ProxyResponseError(status_code, error_payload)
 
@@ -3457,6 +3475,33 @@ def _http_bridge_reconnect_connect_failure(
     required_preferred_account_id: str | None,
 ) -> ProxyResponseError:
     if required_preferred_account_id is not None:
+        if isinstance(exc, ProxyResponseError):
+            detail = exc.payload.get("error", {})
+            code = detail.get("code") if isinstance(detail, dict) else None
+            # Policy/auth evidence is not a transient owner outage, even when
+            # an upstream wrapper incorrectly used a server-error HTTP status.
+            if (400 <= exc.status_code < 500 and exc.status_code != 429) or code in {
+                "token_revoked",
+                "invalid_api_key",
+                "authentication_error",
+                "permission_denied",
+                "account_deactivated",
+                "reauth_required",
+                "security_work_authorization_required",
+            }:
+                return exc
+            owner_error = _http_bridge_previous_response_owner_unavailable_error()
+            owner_error.retry_after_seconds = exc.retry_after_seconds
+            if isinstance(code, str) and code in {
+                "upstream_unavailable",
+                "upstream_error",
+                "server_error",
+                "rate_limit_exceeded",
+                "usage_limit_reached",
+            }:
+                owner_error.payload["error"]["message"] += f" Availability reason: {code}."
+                owner_error.payload["error"]["availability_reason"] = code
+            return owner_error
         return _http_bridge_previous_response_owner_unavailable_error()
     if isinstance(exc, ProxyResponseError):
         return exc

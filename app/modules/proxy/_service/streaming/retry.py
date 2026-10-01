@@ -17,6 +17,7 @@ from app.core.balancer.logic import (
     BURST_SURFACE_RETRY_AFTER_SECONDS,
     burst_same_account_backoff_seconds,
 )
+from app.core.balancer.recovery import OwnerRecoveryBudget
 from app.core.balancer.types import ClassifiedFailure, UpstreamError
 from app.core.clients.proxy import (
     ProxyResponseError,
@@ -345,12 +346,14 @@ class _StreamingRetryMixin:
         upstream_stream_transport_override: str | None = None,
         client_ip: str | None = None,
         enforce_openai_sdk_contract: bool = True,
+        owner_recovery_budget: OwnerRecoveryBudget | None = None,
     ) -> AsyncIterator[str]:
         proxy = cast(_StreamingServiceProtocol, self)
         scheduler = scheduler_for(proxy)
         clock = clock_for(proxy)
         useragent, useragent_group, conversation_id = _request_log_client_fields(headers)
         request_id = ensure_request_id()
+        owner_recovery_budget = owner_recovery_budget or OwnerRecoveryBudget()
         start = clock.monotonic()
         base_settings = _facade().get_settings()
         settings = await _facade().get_settings_cache().get()
@@ -1410,6 +1413,8 @@ class _StreamingRetryMixin:
                     yield format_sse_event(_facade()._proxy_request_timeout_event(request_id))
                     return
                 while True:
+                    if owner_recovery_budget.engaged:
+                        owner_recovery_budget.start(clock.monotonic())
                     effective_preferred_account_id = resolve_required_account_id(
                         ("continuation", preferred_account_id),
                         ("dispatched payload", payload_replay_required_account_id),
@@ -1419,7 +1424,11 @@ class _StreamingRetryMixin:
                     )
                     try:
                         selection = await proxy._select_account_with_budget_compatible(
-                            deadline,
+                            (
+                                min(deadline, clock.monotonic() + owner_recovery_budget.remaining(clock.monotonic()))
+                                if owner_recovery_budget.started_at is not None
+                                else deadline
+                            ),
                             request_id=request_id,
                             kind="stream",
                             api_key=api_key,
@@ -1601,6 +1610,20 @@ class _StreamingRetryMixin:
                         )
                     ):
                         recovery_sleep_seconds = _account_selection_recovery_sleep_seconds(selection)
+                        owner_failure = effective_require_preferred_account or selection.error_code in {
+                            "hard_affinity_saturated",
+                            "continuity_owner_unavailable",
+                            "previous_response_owner_unavailable",
+                        }
+                        if owner_failure:
+                            if selection.resets_at is not None and not selection.hard_affinity_owner_excluded:
+                                recovery_sleep_seconds = max(0.0, selection.resets_at - clock.time())
+                            if recovery_sleep_seconds is not None:
+                                recovery_sleep_seconds = owner_recovery_budget.reserve_wait(
+                                    recovery_sleep_seconds,
+                                    now=clock.monotonic(),
+                                    request_remaining=max(0.0, deadline - clock.monotonic()),
+                                )
                         if recovery_sleep_seconds is not None:
                             remaining_budget_seconds = proxy._remaining_budget_seconds(deadline)
                             if remaining_budget_seconds <= 0:
@@ -1968,6 +1991,9 @@ class _StreamingRetryMixin:
                         return
                 try:
                     remaining_budget = proxy._remaining_budget_seconds(deadline)
+                    if owner_recovery_budget.engaged:
+                        owner_recovery_budget.start(clock.monotonic())
+                        remaining_budget = min(remaining_budget, owner_recovery_budget.remaining(clock.monotonic()))
                     if remaining_budget <= 0:
                         _facade().logger.warning(
                             "Proxy request budget exhausted before freshness check "
@@ -2271,6 +2297,7 @@ class _StreamingRetryMixin:
                         try:
                             settlement = _StreamSettlement()
                             register_payload_owner = _authorize_payload_dispatch(account)
+                            owner_recovery_budget.pause(clock.monotonic())
                             inner_stream = proxy._stream_once(
                                 account,
                                 payload,
@@ -2923,6 +2950,9 @@ class _StreamingRetryMixin:
                         return
                     if exc.status_code == 401:
                         remaining_budget = proxy._remaining_budget_seconds(deadline)
+                        if owner_recovery_budget.engaged:
+                            owner_recovery_budget.start(clock.monotonic())
+                            remaining_budget = min(remaining_budget, owner_recovery_budget.remaining(clock.monotonic()))
                         if remaining_budget <= 0:
                             _facade().logger.warning(
                                 "Proxy request budget exhausted before forced refresh retry "

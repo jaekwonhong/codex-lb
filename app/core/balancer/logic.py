@@ -678,15 +678,33 @@ def select_account(
                 if deactivated:
                     return SelectionResult(None, "All accounts are deactivated")
             if quota_exceeded:
-                reset_candidates = [s.reset_at for s in quota_exceeded if s.reset_at]
+                reset_candidates = [max(s.reset_at, s.cooldown_until or 0.0) for s in quota_exceeded if s.reset_at]
                 if reset_candidates:
                     wait_seconds = max(0, min(reset_candidates) - int(current))
-                    return SelectionResult(None, _format_retry_hint(wait_seconds))
-            cooldowns = [s.cooldown_until for s in all_states if s.cooldown_until and s.cooldown_until > current]
+                    return SelectionResult(
+                        None, _format_retry_hint(wait_seconds), resets_at=math.ceil(min(reset_candidates))
+                    )
+            cooldowns = [
+                max(
+                    s.cooldown_until,
+                    (s.reset_at or 0.0)
+                    if s.status in (AccountStatus.RATE_LIMITED, AccountStatus.QUOTA_EXCEEDED)
+                    else 0.0,
+                )
+                for s in all_states
+                if s.cooldown_until and s.cooldown_until > current
+            ]
             if cooldowns:
                 wait_seconds = max(0.0, min(cooldowns) - current)
-                return SelectionResult(None, _format_retry_hint(wait_seconds))
-            return SelectionResult(None, "No available accounts")
+                return SelectionResult(None, _format_retry_hint(wait_seconds), resets_at=math.ceil(min(cooldowns)))
+            reset_candidates = [
+                max(s.reset_at, s.cooldown_until or 0.0) for s in rate_limited if s.reset_at and s.reset_at > current
+            ]
+            return SelectionResult(
+                None,
+                "No available accounts",
+                resets_at=math.ceil(min(reset_candidates)) if reset_candidates else None,
+            )
 
     def _reset_first_sort_key(state: AccountState) -> tuple[int, float, float, float, float, str]:
         reset_bucket_days = _reset_preference_bucket(state, current, prefer_earlier_reset_window)

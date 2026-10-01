@@ -2339,4 +2339,9 @@ def _websocket_connect_deadline(request_state: _WebSocketRequestState, budget_se
     # without a start stamp must live in the same time domain as the budget
     # checks that later compare against this deadline.
     started_at = request_state.started_at if request_state.started_at > 0 else now
-    return started_at + budget_seconds
+    deadline = started_at + budget_seconds
+    recovery = request_state.owner_recovery_budget
+    if recovery.engaged:
+        recovery.start(now)
+        deadline = min(deadline, now + recovery.remaining(now))
+    return deadline

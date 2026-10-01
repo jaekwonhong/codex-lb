@@ -7,6 +7,7 @@ import math
 import random
 from collections import deque
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Mapping, cast
 from uuid import uuid4
@@ -439,6 +440,7 @@ async def _send_http_bridge_request_text_with_archive_id(
         attempt = _HTTPBridgeResponseCreateAttempt(ordinal=request_state.response_create_attempt_count)
         request_state.response_create_attempt = attempt
         request_state.response_create_sent_at = clock.monotonic()
+        request_state.owner_recovery_budget.pause(clock.monotonic())
         session.upstream_reader_wakeup.set()
         try:
             await session.upstream.send_text(text_data)
@@ -994,15 +996,40 @@ class _HTTPBridgeRequestSubmitMixin:
         request_scope_id = ensure_request_scope_id()
         owned_unanchored_handoff = session.unanchored_reservation_id == request_scope_id
         try:
-            await self._submit_http_bridge_request_with_handoff(
-                session,
-                request_state=request_state,
-                text_data=text_data,
-                queue_limit=queue_limit,
-                request_scope_id=request_scope_id,
-                owned_unanchored_handoff=owned_unanchored_handoff,
-                recovery_turn_state=recovery_turn_state,
+            recovery = request_state.owner_recovery_budget
+            if recovery.engaged:
+                recovery.start(clock_for(self).monotonic())
+            control_scope = (
+                scheduler_for(self).fail_after(recovery.remaining(clock_for(self).monotonic()))
+                if recovery.engaged and request_state.response_create_attempt_count == 0
+                else nullcontext()
             )
+            try:
+                # This method ends at send, not at response completion. The
+                # existing cancellation/operation cleanup still owns any send
+                # whose outcome is uncertain; a timeout never authorizes replay.
+                with control_scope:
+                    await self._submit_http_bridge_request_with_handoff(
+                        session,
+                        request_state=request_state,
+                        text_data=text_data,
+                        queue_limit=queue_limit,
+                        request_scope_id=request_scope_id,
+                        owned_unanchored_handoff=owned_unanchored_handoff,
+                        recovery_turn_state=recovery_turn_state,
+                    )
+            except TimeoutError:
+                if not recovery.engaged or recovery.remaining(clock_for(self).monotonic()) > 0:
+                    raise
+                attempted = request_state.response_create_attempt_count > 0
+                raise ProxyResponseError(
+                    503,
+                    openai_error(
+                        "stream_incomplete" if attempted else "owner_recovery_budget_exhausted",
+                        "Owner recovery did not complete within its control budget.",
+                    ),
+                    local_pre_dispatch_refusal=not attempted,
+                ) from None
         finally:
             _release_http_bridge_unanchored_handoff(
                 session,

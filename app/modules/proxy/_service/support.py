@@ -15,6 +15,7 @@ from typing import Any, Literal, NoReturn, Protocol, cast
 import anyio
 
 from app.core.auth.refresh import RefreshError, is_transient_refresh_contention, refresh_contention_kind
+from app.core.balancer.recovery import OwnerRecoveryBudget
 from app.core.balancer.types import UpstreamError
 from app.core.clients.proxy import CodexControlRequestPrivacyPolicy, ProxyResponseError
 from app.core.clients.proxy_websocket import (
@@ -560,9 +561,26 @@ async def _sleep_for_account_selection_recovery(
     scheduler: Scheduler,
     clock: Clock,
 ) -> bool:
-    sleep_seconds = _account_selection_recovery_sleep_seconds(selection)
+    owner_failure = selection.error_code in {
+        "hard_affinity_saturated",
+        "continuity_owner_unavailable",
+        "previous_response_owner_unavailable",
+    }
+    if owner_failure and selection.resets_at is not None and not selection.hard_affinity_owner_excluded:
+        sleep_seconds = max(0.0, float(selection.resets_at) - clock.time())
+    else:
+        sleep_seconds = _account_selection_recovery_sleep_seconds(selection)
     if sleep_seconds is None:
         return False
+    if owner_failure:
+        budget = request_state.owner_recovery_budget if request_state is not None else OwnerRecoveryBudget()
+        sleep_seconds = budget.reserve_wait(
+            sleep_seconds,
+            now=clock.monotonic(),
+            request_remaining=max_sleep_seconds if max_sleep_seconds is not None else float("inf"),
+        )
+        if sleep_seconds is None:
+            return False
     if max_sleep_seconds is not None:
         if max_sleep_seconds <= 0:
             return False
@@ -951,6 +969,7 @@ class _DeferredAccountBackoffLifecycle:
 @dataclass(slots=True)
 class _DeferredAccountBackoffTracker:
     current_lifecycle: _DeferredAccountBackoffLifecycle | None = None
+    owner_recovery_budget: OwnerRecoveryBudget = field(default_factory=OwnerRecoveryBudget)
 
 
 @dataclass(slots=True)
@@ -1003,6 +1022,7 @@ class _WebSocketRequestState:
     reasoning_effort: str | None
     api_key_reservation: ApiKeyUsageReservationData | None
     started_at: float
+    owner_recovery_budget: OwnerRecoveryBudget = field(default_factory=OwnerRecoveryBudget)
     responses_lite_model: str | None = None
     latency_first_token_ms: int | None = None
     ttft_reasoning_deltas: dict[tuple[str | None, int | None, int | None], _TTFTReasoningDeltaState] = field(

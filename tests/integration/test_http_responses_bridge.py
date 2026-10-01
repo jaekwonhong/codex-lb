@@ -6802,9 +6802,12 @@ async def test_backend_responses_goal_restart_authority_does_not_leak_to_reused_
     )
 
     assert ordinary_response.status_code == 502
-    assert ordinary_response.json()["error"]["code"] == "upstream_unavailable"
+    assert ordinary_response.json()["error"]["code"] == "previous_response_owner_unavailable"
+    assert ordinary_response.json()["error"]["availability_reason"] == "usage_limit_reached"
     assert connected_account_ids == [owner_chatgpt_account_id]
-    assert len(owner_upstream.sent_text) == 2
+    # Refuse the ordinary continuation before dispatch instead of first sending
+    # a doomed frame. Goal-restart authority still must not leak to this turn.
+    assert len(owner_upstream.sent_text) == 1
     assert replacement_upstream.sent_text == []
     async with SessionLocal() as session:
         raw_mapping = await StickySessionsRepository(session).get_account_id_and_abandonment(
@@ -8484,9 +8487,13 @@ async def test_v1_responses_http_bridge_reports_unavailable_required_owner_when_
 
     assert second.status_code == 502
     assert second.json()["error"] == {
-        "message": "Previous response owner account is unavailable; retry later.",
+        "message": (
+            "Previous response owner account is unavailable; retry later. "
+            "Availability reason: continuity_owner_unavailable."
+        ),
         "type": "server_error",
         "code": "previous_response_owner_unavailable",
+        "availability_reason": "continuity_owner_unavailable",
     }
     assert selection_calls == [
         ("first_turn", None, False, True),

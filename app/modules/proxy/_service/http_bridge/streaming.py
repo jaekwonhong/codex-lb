@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import anyio
 
+from app.core.balancer.recovery import OWNER_WAIT_BUDGET_SECONDS, OwnerRecoveryBudget
 from app.core.clients.files import create_file as core_create_file  # noqa: F401
 from app.core.clients.files import finalize_file as core_finalize_file  # noqa: F401
 from app.core.clients.proxy import CodexControlResponse as CodexControlResponse
@@ -98,6 +99,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_payload_looks_like_full_resend,
     _http_bridge_payload_without_previous_response_id,
     _http_bridge_previous_response_error_envelope,
+    _http_bridge_previous_response_owner_unavailable_error,
     _http_bridge_request_budget_seconds,
     _http_bridge_request_needs_unanchored_handoff,
     _http_bridge_request_stage,
@@ -138,6 +140,7 @@ from app.modules.proxy._service.http_bridge.retry_circuit import (
 from app.modules.proxy._service.http_bridge.service_stubs import (
     _build_rewritten_stream_response_failed_event,
     _codex_keepalive_frame,
+    _estimated_lease_tokens_from_request_usage_budget,
     _fingerprint_input_items,
     _header_value_case_insensitive,
     _http_bridge_startup_keepalive_grace_seconds,
@@ -267,6 +270,8 @@ from app.modules.proxy.durable_bridge_runtime import http_bridge_owner_process_e
 from app.modules.proxy.helpers import (
     _normalize_error_code,
 )
+from app.modules.proxy.load_balancer import AccountSelection, LoadBalancer
+from app.modules.proxy.owner_recovery import assess_owner_recovery, turn_is_unsubmitted
 from app.modules.proxy.replay_safety import (
     AccountNeutralReplayProjection,
     project_responses_input_for_account_neutral_fresh_replay,
@@ -657,6 +662,7 @@ def _http_bridge_capacity_wait_plan(
     *,
     request_deadline: float,
     now: float,
+    owner_recovery_budget: OwnerRecoveryBudget | None = None,
 ) -> tuple[float, float, str | None] | None:
     account_capacity_wait_seconds = _http_bridge_account_capacity_wait_seconds(exc)
     if account_capacity_wait_seconds is None:
@@ -665,6 +671,14 @@ def _http_bridge_capacity_wait_plan(
     if remaining_budget_seconds <= 0:
         return None
     code, message = _proxy_error_code_message(exc)
+    if owner_recovery_budget is not None and owner_recovery_budget.engaged:
+        # A nested capacity branch must not start a fresh, minutes-long wait
+        # after owner recovery already consumed this turn's short budget.
+        delay = max(account_capacity_wait_seconds, exc.retry_after_seconds or 0.0)
+        reserved = owner_recovery_budget.reserve_wait(delay, now=now, request_remaining=remaining_budget_seconds)
+        if reserved is None:
+            return None
+        return reserved, account_capacity_wait_seconds, message
     bounded_wait_seconds = min(account_capacity_wait_seconds, remaining_budget_seconds)
     if code == "response_create_gate_timeout":
         # Reserve the tail of the request budget for one final gate
@@ -1272,6 +1286,11 @@ class _HTTPBridgeStreamingMixin:
             upstream_stream_transport_override="http",
             client_ip=client_ip,
             enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+            **(
+                {"owner_recovery_budget": deferred_account_backoff_tracker.owner_recovery_budget}
+                if deferred_account_backoff_tracker.owner_recovery_budget.engaged
+                else {}
+            ),
         ):
             yield line
 
@@ -1317,6 +1336,7 @@ class _HTTPBridgeStreamingMixin:
         runtime_config = _http_bridge_runtime_config(dashboard_settings, _service_get_settings())
         if deferred_account_backoff_tracker is None:
             deferred_account_backoff_tracker = _DeferredAccountBackoffTracker()
+        owner_recovery_budget = deferred_account_backoff_tracker.owner_recovery_budget
         if bridge_payload is None:
             # ``_stream_http_bridge_or_retry`` passes its size-gate dump of this
             # same ``payload``; direct callers fall back to a fresh dump.
@@ -1384,6 +1404,7 @@ class _HTTPBridgeStreamingMixin:
                     client_ip=client_ip,
                 )
             request_state.capacity_startup_wait_event = capacity_startup_wait_event
+            request_state.owner_recovery_budget = owner_recovery_budget
             request_state.capacity_startup_ready_event = capacity_startup_ready_event
             lifecycle = begin_bridge_lifecycle(request_state.api_key_reservation)
             request_state.deferred_account_error_backoffs = lifecycle.pending_backoffs
@@ -2090,6 +2111,8 @@ class _HTTPBridgeStreamingMixin:
         model_transition_owner_conflict_fork_attempted = False
         unanchored_fork_spill_attempted = False
         owner_retirement_attempted = False
+        recovery_alternate_id: str | None = None
+        last_owner_recovery_error: ProxyResponseError | None = None
         verified_stale_anchor_generation_captured = False
         verified_stale_anchor_circuit_key: _HTTPBridgeSessionKey | None = None
         verified_stale_anchor_generation: tuple[int, float, int, float, int, float, float] | None = None
@@ -2437,6 +2460,110 @@ class _HTTPBridgeStreamingMixin:
             dead_owner_process_epoch_mismatch = False
             file_required_preferred_account = False
 
+        # A cache anchor is an optimization, not a reason to submit the next
+        # proven-portable turn to an exhausted owner. No shared owner mutation is
+        # made here. The normal selector still admits the chosen replacement,
+        # and the existing replay/operation fences own dispatch and settlement.
+        if (
+            not forwarded_request
+            and not account_neutral_recovery
+            and request_state.preferred_account_id is not None
+            and turn_is_unsubmitted(request_state)
+            and isinstance(self._load_balancer, LoadBalancer)
+        ):
+            while True:
+                advice_started = clock.monotonic()
+                try:
+                    with scheduler.fail_after(min(1.0, owner_recovery_budget.remaining(advice_started))):
+                        advice = await assess_owner_recovery(
+                            self._load_balancer,
+                            owner_id=request_state.preferred_account_id,
+                            model=effective_payload.model,
+                            service_tier=request_state.requested_service_tier,
+                            api_key=api_key,
+                            dashboard=dashboard_settings,
+                            excluded_account_ids=request_state.excluded_account_ids,
+                            estimated_tokens=_estimated_lease_tokens_from_request_usage_budget(
+                                request_state.request_usage_budget
+                            ),
+                            require_security_work_authorized=request_state.require_security_work_authorized,
+                        )
+                except TimeoutError:
+                    # This read-only check is an optimization. A slow advisory
+                    # lookup cannot turn an otherwise healthy request into a
+                    # new outage; the normal admission path stays authoritative.
+                    _log_http_bridge_event(
+                        "owner_admission_check_skipped",
+                        bridge_session_key,
+                        account_id=request_state.preferred_account_id,
+                        model=effective_payload.model,
+                        detail="reason=advisory_timeout, outcome=normal_admission",
+                    )
+                    break
+                if advice is None:
+                    break
+                horizon = advice.hint.retry_after(clock.time())
+                # A genuinely short hold keeps the warm owner. Long/unknown
+                # holds and quota/headroom pressure prefer zero-delay transfer.
+                short_hold = (
+                    advice.hint.reason == "cooldown" and horizon is not None and horizon <= OWNER_WAIT_BUDGET_SECONDS
+                )
+                portable = (
+                    payload.previous_response_id is None
+                    and rewritten_file_account_id is None
+                    and durable_full_resend_allows_account_neutral_replay()
+                )
+                if not short_hold and portable and advice.alternate_id is not None:
+                    owner_recovery_budget.start(advice_started)
+                    switch_to_account_neutral_replay(
+                        event="owner_pressure_pre_dispatch_transfer",
+                        detail=f"reason={advice.hint.reason}, outcome=verified_full_resend",
+                    )
+                    recovery_alternate_id = advice.alternate_id
+                    request_state.preferred_account_id = recovery_alternate_id
+                    preferred_account_has_continuity_provenance = False
+                    break
+                if advice.hint.reason == "headroom":
+                    # Headroom is a preference, not a fabricated 429. Without
+                    # proof or a safe alternate retain the valid owner.
+                    break
+                owner_recovery_budget.start(advice_started)
+                wait = (
+                    owner_recovery_budget.reserve_wait(
+                        horizon,
+                        now=clock.monotonic(),
+                        request_remaining=max(0.0, request_deadline - clock.monotonic()),
+                    )
+                    if short_hold and horizon is not None
+                    else None
+                )
+                if wait is not None:
+                    async for line in _iter_account_capacity_wait_sse(
+                        request_id=request_id,
+                        reason="Waiting briefly for the previous response owner",
+                        sleep_seconds=wait,
+                        emit_keepalives=not propagate_http_errors,
+                        request_state=request_state,
+                        scheduler=scheduler,
+                        clock=clock,
+                    ):
+                        yield line
+                    continue
+                # Cached sockets must not bypass fresh, confirmed admission
+                # failure. Preserve an explicit client's anchor, not its retry
+                # loop or a speculative send to an exhausted account.
+                raise _http_bridge_previous_response_owner_unavailable_error(
+                    AccountSelection(
+                        None,
+                        advice.hint.reason,
+                        "usage_limit_reached"
+                        if advice.hint.reason == "quota_exhausted"
+                        else "continuity_owner_unavailable",
+                        resets_at=math.ceil(advice.hint.retry_at) if advice.hint.retry_at else None,
+                    ),
+                    now=clock.time(),
+                )
+
         if (
             dead_owner_anchor
             and durable_lookup is not None
@@ -2481,6 +2608,13 @@ class _HTTPBridgeStreamingMixin:
             raise owner_unavailable
 
         while True:
+            creation_deadline = request_deadline
+            if owner_recovery_budget.engaged:
+                owner_recovery_budget.start(clock.monotonic())
+                remaining_control = owner_recovery_budget.remaining(clock.monotonic())
+                if remaining_control <= 0:
+                    raise last_owner_recovery_error or _http_bridge_previous_response_owner_unavailable_error()
+                creation_deadline = min(request_deadline, clock.monotonic() + remaining_control)
             try:
                 session_or_forward = await self._get_or_create_http_bridge_session(
                     bridge_session_key,
@@ -2521,9 +2655,11 @@ class _HTTPBridgeStreamingMixin:
                     request_stage=request_state.request_stage,
                     preferred_account_id=request_state.preferred_account_id,
                     preferred_account_has_continuity_provenance=preferred_account_has_continuity_provenance,
-                    fallback_on_preferred_account_unavailable=not file_required_preferred_account,
+                    fallback_on_preferred_account_unavailable=(
+                        not file_required_preferred_account and recovery_alternate_id is None
+                    ),
                     request_usage_budget=request_state.request_usage_budget,
-                    request_deadline=request_deadline,
+                    request_deadline=creation_deadline,
                     session_header_fallback_key=session_header_fallback_key,
                     exclude_account_ids=fresh_replay_excluded_account_ids or None,
                     deferred_account_backoff_lifecycle=request_state.deferred_account_backoff_lifecycle,
@@ -2542,6 +2678,40 @@ class _HTTPBridgeStreamingMixin:
                 # carries its own continuity is a safe fresh raw-HTTP replay.
                 if effective_payload.previous_response_id != payload.previous_response_id:
                     setattr(exc, _HTTP_BRIDGE_PREPARED_ANCHOR_ATTR, True)
+                if _http_bridge_is_previous_response_owner_unavailable(exc):
+                    last_owner_recovery_error = exc
+                    owner_recovery_budget.start(clock.monotonic())
+                    # Respect the real reset, never truncate a long hold and
+                    # retry the account early. Preserve the same budget through
+                    # a rebuild or a nested transport recovery.
+                    error_payload = exc.payload.get("error", {})
+                    reset_at = error_payload.get("resets_at") if isinstance(error_payload, dict) else None
+                    delay = (
+                        max(0.0, float(reset_at) - clock.time())
+                        if isinstance(reset_at, int | float)
+                        else exc.retry_after_seconds
+                    )
+                    wait = (
+                        owner_recovery_budget.reserve_wait(
+                            float(delay),
+                            now=clock.monotonic(),
+                            request_remaining=max(0.0, request_deadline - clock.monotonic()),
+                        )
+                        if delay is not None and recovery_alternate_id is None
+                        else None
+                    )
+                    if wait is not None:
+                        async for line in _iter_account_capacity_wait_sse(
+                            request_id=request_id,
+                            reason="Waiting briefly for the previous response owner",
+                            sleep_seconds=wait,
+                            emit_keepalives=not propagate_http_errors,
+                            request_state=request_state,
+                            scheduler=scheduler,
+                            clock=clock,
+                        ):
+                            yield line
+                        continue
                 if switch_model_transition_to_account_neutral_fork(exc):
                     continue
                 if not owner_unavailable_allows_account_neutral_replay(exc):
@@ -2571,7 +2741,10 @@ class _HTTPBridgeStreamingMixin:
                         preferred_account_has_continuity_provenance = False
                         continue
                     wait_plan = _http_bridge_capacity_wait_plan(
-                        exc, request_deadline=request_deadline, now=clock.monotonic()
+                        exc,
+                        request_deadline=request_deadline,
+                        now=clock.monotonic(),
+                        owner_recovery_budget=request_state.owner_recovery_budget,
                     )
                     if wait_plan is not None:
                         bounded_wait_seconds, account_capacity_wait_seconds, message = wait_plan
@@ -2832,7 +3005,10 @@ class _HTTPBridgeStreamingMixin:
                             owner_forward_fresh_replay = True
                             continue
                         wait_plan = _http_bridge_capacity_wait_plan(
-                            capacity_exc, request_deadline=request_deadline, now=clock.monotonic()
+                            capacity_exc,
+                            request_deadline=request_deadline,
+                            now=clock.monotonic(),
+                            owner_recovery_budget=request_state.owner_recovery_budget,
                         )
                         if wait_plan is None:
                             raise
@@ -3594,7 +3770,10 @@ class _HTTPBridgeStreamingMixin:
                         )
                     except ProxyResponseError as capacity_exc:
                         wait_plan = _http_bridge_capacity_wait_plan(
-                            capacity_exc, request_deadline=request_deadline, now=clock.monotonic()
+                            capacity_exc,
+                            request_deadline=request_deadline,
+                            now=clock.monotonic(),
+                            owner_recovery_budget=request_state.owner_recovery_budget,
                         )
                         if wait_plan is None:
                             raise
@@ -3705,7 +3884,10 @@ class _HTTPBridgeStreamingMixin:
                         )
                     except ProxyResponseError as capacity_exc:
                         wait_plan = _http_bridge_capacity_wait_plan(
-                            capacity_exc, request_deadline=request_deadline, now=clock.monotonic()
+                            capacity_exc,
+                            request_deadline=request_deadline,
+                            now=clock.monotonic(),
+                            owner_recovery_budget=request_state.owner_recovery_budget,
                         )
                         if wait_plan is None:
                             raise
@@ -4072,7 +4254,10 @@ class _HTTPBridgeStreamingMixin:
                         )
                     except ProxyResponseError as capacity_exc:
                         wait_plan = _http_bridge_capacity_wait_plan(
-                            capacity_exc, request_deadline=request_deadline, now=clock.monotonic()
+                            capacity_exc,
+                            request_deadline=request_deadline,
+                            now=clock.monotonic(),
+                            owner_recovery_budget=request_state.owner_recovery_budget,
                         )
                         if wait_plan is None:
                             raise
@@ -4615,7 +4800,10 @@ class _HTTPBridgeStreamingMixin:
                 if request_state.bridge_soft_capacity_reroute_allowed:
                     raise
                 wait_plan = _http_bridge_capacity_wait_plan(
-                    exc, request_deadline=request_deadline, now=clock.monotonic()
+                    exc,
+                    request_deadline=request_deadline,
+                    now=clock.monotonic(),
+                    owner_recovery_budget=request_state.owner_recovery_budget,
                 )
                 if wait_plan is None:
                     raise

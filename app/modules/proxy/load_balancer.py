@@ -36,6 +36,7 @@ from app.core.balancer import (
 from app.core.balancer import (
     select_account as select_account,
 )
+from app.core.balancer.recovery import confirmed_quota_deadline
 from app.core.balancer.types import UpstreamError
 from app.core.clock import REAL_CLOCK, Clock
 from app.core.config.dashboard_overrides import with_dashboard_overrides
@@ -150,6 +151,10 @@ from app.modules.proxy._load_balancer.types import (
 from app.modules.proxy._load_balancer.unbound_selection import (
     UnboundSelectionRequest,
     run_unbound_selection_path,
+)
+from app.modules.proxy._load_balancer.usage_evidence import extract_credit_status as _extract_credit_status
+from app.modules.proxy._load_balancer.usage_evidence import (
+    usage_entry_recorded_after_block as _usage_entry_recorded_after_block,
 )
 from app.modules.proxy.account_cache import get_account_selection_cache, mark_account_routing_unavailable
 from app.modules.proxy.account_eligibility import (
@@ -2515,6 +2520,26 @@ def _state_from_account(
         # Historical exhaustion cannot rewrite a newer upstream rejection's deadline.
         quota_secondary_used = None
 
+    quota_deadline = confirmed_quota_deadline(
+        status=(
+            status_seed
+            if account.reset_at is not None and account.reset_at <= now and status_seed == AccountStatus.RATE_LIMITED
+            else AccountStatus.ACTIVE
+        ),
+        blocked_at=effective_blocked_at,
+        windows=(
+            (primary_used, primary_reset, primary_entry.recorded_at if primary_entry else None),
+            (
+                None if credits_has or credits_unlimited or (credits_balance or 0) > 0 else quota_secondary_used,
+                secondary_reset,
+                effective_secondary_entry.recorded_at if effective_secondary_entry else None,
+            ),
+        ),
+        now=now,
+        freshness_seconds=usage_freshness_horizon_seconds(),
+    )
+    if quota_deadline is not None:
+        effective_runtime_reset = max(effective_runtime_reset or 0.0, quota_deadline)
     status, used_percent, reset_at = apply_usage_quota(
         status=status_seed,
         primary_used=primary_used,
@@ -2870,39 +2895,6 @@ def _usage_entry_is_recent_available(entry: _UsageWindowEntry | None, *, now: fl
         and entry.used_percent is not None
         and float(entry.used_percent) < 100.0
     )
-
-
-def _usage_entry_recorded_after_block(entry: _UsageWindowEntry | None, blocked_at: float) -> bool:
-    if entry is None or entry.recorded_at is None:
-        return False
-    recorded_at = entry.recorded_at
-    if recorded_at.tzinfo is None:
-        recorded_at = recorded_at.replace(tzinfo=timezone.utc)
-    # Persistence truncates block timestamps to whole seconds. A sample
-    # within that same second cannot prove it was captured after the block.
-    return int(recorded_at.timestamp()) > int(blocked_at)
-
-
-def _extract_credit_status(
-    *entries: _UsageWindowEntry | None,
-    recorded_after: float | None = None,
-) -> tuple[bool | None, bool | None, float | None]:
-    credit_entries: list[UsageHistory] = [
-        entry
-        for entry in entries
-        if isinstance(entry, UsageHistory)
-        and (recorded_after is None or _usage_entry_recorded_after_block(entry, recorded_after))
-        and not (entry.credits_has is None and entry.credits_unlimited is None and entry.credits_balance is None)
-    ]
-    if not credit_entries:
-        return None, None, None
-    entry = max(
-        credit_entries,
-        key=lambda item: item.recorded_at if item.recorded_at is not None else datetime.min,
-    )
-    if entry is not None:
-        return entry.credits_has, entry.credits_unlimited, entry.credits_balance
-    return None, None, None
 
 
 def _usage_entry_is_recent_enough(recorded_at: datetime | None, *, now: float) -> bool:

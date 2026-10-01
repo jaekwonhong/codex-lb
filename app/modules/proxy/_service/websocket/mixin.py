@@ -2785,6 +2785,7 @@ class _WebSocketMixin:
                                     ),
                                 )
                             request_state.response_create_sent_at = clock.monotonic()
+                            request_state.owner_recovery_budget.pause(clock.monotonic())
                         with _websocket_archive_request_context(archive_request_id):
                             await upstream.send_text(text_data)
                 except ProxyResponseError as exc:

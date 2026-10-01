@@ -351,6 +351,7 @@ def _parse_openai_error(payload: Mapping[str, object]) -> OpenAIError | None:
             plan_type=_coerce_str(error_mapping.get("plan_type")),
             resets_at=_coerce_number(error_mapping.get("resets_at")),
             resets_in_seconds=_coerce_number(error_mapping.get("resets_in_seconds")),
+            availability_reason=_coerce_str(error_mapping.get("availability_reason")),
         )
     parsed.set_param_state(param_state)
     return parsed
@@ -373,6 +374,19 @@ def _apply_error_metadata(target: OpenAIErrorDetail, error: OpenAIError | None) 
         target["resets_at"] = error.resets_at
     if error.resets_in_seconds is not None:
         target["resets_in_seconds"] = error.resets_in_seconds
+    availability_reason = error.availability_reason
+    if availability_reason is not None and availability_reason in {
+        "usage_limit_reached",
+        "continuity_owner_unavailable",
+        "hard_affinity_saturated",
+        "account_stream_cap",
+        "account_response_create_cap",
+        "upstream_unavailable",
+        "upstream_error",
+        "server_error",
+        "rate_limit_exceeded",
+    }:
+        target["availability_reason"] = availability_reason
 
 
 def _upstream_error_from_openai(error: OpenAIError | None) -> UpstreamError:
