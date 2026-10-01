@@ -37,7 +37,7 @@ from app.core.clients.proxy import (
     apply_codex_installation_metadata,
 )
 from app.core.config.settings import DEFAULT_HOME_DIR, get_settings
-from app.core.openai.requests import ResponsesRequest
+from app.core.openai.requests import ResponsesRequest, omit_subscription_incompatible_reasoning_input_items
 from app.core.types import JsonValue
 from app.core.utils.json_guards import is_json_mapping
 from app.modules.proxy._service.support import (
@@ -254,6 +254,7 @@ def _response_create_text(
     client_metadata: Mapping[str, JsonValue] | None,
 ) -> str:
     upstream_payload = dict(payload.to_payload())
+    omit_subscription_incompatible_reasoning_input_items(upstream_payload)
     upstream_payload.pop("stream", None)
     upstream_payload.pop("background", None)
     if include_type_field:
@@ -284,6 +285,7 @@ def _response_create_text_with_size_guard(
         else {}
     )
     upstream_payload = dict(payload.to_payload())
+    omit_subscription_incompatible_reasoning_input_items(upstream_payload)
     upstream_payload.pop("stream", None)
     upstream_payload.pop("background", None)
     if include_type_field:

@@ -90,6 +90,7 @@ from app.core.openai.parsing import (
 from app.core.openai.requests import (
     ResponsesCompactRequest,
     ResponsesRequest,
+    omit_subscription_incompatible_reasoning_input_items,
     validate_compact_input_wire_budget,
 )
 from app.core.resilience.circuit_breaker import (
@@ -3755,6 +3756,7 @@ async def _stream_responses_with_session(
         else {}
     )
     payload_dict = dict(payload.to_payload())
+    omit_subscription_incompatible_reasoning_input_items(payload_dict)
     apply_codex_installation_metadata(payload_dict, codex_installation_id)
     # ``shared`` (the default) returns immediately, so the bytes below are
     # unchanged. ``isolated`` must land here: above the http/websocket fork, so

@@ -57,6 +57,7 @@ from app.core.errors import openai_error
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import (
     ResponsesRequest,
+    omit_subscription_incompatible_reasoning_input_items,
 )
 from app.core.resilience.overload import is_local_overload_error_code
 from app.core.types import JsonObject, JsonValue
@@ -776,6 +777,7 @@ class _HTTPBridgeRequestSubmitMixin:
         # Shallow copy: every mutation below rebinds top-level keys only, so
         # ``upstream_payload_base`` stays the pristine dump for the budget.
         upstream_payload = dict(upstream_payload_base)
+        omit_subscription_incompatible_reasoning_input_items(upstream_payload)
         upstream_payload.pop("stream", None)
         upstream_payload.pop("background", None)
         if include_type_field:

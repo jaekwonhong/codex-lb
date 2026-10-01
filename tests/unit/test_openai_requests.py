@@ -25,6 +25,7 @@ from app.core.openai.requests import (
     _trim_compact_input_for_upstream,
     extract_input_file_ids,
     extract_input_image_file_references,
+    omit_subscription_incompatible_reasoning_input_items,
 )
 from app.core.openai.v1_requests import V1ResponsesCompactRequest, V1ResponsesRequest
 from app.core.types import JsonValue
@@ -60,6 +61,83 @@ def test_store_false_is_preserved():
     request = ResponsesRequest.model_validate(payload)
 
     assert request.to_payload()["store"] is False
+
+
+def test_omit_subscription_incompatible_reasoning_input_items_filters_only_nonportable_reasoning():
+    portable_reasoning = {
+        "type": "reasoning",
+        "id": "rs_subscription",
+        "content": [],
+        "encrypted_content": "ciphertext",
+        "summary": [],
+    }
+    portable_without_id = {
+        "type": "reasoning",
+        "content": None,
+        "encrypted_content": "ciphertext-without-id",
+    }
+    assistant_message = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": "visible answer"}],
+    }
+    payload: dict[str, JsonValue] = {
+        "model": "gpt-6-astra",
+        "input": [
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            {
+                "type": "reasoning",
+                "id": "rs_source_shape",
+                "content": [{"type": "reasoning_text", "text": "plain source reasoning"}],
+                "encrypted_content": None,
+            },
+            assistant_message,
+            {"type": "reasoning", "id": "source_local_id", "content": []},
+            portable_reasoning,
+            portable_without_id,
+        ],
+    }
+
+    removed = omit_subscription_incompatible_reasoning_input_items(payload)
+
+    assert removed == 2
+    assert payload["input"] == [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+        assistant_message,
+        portable_reasoning,
+        portable_without_id,
+    ]
+    assert omit_subscription_incompatible_reasoning_input_items(payload) == 0
+
+
+@pytest.mark.parametrize(
+    ("content", "item_id"),
+    [
+        ("plain text", "rs_text"),
+        ({}, "rs_mapping"),
+        ([{"type": "reasoning_text", "text": "x"}], None),
+        ([], 123),
+        ([], "not_rs"),
+    ],
+)
+def test_omit_subscription_incompatible_reasoning_input_items_rejects_invalid_reasoning_shapes(
+    content: JsonValue,
+    item_id: JsonValue,
+):
+    reasoning: dict[str, JsonValue] = {"type": "reasoning", "content": content}
+    if item_id is not None:
+        reasoning["id"] = item_id
+    payload: dict[str, JsonValue] = {"input": [reasoning]}
+
+    assert omit_subscription_incompatible_reasoning_input_items(payload) == 1
+    assert payload["input"] == []
+
+
+def test_omit_subscription_incompatible_reasoning_input_items_leaves_non_list_input_unchanged():
+    payload: dict[str, JsonValue] = {"input": "hello"}
+
+    assert omit_subscription_incompatible_reasoning_input_items(payload) == 0
+    assert payload == {"input": "hello"}
 
 
 def test_compact_store_true_is_coerced_to_false():
