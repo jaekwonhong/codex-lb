@@ -166,6 +166,8 @@ CODEX_0150_RESPONSES_WEBSOCKET_WIRE_PROFILE: Final = CodexWireProfile(
     synthesized_turn_state_header=False,
 )
 
+CODEX_LB_SERVICE_TIER_HEADER = "x-codex-lb-service-tier"
+
 IGNORE_INBOUND_HEADERS = {
     "authorization",
     "chatgpt-account-id",
@@ -176,6 +178,7 @@ IGNORE_INBOUND_HEADERS = {
     CODEX_INSTALLATION_ID_HEADER,
     CODEX_ROUTING_HINT_HEADER,
     CODEX_LB_REQUIRED_CAPABILITY_HEADER,
+    CODEX_LB_SERVICE_TIER_HEADER,
     "true-client-ip",
 }
 INTERNAL_OPENAI_UPSTREAM_HEADERS = frozenset(

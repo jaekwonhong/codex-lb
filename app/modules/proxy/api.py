@@ -51,6 +51,7 @@ from app.core.clients.proxy import (
     _SSE_SEPARATOR_OVERLAP,
     CODEX_0150_RESPONSES_WEBSOCKET_WIRE_PROFILE,
     CODEX_LB_REQUIRED_CAPABILITY_HEADER,
+    CODEX_LB_SERVICE_TIER_HEADER,
     MAX_SSE_EVENT_BYTES,
     CodexControlRequestPrivacyPolicy,
     CodexControlResponse,
@@ -141,7 +142,12 @@ from app.core.openai.images import (
     V1ImagesEditsForm,
     V1ImagesGenerationsRequest,
 )
-from app.core.openai.model_registry import UpstreamModel, get_model_registry, is_public_model
+from app.core.openai.model_registry import (
+    UpstreamModel,
+    canonical_service_tier_value,
+    get_model_registry,
+    is_public_model,
+)
 from app.core.openai.models import (
     CompactResponsePayload,
     CompactResponseResult,
@@ -1153,11 +1159,17 @@ async def responses(
     openai_sdk_request = _is_openai_sdk_request(request, payload)
     native_codex_heartbeat = _is_native_codex_request(request.headers) and not explicit_openai_sdk_marker
     openai_compat_payload = _has_openai_responses_shape(payload)
+    provider_switcher_service_tier: str | None = None
     try:
         validate_top_level_compaction_trigger_input_shape(payload)
         responses_payload = normalize_responses_request_payload(
             payload,
             openai_compat=openai_compat_payload,
+        )
+        provider_switcher_service_tier = _apply_provider_switcher_service_tier_header(
+            responses_payload,
+            request.headers,
+            api_key=api_key,
         )
     except ClientPayloadError as exc:
         error = openai_client_payload_error(exc)
@@ -1222,6 +1234,11 @@ async def responses(
             service_tier_was_enforced=service_tier_was_enforced,
         )
     if source is not None:
+        _clear_provider_switcher_service_tier_for_model_source(
+            responses_payload,
+            provider_switcher_service_tier,
+            api_key=api_key,
+        )
         # Opportunistic admission gates subscription *account* capacity;
         # source-routed requests use no account, so a closed/empty pool must
         # not reject them.
@@ -2294,6 +2311,65 @@ async def _apply_api_key_enforcement_with_fast_mode_policy(
         enforcement.service_tier_was_enforced,
         enforcement.pre_normalization_reasoning_effort,
     )
+
+
+def _apply_provider_switcher_service_tier_header(
+    payload: ResponsesRequest,
+    headers: Headers,
+    *,
+    api_key: ApiKeyData | None,
+) -> str | None:
+    """Materialize ProviderSwitcher Beta speed intent into the request body.
+
+    Codex Desktop can clear its configured ``service_tier`` from turn context
+    for a command-authenticated custom provider. ProviderSwitcher therefore
+    carries the same user-approved Standard/Fast choice in one private
+    provider header. Only authenticated API-key traffic may use it; the header
+    is stripped by ``filter_inbound_headers`` before any upstream request.
+    """
+
+    values = [value.strip().lower() for value in headers.getlist(CODEX_LB_SERVICE_TIER_HEADER) if value.strip()]
+    if not values:
+        return None
+    if api_key is None:
+        raise ClientPayloadError(
+            f"{CODEX_LB_SERVICE_TIER_HEADER} requires authenticated codex-lb API-key access.",
+            param=CODEX_LB_SERVICE_TIER_HEADER,
+        )
+    if len(set(values)) != 1:
+        raise ClientPayloadError(
+            f"Conflicting {CODEX_LB_SERVICE_TIER_HEADER} values are not allowed.",
+            param=CODEX_LB_SERVICE_TIER_HEADER,
+        )
+
+    requested = values[0]
+    canonical = canonical_service_tier_value(requested)
+    if requested == "default":
+        payload.service_tier = None
+        return "default"
+    if canonical == "priority" and requested in {"fast", "priority"}:
+        payload.service_tier = "priority"
+        return "priority"
+    raise ClientPayloadError(
+        f"Unsupported {CODEX_LB_SERVICE_TIER_HEADER} value: {requested}",
+        param=CODEX_LB_SERVICE_TIER_HEADER,
+    )
+
+
+def _clear_provider_switcher_service_tier_for_model_source(
+    payload: ResponsesRequest,
+    provider_switcher_service_tier: str | None,
+    *,
+    api_key: ApiKeyData | None,
+) -> None:
+    if provider_switcher_service_tier is None:
+        return
+    if api_key is not None and api_key.enforced_service_tier is not None:
+        return
+    # ProviderSwitcher speed is a subscription-lane control. Model sources
+    # (for example DGX Qwen) do not inherit it merely because they share the
+    # Beta provider endpoint.
+    payload.service_tier = None
 
 
 async def _prohibit_fast_mode_enabled() -> bool:
