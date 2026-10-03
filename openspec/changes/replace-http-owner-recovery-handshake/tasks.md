@@ -86,4 +86,4 @@ external binary; these are not product-path qualification. Ruff/format/typing,
 architecture, cancellation-safety, diff and OpenSpec (66 specs) all pass.
 Promotion and actual PC2 Desktop qualification remain unchecked in sections 3/4.
 
-- [ ] 6.5 Commit/integrate the additional reviewed correction and rebuild/verify the four-file derivative. The earlier `f51b1047...` image is disqualified and MUST NOT be reused.
+- [x] 6.5 Commit/integrate the additional reviewed correction and rebuild/verify the four-file derivative. Replacement commit: `aa059dea8`; image: `sha256:c3fdb1b9...`. The earlier `f51b1047...` image remains disqualified and MUST NOT be reused.

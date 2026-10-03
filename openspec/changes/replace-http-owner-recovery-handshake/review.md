@@ -169,3 +169,34 @@ files: `api.py`, HTTP-bridge `helpers.py` and `streaming.py`, and
 `_service/request_log.py`. All four source/image hashes plus revision/base labels
 MUST be reverified. Production promotion and actual PC2 Desktop qualification
 remain separate gates, and the skipped Rust wire probes are not executed evidence.
+
+### Replacement candidate after the pre-promotion corrections
+
+The reviewed corrections were committed as
+`aa059dea8bc1c27f70f42b1a4fb9a11a9f2a74dc` and fast-forwarded locally into
+`codex/main-d1fd-patch-packet-20260917`. No remote push was performed.
+
+A new minimal derivative was built from the unchanged production Beta base
+`sha256:8d606b5add93fd526a3e7a2af4c56ac2dd7c176f74a1e67c316e9069ce2c8c48`:
+
+- image: `sha256:c3fdb1b9f9935574476e66d47a401a12f06bdeac836d3cd82fd4f51b3917a34d`
+- revision label: `aa059dea8bc1c27f70f42b1a4fb9a11a9f2a74dc`
+- scope label: `pc2-owner-recovery-stage1-reviewed`
+- four-file bundle SHA-256:
+  `a721aecf98d41134d9cdc2a8328f830353c6afa5ac1ebc03d51c1b83255a87ff`
+- `api.py`: `3f984c233bb96289bf4651e883363db71b83a478c4ed932ee00ff8f4523d3913`
+- HTTP-bridge `helpers.py`:
+  `476ec7a7d901171e1938b2a079a8af527099647b91cb52990227c1460553866e`
+- HTTP-bridge `streaming.py`:
+  `d9032774553e3be16a87e74dc2b21a60e81d7fa45301cf1765eb5a4e21e68642`
+- `_service/request_log.py`:
+  `eda40b753f62f416a98b35198234f11390eb39053f3fcce67aae735b92b8e483`
+
+All four hashes match byte-for-byte between the committed worktree and the
+image. In-image smoke reconfirmed HTTP 400 + `continuity_recovery_required` +
+`x-should-retry:false`, the committed-SSE `invalid_prompt` surrogate with
+`availability_reason=continuity_recovery_required`, no retry directive, and the
+one-second bounded preflight-log acknowledgement constant.
+
+This image is a **promotion candidate only**. It has not replaced the production
+Beta container, and the actual PC2 Desktop product-path gate remains outstanding.
