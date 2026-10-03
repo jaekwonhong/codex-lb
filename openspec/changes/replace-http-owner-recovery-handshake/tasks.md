@@ -158,4 +158,26 @@ final Stage-1 product-path qualification.
 - [ ] 9.8 After a new explicit promotion approval, promote that derivative and
   re-run the real PC2 conversation once more before closing Stage 1. Promotion
   to `sha256:291a47e3...` is complete and post-promotion qualification passed;
-  only the real PC2 retest remains pending.
+  the real PC2 retest still returned `502 previous_response_owner_unavailable`,
+  so this image is disqualified as the final Stage-1 image.
+
+## 10. Durable owner-proof scope-loss follow-up
+
+- [x] 10.1 Capture the fourth real PC2 failure on `01a10030-...`: request
+  `9a6d281b-...` returned 502 after promotion of `291a47e3...`.
+- [x] 10.2 Confirm the current Beta API key has no account-assignment scope and
+  the failure is therefore not an operator-created no-alternate restriction.
+- [x] 10.3 Trace the remaining gap to a durable session anchor whose response id
+  survives while current-scope `account_id` owner proof is absent.
+- [x] 10.4 Extend the native pre-dispatch recovery refusal to that injected-anchor
+  owner-proof-loss shape without widening cross-API-key lookup, verified full
+  resend, SDK, `/v1`, file-bound, or post-dispatch behavior.
+- [x] 10.5 Add native session-anchor owner-proof-loss regressions with and without
+  SDK-compatible request metadata.
+- [x] 10.6 Requalify: core 1,284 PASS; affected extended tests PASS (one full-run
+  setup was interrupted only by host disk-full and passed alone on rerun);
+  Ruff/format/typing/architecture/cancellation/change validation PASS.
+- [ ] 10.7 Commit/integrate the scope-loss correction and build a minimal
+  derivative from exact running `291a47e3...` production base.
+- [ ] 10.8 After separate promotion authorization, promote that derivative and
+  re-run the real PC2 thread before Stage-1 closeout.

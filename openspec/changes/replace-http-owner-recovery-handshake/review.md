@@ -530,3 +530,41 @@ The remaining Stage-1 gate is one real PC2 Codex Desktop 0.160 request on
 conversation `01a10030-...` to prove that the formerly repeating explicit-anchor
 owner-unavailable turn now terminates as local HTTP 400
 `continuity_recovery_required` without upstream dispatch or a retry loop.
+
+### Fourth actual PC2 retest: durable anchor survives but owner proof does not
+
+The real PC2 conversation was re-run after promotion of `sha256:291a47e3...`.
+At 2026-10-03 12:55:40 UTC request
+`9a6d281b-936e-4985-a071-7219b621ec5c` still returned
+`502 previous_response_owner_unavailable` with `account_id=NULL`. The public
+request log retained the real Codex Desktop 0.160 thread id and the Beta API-key
+scope. The API key itself has no account-assignment scope, so the result was not
+caused by an operator restriction on alternate accounts.
+
+Review of the admission path identified the remaining scope-loss shape: the
+incoming native request can omit an explicit previous-response anchor while the
+durable session lookup still injects its stored response id. After an API-key
+identity change, that durable row can retain the anchor but expose `account_id`
+as NULL in the current scope. `required_continuity_owner_missing` therefore
+correctly fails closed, but the previous Stage-1 implementation only translated
+the client-explicit owner-lookup miss; a proxy-injected durable anchor with the
+same missing owner proof still fell through to the legacy 502.
+
+The follow-up correction adds a narrow `native_missing_owner_requires_local_recovery`
+gate at that pre-dispatch boundary. It requires native backend session affinity,
+a stored response anchor, missing preferred owner proof, and—when the anchor was
+injected by the bridge—an unsubmitted delta that is not a proved complete
+account-neutral resend. It performs no cross-API-key owner lookup and creates no
+upstream session. Existing client-explicit handling remains intact.
+
+Validation of this scope-loss correction:
+
+- core native/SDK/bridge/ownership/source matrix: 1,284 PASS, 0 FAIL/ERROR
+- HTTP bridge + model-source extended matrix reached 343 PASS before one SQLite
+  test setup failed because the host filesystem was full; that exact test was
+  rerun alone after pressure subsided and PASSed
+- Ruff, format, targeted typing, proxy architecture, cancellation-safety,
+  changed-spec validation and `git diff --check`: PASS
+
+The running production Beta remains `sha256:291a47e3...`; this scope-loss
+correction has not yet been committed, packaged, or promoted.

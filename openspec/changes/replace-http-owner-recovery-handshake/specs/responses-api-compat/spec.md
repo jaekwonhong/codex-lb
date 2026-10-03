@@ -82,6 +82,18 @@ MUST work without requiring a particular User-Agent spelling.
 - **AND** the response says `x-should-retry: false` and advertises no Retry-After
 - **AND** the proxy neither performs a cross-API-key owner lookup nor dispatches the request
 
+#### Scenario: Durable session anchor survives but its owner proof is absent in the new API-key scope
+
+- **GIVEN** native Codex sends a delta without naming `previous_response_id`
+- **AND** current-scope durable session continuity still supplies a stored response anchor
+- **AND** that durable lookup has no account owner proof in the current API-key scope
+- **AND** the request is not a verified complete account-neutral resend
+- **WHEN** HTTP-bridge admission detects the required continuity owner is missing before dispatch
+- **THEN** the proxy returns HTTP 400 `continuity_recovery_required`
+- **AND** it preserves API-key isolation rather than searching another scope for the old owner
+- **AND** it does not create an upstream bridge session or dispatch the delta
+- **AND** a proved complete account-neutral resend keeps its existing safe replay path
+
 #### Scenario: Native Codex carries SDK-compatible transport metadata
 
 - **GIVEN** the same explicit previous-response owner-proof-loss case
