@@ -37,6 +37,13 @@ source rules unchanged.
   preserve SDK and `/v1/responses` owner-unavailable behavior.
 - Attribute the new preflight log only from local pre-dispatch provenance, not
   from a matching error-code string an upstream provider could also return.
+- Apply the same no-delta-transfer boundary after a late owner admission failure:
+  stale or timed-out advice must not allow legacy retirement to clear a native
+  delta's proxy-injected anchor. Reassess alternate availability once within the
+  existing recovery/deadline budget, and otherwise keep the original failure.
+- Preserve thread attribution for originator-only native identity. For this local
+  refusal alone, wait at most one second for the already tracked log insertion;
+  keep ordinary request logging detached and never resubmit a timed-out insert.
 
 ## Capabilities
 

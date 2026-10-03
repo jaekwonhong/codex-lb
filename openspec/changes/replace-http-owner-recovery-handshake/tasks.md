@@ -36,7 +36,7 @@
 
 - [x] 4.0 Build a non-promotable review image from the exact current production
   Beta base and verify source/image hashes plus the JSON/SSE contracts in-image.
-- [ ] 4.1 After explicit commit/integration authorization, rebuild a
+- [x] 4.1 After explicit commit/integration authorization, rebuild a
   commit-addressable minimal Beta derivative from the corrected source.
 - [ ] 4.2 After explicit production-promotion authorization, preserve the rollback
   container, wait for a safe cutover boundary, replace Beta, and verify readiness;
@@ -44,8 +44,10 @@
 
 The previously built image `sha256:a0a5b6769775f740d289bbac3a087fe403b92bb0fc8efa478357a64aa6439d5c`
 contains the reviewed 409 behavior, not these corrections. It is not the corrected
-deployment candidate. No commit, canonical merge, push or deployment was performed
-for the review edits.
+deployment candidate. The initial corrected edits were committed as `271b5354d`
+and fast-forwarded locally, without push or deployment. Their image `f51b1047...`
+was subsequently disqualified by the pre-promotion review in section 6 and MUST
+NOT be promoted. A replacement must include the additional reviewed corrections.
 
 Review image (not approved for promotion):
 
@@ -70,3 +72,18 @@ Review image (not approved for promotion):
 - [x] 5.6 Add regressions for SDK retries, contract boundaries, provenance and committed SSE.
 - [x] 5.7 Make an already-committed native SSE refusal terminal to Codex by using
   the `invalid_prompt` wire surrogate while retaining the real continuity marker.
+
+## 6. Pre-promotion review of 271b5354d
+
+- [x] 6.1 Reproduce and close native delta retirement after an advisory timeout or late owner rejection; retain SDK and verified full-resend contracts.
+- [x] 6.2 Preserve thread attribution for native originator identity without a Codex User-Agent.
+- [x] 6.3 Verify the preflight log persistence boundary with a delayed/failing store and bounded acknowledgement; preserve cancellation cleanup.
+- [x] 6.4 Rerun native/SDK, ownership, replay, source-routing, static and OpenSpec regressions; keep production unchanged.
+
+Pre-promotion corrected source: 1,271 core tests + 355 extended-route tests PASS.
+The additional native-egress wire suite has 319 SKIPs due to its unconfigured
+external binary; these are not product-path qualification. Ruff/format/typing,
+architecture, cancellation-safety, diff and OpenSpec (66 specs) all pass.
+Promotion and actual PC2 Desktop qualification remain unchecked in sections 3/4.
+
+- [ ] 6.5 Commit/integrate the additional reviewed correction and rebuild/verify the four-file derivative. The earlier `f51b1047...` image is disqualified and MUST NOT be reused.

@@ -1210,11 +1210,14 @@ class _HTTPBridgeStreamingMixin:
                     # an error row for a turn that then succeeded would corrupt
                     # the very error rate this row exists to show.
                     bridge_error_code, bridge_error_message = _proxy_error_code_message(exc)
-                    if (
-                        bridge_error_code in _HTTP_BRIDGE_CONTINUITY_OWNER_ERROR_CODES
-                        or _is_local_history_recovery_required(exc)
-                    ):
+                    local_history_refusal = _is_local_history_recovery_required(exc)
+                    if bridge_error_code in _HTTP_BRIDGE_CONTINUITY_OWNER_ERROR_CODES or local_history_refusal:
                         useragent, useragent_group, conversation_id = _request_log_client_fields(headers)
+                        if local_history_refusal:
+                            # Native identity also comes from originator. The
+                            # generic log helper intentionally keys other clients
+                            # by User-Agent; do not lose this refusal's thread.
+                            conversation_id = _codex_backend_identity(headers).thread_id
                         await self._write_stream_preflight_error(
                             account_id=None,
                             api_key=api_key,
@@ -1223,6 +1226,7 @@ class _HTTPBridgeStreamingMixin:
                             start=bridge_attempt_started_at,
                             error_code=bridge_error_code,
                             error_message=bridge_error_message or "Continuity owner account is unavailable",
+                            wait_for_persistence=local_history_refusal,
                             reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
                             service_tier=payload.service_tier,
                             useragent=useragent,
@@ -2470,6 +2474,40 @@ class _HTTPBridgeStreamingMixin:
             dead_owner_process_epoch_mismatch = False
             file_required_preferred_account = False
 
+        def native_delta_requires_owner() -> bool:
+            """Keep an unportable native delta pinned even if advice was stale."""
+            return (
+                not forwarded_request
+                and not account_neutral_recovery
+                and not enforce_openai_sdk_contract
+                and _is_native_codex_request(headers)
+                and payload.previous_response_id is None
+                and rewritten_file_account_id is None
+                and request_state.proxy_injected_previous_response_id
+                and request_state.previous_response_id is not None
+                and turn_is_unsubmitted(request_state)
+                and not durable_full_resend_allows_account_neutral_replay()
+            )
+
+        def local_history_recovery_refusal(reason: str) -> ProxyResponseError:
+            _log_http_bridge_event(
+                "owner_pressure_local_history_recovery_required",
+                bridge_session_key,
+                account_id=request_state.preferred_account_id,
+                model=effective_payload.model,
+                detail=f"reason={reason}, outcome=local_history_recovery_required",
+                cache_key_family=bridge_session_key.affinity_kind,
+                model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
+                owner_check_applied=True,
+            )
+            return ProxyResponseError(
+                400,
+                _local_history_recovery_required_error(),
+                failure_phase="pre_dispatch",
+                failure_detail="local_history_recovery_required",
+                local_pre_dispatch_refusal=True,
+            )
+
         # A cache anchor is an optimization, not a reason to submit the next
         # proven-portable turn to an exhausted owner. No shared owner mutation is
         # made here. The normal selector still admits the chosen replacement,
@@ -2559,16 +2597,7 @@ class _HTTPBridgeStreamingMixin:
                     ):
                         yield line
                     continue
-                if (
-                    advice.alternate_id is not None
-                    and not portable
-                    and not enforce_openai_sdk_contract
-                    and _is_native_codex_request(headers)
-                    and payload.previous_response_id is None
-                    and rewritten_file_account_id is None
-                    and request_state.proxy_injected_previous_response_id
-                    and request_state.previous_response_id is not None
-                ):
+                if advice.alternate_id is not None and native_delta_requires_owner():
                     # The client did not name the exhausted owner's response;
                     # the bridge injected that anchor while freshly reattaching
                     # a durable session/thread delta. A healthy alternate exists,
@@ -2584,23 +2613,7 @@ class _HTTPBridgeStreamingMixin:
                     # and dispatching the current body: doing that would lose
                     # context.  Client-supplied previous_response_id and
                     # file/account-bound turns remain fail-closed below.
-                    _log_http_bridge_event(
-                        "owner_pressure_local_history_recovery_required",
-                        bridge_session_key,
-                        account_id=request_state.preferred_account_id,
-                        model=effective_payload.model,
-                        detail=f"reason={advice.hint.reason}, outcome=local_history_recovery_required",
-                        cache_key_family=bridge_session_key.affinity_kind,
-                        model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
-                        owner_check_applied=True,
-                    )
-                    raise ProxyResponseError(
-                        400,
-                        _local_history_recovery_required_error(),
-                        failure_phase="pre_dispatch",
-                        failure_detail="local_history_recovery_required",
-                        local_pre_dispatch_refusal=True,
-                    )
+                    raise local_history_recovery_refusal(advice.hint.reason)
                 # Cached sockets must not bypass fresh, confirmed admission
                 # failure. Preserve an explicit client's anchor, not its retry
                 # loop or a speculative send to an exhausted account.
@@ -2764,6 +2777,46 @@ class _HTTPBridgeStreamingMixin:
                         ):
                             yield line
                         continue
+                if _http_bridge_is_previous_response_owner_unavailable(exc) and native_delta_requires_owner():
+                    # Advisory timeout or pressure arriving after advice must
+                    # not bypass the no-delta-transfer boundary through legacy
+                    # owner retirement. Admission has confirmed the failure, but
+                    # alternate availability still needs positive evidence.
+                    owner_id = request_state.preferred_account_id
+                    if owner_id is None:
+                        raise
+                    try:
+                        with scheduler.fail_after(
+                            min(
+                                1.0,
+                                owner_recovery_budget.remaining(clock.monotonic()),
+                                max(0.0, request_deadline - clock.monotonic()),
+                            )
+                        ):
+                            late_advice = await assess_owner_recovery(
+                                self._load_balancer,
+                                owner_id=owner_id,
+                                model=effective_payload.model,
+                                service_tier=request_state.requested_service_tier,
+                                api_key=api_key,
+                                dashboard=dashboard_settings,
+                                excluded_account_ids=request_state.excluded_account_ids,
+                                estimated_tokens=_estimated_lease_tokens_from_request_usage_budget(
+                                    request_state.request_usage_budget
+                                ),
+                                require_security_work_authorized=request_state.require_security_work_authorized,
+                            )
+                    except Exception:
+                        # The optional recheck may fail, but never replace the
+                        # known admission error or authorize clearing its anchor.
+                        raise exc from None
+                    if (
+                        late_advice is not None
+                        and late_advice.owner_id == owner_id
+                        and late_advice.alternate_id is not None
+                    ):
+                        raise local_history_recovery_refusal(late_advice.hint.reason) from exc
+                    raise
                 if switch_model_transition_to_account_neutral_fork(exc):
                     continue
                 if not owner_unavailable_allows_account_neutral_replay(exc):

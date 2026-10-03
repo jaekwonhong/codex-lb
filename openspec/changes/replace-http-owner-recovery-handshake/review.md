@@ -1,10 +1,10 @@
-# Review of ab78561f1
+# Stage 1 continuity recovery reviews
 
 Scope: review and correct the stage-1 error contract. No checkpoint capture,
 automatic transcript reconstruction, production deployment, or account mutation
 is authorized by this review implementation.
 
-## Confirmed findings
+## Initial review of ab78561f1
 
 1. HTTP 409 is described as non-retryable, but standard OpenAI SDK retry policies
    include 409. Replace it with a distinct 400 invalid-request refusal and a
@@ -86,3 +86,86 @@ Stage 2 remains unimplemented: this change does not capture a durable independen
 checkpoint, protect its parent chain from retention, or reconstruct missing delta
 history. It prevents a misleading client-recovery contract; it does not make all
 quota-bound legacy conversations recover transparently.
+
+## Pre-promotion review of 271b5354d
+
+The preceding pass did not cover the following real failures. The candidate image
+`sha256:f51b1047b8c221ad75bda586b4ea4e643080d268b3233b34c3bcf477d286838d`
+MUST NOT be promoted; its source requires these additional corrections.
+
+### Findings and corrections
+
+1. **Unsafe late-admission retirement (high impact).** When initial owner advice
+   timed out or missed new pressure, session creation could reject the owner and
+   enter `retire_unavailable_continuity_owner`. That legacy branch removed the
+   proxy anchor and attempted creation again with only the unproven delta. A
+   public-route regression reproduced the second call using an unavailable-owner
+   admission error and an affirmative retirement result. The new guard keeps
+   native, client-unanchored, proxy-anchored nonportable turns pinned, including
+   this late-failure path. One bounded read-only recheck can produce the explicit
+   recovery refusal with positive alternate evidence. No evidence, timeout,
+   failed recheck, or a different-owner result preserves the original failure;
+   none permits retirement, anchor clearing or a second session-creation attempt.
+   Explicit anchors, file pins, SDK contracts and proved full resends retain
+   their existing paths.
+2. **Originator-only attribution was missing.** Recovery admission recognized
+   native `originator`, but the generic request-log helper extracted thread-id
+   only for Codex-prefixed User-Agents. The local-refusal branch now uses the
+   existing Codex backend identity parser for its conversation id; other log
+   attribution is unchanged. The route regression also checks the ingress
+   request-id, one NULL-account row and one redacted structured refusal event.
+3. **The promised persistence ordering was not implemented.** Awaiting the
+   preflight writer only scheduled a detached insert. The shared async-client
+   fixture drained persistence after every response, hiding the wire-order race.
+   New tests bypass that fixture hook. This refusal now opts into a one-second
+   acknowledgement wait on the existing scheduler-owned insert, shielded against
+   wait timeout/caller cancellation. The pending insert stays tracked and is not
+   resubmitted. Failed or stalled logging does not replace the refusal or skip
+   exactly-once reservation release. The bounded wait is deliberately limited to
+   this terminal error path; ordinary success/SDK logging remains detached.
+
+### Reproduction and scope
+
+- Before correction, the first route expansion failed 6 of 9 cases: 2 missing
+  conversation ids and 4 unsafe retirement/retry attempts.
+- With the fixture response hook disabled, delayed-ack and acknowledgement-timeout
+  regressions failed against the detached-only implementation.
+- Corrected owner-interruption route coverage: 28 PASS, including delayed/failed/
+  timed-out logging, cancellation, a real API committed-SSE boundary, and native
+  identity/alternate evidence variations. The committed route preserves a single
+  terminal `invalid_prompt`, the continuity marker, and one reservation release.
+- Core combined regression: 1,271 PASS. Includes owner/replay/reattach, forwarding,
+  native/SDK contracts, request-log virtual time, model-source WebSocket guards,
+  and ProviderSwitcher service-tier headers.
+- Extended routes: 355 PASS (196 HTTP bridge, 119 model-source routing,
+  29 model-source dispatch, 11 native-egress tests not requiring the external
+  binary). A further 319 native-egress wire probes were SKIPPED because
+  `CODEX_LB_NATIVE_EGRESS_TEST_BINARY` was not configured. They are not counted as
+  passes, and the Rust egress broker was not rebuilt or qualified by this review.
+- Ruff, format, targeted typing for all four overlay application files, proxy
+  architecture, cancellation-safety and diff checks: PASS. Strict OpenSpec change
+  validation: PASS; full spec validation: 66 PASS, 0 FAIL.
+- Full JUnit results and logs are retained outside Git under
+  `artifacts/pc2-owner-final-review-20261003/` in the host project root.
+- The newly overlaid `request_log.py` baseline was compared against the exact
+  production Beta base; both SHA-256 values were
+  `10483dd3d488266e743388bf16126419bffb7887df069aac9fc0621404dff681`.
+
+The suspected owner-forward provenance loss was not changed: the actual local
+recovery producer excludes `forwarded_request`, so it cannot originate at the
+internal receiver under this contract. No speculative forwarding protocol was
+introduced. These tests use controlled owner/upstream evidence, not the live PC2
+Desktop. This review does not authorize production promotion or implement Stage 2.
+
+### Packaging boundary after this review
+
+The pre-promotion findings above were produced on top of reviewed source commit
+`271b5354d256360e0cee359e5cab09631087f5e3`; therefore the previously built
+`f51b1047...` derivative does **not** contain them and remains disqualified.
+
+Any replacement candidate MUST be built only after these reviewed corrections are
+committed and safely integrated. Its minimal overlay requires **four** application
+files: `api.py`, HTTP-bridge `helpers.py` and `streaming.py`, and
+`_service/request_log.py`. All four source/image hashes plus revision/base labels
+MUST be reverified. Production promotion and actual PC2 Desktop qualification
+remain separate gates, and the skipped Rust wire probes are not executed evidence.

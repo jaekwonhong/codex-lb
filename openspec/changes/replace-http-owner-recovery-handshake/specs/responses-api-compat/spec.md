@@ -56,6 +56,15 @@ MUST work without requiring a particular User-Agent spelling.
 - **THEN** the existing proof-gated cross-account replay path is used
 - **AND** `continuity_recovery_required` is not returned
 
+#### Scenario: The owner fails admission after advice was unavailable or stale
+
+- **GIVEN** a native delta depends on a proxy-injected durable response anchor
+- **AND** the initial owner advice times out or does not detect pressure
+- **WHEN** session creation subsequently rejects that owner before upstream dispatch
+- **THEN** the proxy MUST NOT retire the owner or clear the anchor to send the delta on another account
+- **AND** a bounded read-only reassessment that confirms a healthy alternate produces the same recovery-required refusal
+- **AND** absent alternate evidence preserves the ordinary owner-unavailable failure without retirement or a second dispatch
+
 #### Scenario: Explicit client anchor remains fail-closed
 
 - **GIVEN** the client itself supplied `previous_response_id`

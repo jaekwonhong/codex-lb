@@ -38,6 +38,7 @@ def _is_persistence_task(task: asyncio.Task[None], prefixes: tuple[str, ...] | N
 
 
 _REQUEST_TRANSPORT_HTTP = "http"
+_PREFLIGHT_LOG_ACK_TIMEOUT_SECONDS = 1.0
 
 
 def _record_proxy_phase_latency(
@@ -218,6 +219,7 @@ class _RequestLogMixin:
         # span. ``None`` (no terminal frame was parsed) falls back to
         # ``latency_ms``; such rows are error rows and are not sampled.
         latency_upstream_terminal_ms: int | None = None,
+        wait_for_persistence: bool = False,
     ) -> None:
         task = scheduler_for(self).create_task(
             self._persist_request_log(
@@ -271,7 +273,7 @@ class _RequestLogMixin:
             ),
             name=f"proxy-request-log-{request_id}",
         )
-        # Detach unconditionally: the row is observational (dashboards, usage
+        # Detach by default: the row is observational (dashboards, usage
         # aggregation) and nothing on the response path reads it back
         # synchronously — the one post-hoc consumer, the images model
         # rewrite, already retries while the row is missing. Awaiting the
@@ -350,6 +352,19 @@ class _RequestLogMixin:
             queued_wait_ms=queued_wait_ms,
             retried=upstream_retried,
         )
+        if wait_for_persistence:
+            # A terminal local continuity refusal needs acknowledged attribution
+            # when the store is healthy. Bound only the wait, not the tracked
+            # insert: a timeout or caller cancellation must not cancel, duplicate
+            # or orphan persistence, nor defer reservation cleanup indefinitely.
+            try:
+                await scheduler_for(self).wait_for(asyncio.shield(task), timeout=_PREFLIGHT_LOG_ACK_TIMEOUT_SECONDS)
+            except TimeoutError:
+                logger.warning("Preflight request log acknowledgement timed out request_id=%s", request_id)
+            except Exception:
+                # The persistence body/tracking callback already logs the error.
+                # Observability failure must not replace the original refusal.
+                pass
 
     async def drain_persistence_tasks(
         self,
@@ -561,6 +576,7 @@ class _RequestLogMixin:
         useragent_group: str | None = None,
         conversation_id: str | None = None,
         client_ip: str | None = None,
+        wait_for_persistence: bool = False,
     ) -> None:
         await self._write_request_log(
             affinity_observation=affinity_observation,
@@ -582,4 +598,5 @@ class _RequestLogMixin:
             useragent_group=useragent_group,
             conversation_id=conversation_id,
             client_ip=client_ip,
+            wait_for_persistence=wait_for_persistence,
         )
