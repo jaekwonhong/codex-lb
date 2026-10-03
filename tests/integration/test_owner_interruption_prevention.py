@@ -2,19 +2,25 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import update
+from sqlalchemy import select, update
 
 import app.modules.proxy.service as proxy_module
+from app.core.balancer.recovery import OwnerRecoveryHint
 from app.core.utils.time import to_utc_naive, utcnow
-from app.db.models import Account, AccountStatus, UsageHistory
+from app.db.models import Account, AccountStatus, HttpBridgeSessionState, RequestLog, UsageHistory
 from app.db.session import SessionLocal
 from app.dependencies import get_proxy_service_for_app
 from app.modules.proxy._service.http_bridge import streaming as bridge_streaming
 from app.modules.proxy.account_cache import get_account_selection_cache
+from app.modules.proxy.durable_bridge_coordinator import DurableBridgeLookup
+from app.modules.proxy.durable_bridge_runtime import http_bridge_owner_process_epoch
+from app.modules.proxy.owner_recovery import OwnerRecoveryAdvice
 from tests.integration.test_http_responses_bridge import (
     _cleanup_http_bridge_sessions,  # noqa: F401 -- reuse cancellation-safe test teardown
     _collect_sse_events,
@@ -25,6 +31,105 @@ from tests.integration.test_http_responses_bridge import (
 )
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.asyncio
+async def test_fresh_reattach_delta_route_requires_local_history_and_logs_preflight(
+    async_client,
+    app_instance,
+    monkeypatch,
+):
+    """Reproduce the PC2 HTTP-only failure at the public backend route.
+
+    A fresh process has only durable owner continuity. The client sends a delta,
+    so the proxy injects the stored anchor. The owner is quota-blocked and a
+    healthy alternate exists, but the delta cannot move without losing context.
+    The route must return one explicit recovery-required refusal and must not
+    create an upstream session on either account.
+    """
+
+    _install_bridge_settings(monkeypatch, enabled=True)
+    service = get_proxy_service_for_app(app_instance)
+    thread_id = "thread-local-history-recovery-required"
+    durable_lookup = DurableBridgeLookup(
+        session_id="durable-local-history-recovery",
+        canonical_kind="session_header",
+        canonical_key="sid-local-history-recovery",
+        api_key_scope="__anonymous__",
+        account_id="acc-owner",
+        owner_instance_id="bridge-instance",
+        owner_process_epoch=http_bridge_owner_process_epoch(),
+        owner_epoch=7,
+        lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        state=HttpBridgeSessionState.ACTIVE,
+        latest_turn_state="sid-local-history-recovery",
+        latest_response_id="resp_owner_anchor",
+        model="gpt-5.1",
+    )
+    get_or_create = AsyncMock(side_effect=AssertionError("local-history refusal must precede upstream creation"))
+
+    async def quota_owner_advice(*args, **kwargs):
+        del args, kwargs
+        return OwnerRecoveryAdvice(
+            owner_id="acc-owner",
+            hint=OwnerRecoveryHint("quota_exhausted", time.time() + 3600),
+            alternate_id="acc-alternate",
+        )
+
+    monkeypatch.setattr(bridge_streaming, "assess_owner_recovery", quota_owner_advice)
+    monkeypatch.setattr(service._durable_bridge, "lookup_request_targets", AsyncMock(return_value=durable_lookup))
+    monkeypatch.setattr(service, "_http_bridge_has_live_local_session", AsyncMock(return_value=False))
+    monkeypatch.setattr(service, "_http_bridge_can_forward_to_active_owner", AsyncMock(return_value=False))
+    monkeypatch.setattr(service, "_resolve_file_account_for_responses", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value="acc-owner"))
+    monkeypatch.setattr(service, "_get_or_create_http_bridge_session", get_or_create)
+
+    response = await async_client.post(
+        "/backend-api/codex/responses",
+        json={
+            "model": "gpt-5.1",
+            "instructions": "continue",
+            "stream": True,
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "delta-only continuation"}],
+                }
+            ],
+        },
+        headers={
+            "session_id": "sid-local-history-recovery",
+            "thread-id": thread_id,
+            "user-agent": "Codex Desktop/0.159.2 (Windows; x86_64)",
+        },
+    )
+
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "continuity_recovery_required"
+    assert error["type"] == "server_error"
+    assert "local Codex session history" in error["message"]
+    assert "previous_response_id" not in error
+    get_or_create.assert_not_awaited()
+
+    async with SessionLocal() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(RequestLog).where(
+                        RequestLog.conversation_id == thread_id,
+                        RequestLog.error_code == "continuity_recovery_required",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert len(rows) == 1
+    assert rows[0].status == "error"
+    assert rows[0].account_id is None
+    assert rows[0].model == "gpt-5.1"
 
 
 @pytest_asyncio.fixture

@@ -86,7 +86,6 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _capture_http_bridge_denied_anchor_fence,
     _effective_http_bridge_idle_ttl_seconds,
     _http_bridge_abandonment_may_settle_circuit,
-    _http_bridge_client_full_history_recovery_error,
     _http_bridge_continuity_bound_without_safe_replay,
     _http_bridge_durable_lookup_allows_turn_state_takeover,
     _http_bridge_eventless_budget_seconds,
@@ -113,6 +112,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_should_rollover_after_context_overflow,
     _http_bridge_turn_state_anchor_for_owner_failure,
     _is_missing_durable_bridge_table_error,
+    _local_history_recovery_required_error,
     _log_http_bridge_event,
     _make_http_bridge_session_header_fallback_key,
     _make_http_bridge_session_key,
@@ -309,6 +309,7 @@ ACCOUNT_NEUTRAL_REPLAY_REJECTIONS: frozenset[str] = frozenset(
 # get a request-log row; other pre-submit codes keep their existing behaviour.
 _HTTP_BRIDGE_CONTINUITY_OWNER_ERROR_CODES = frozenset(
     {
+        "continuity_recovery_required",
         "previous_response_owner_unavailable",
         "continuity_owner_conflict",
     }
@@ -2564,33 +2565,34 @@ class _HTTPBridgeStreamingMixin:
                 ):
                     # The client did not name the exhausted owner's response;
                     # the bridge injected that anchor while freshly reattaching
-                    # a durable session/thread delta. A healthy alternate
-                    # exists, but this delta alone is not portable across
-                    # accounts. Use the
-                    # Responses recovery contract instead of a 502 retry loop:
-                    # native Codex drops its retained anchor and resends its
-                    # complete local history, which the proof-gated path above
-                    # can then project and admit on the alternate account.
+                    # a durable session/thread delta. A healthy alternate exists,
+                    # but this delta alone is not portable across accounts. PC2
+                    # production proved that native Codex over the Beta HTTP-only
+                    # path does not rebuild full history from a synthetic
+                    # previous_response_not_found response; it surfaces the error
+                    # and repeats another delta. Do not depend on that unverified
+                    # client behaviour. Refuse before dispatch with an explicit
+                    # local-history recovery contract instead.
                     #
                     # This is intentionally narrower than clearing the anchor
                     # and dispatching the current body: doing that would lose
                     # context.  Client-supplied previous_response_id and
                     # file/account-bound turns remain fail-closed below.
                     _log_http_bridge_event(
-                        "owner_pressure_client_full_history_recovery",
+                        "owner_pressure_local_history_recovery_required",
                         bridge_session_key,
                         account_id=request_state.preferred_account_id,
                         model=effective_payload.model,
-                        detail=f"reason={advice.hint.reason}, outcome=request_full_history_resend",
+                        detail=f"reason={advice.hint.reason}, outcome=local_history_recovery_required",
                         cache_key_family=bridge_session_key.affinity_kind,
                         model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
                         owner_check_applied=True,
                     )
                     raise ProxyResponseError(
-                        400,
-                        _http_bridge_client_full_history_recovery_error(),
+                        409,
+                        _local_history_recovery_required_error(),
                         failure_phase="pre_dispatch",
-                        failure_detail="client_full_history_recovery",
+                        failure_detail="local_history_recovery_required",
                         local_pre_dispatch_refusal=True,
                     )
                 # Cached sockets must not bypass fresh, confirmed admission

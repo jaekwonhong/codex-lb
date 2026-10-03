@@ -28728,16 +28728,17 @@ async def test_stream_via_http_bridge_recovers_dead_owner_with_replayable_full_r
 
 
 @pytest.mark.asyncio
-async def test_fresh_reattach_delta_requests_client_full_history_when_owner_quota_is_exhausted(
+async def test_fresh_reattach_delta_requires_local_history_recovery_when_owner_quota_is_exhausted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A durable reattach delta must not spin forever on an exhausted owner.
+    """A durable reattach delta must fail explicitly instead of soliciting history.
 
     This reproduces the PC2 production shape: the client sends no explicit
     previous_response_id, the bridge injects the durable anchor, that owner is
     quota-blocked, and another account is available.  The delta cannot safely
-    move by itself, so the bridge asks native Codex for its full local history
-    instead of returning the retry-preserving 502 indefinitely.
+    move by itself, and native Codex HTTP did not reconstruct full history from
+    a previous_response_not_found response in production.  The bridge therefore
+    stops before upstream dispatch and requires local-history recovery.
     """
 
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
@@ -28769,7 +28770,7 @@ async def test_fresh_reattach_delta_requests_client_full_history_when_owner_quot
         latest_response_id="resp_owner_anchor",
         model="gpt-5.4",
     )
-    get_or_create = AsyncMock(side_effect=AssertionError("recovery handshake must happen before upstream creation"))
+    get_or_create = AsyncMock(side_effect=AssertionError("recovery refusal must happen before upstream creation"))
 
     async def quota_owner_advice(*args: Any, **kwargs: Any) -> OwnerRecoveryAdvice:
         del args, kwargs
@@ -28823,12 +28824,12 @@ async def test_fresh_reattach_delta_requests_client_full_history_when_owner_quot
     with pytest.raises(ProxyResponseError) as exc_info:
         _ = [chunk async for chunk in stream]
 
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.payload["error"]["type"] == "invalid_request_error"
-    assert exc_info.value.payload["error"]["code"] == "previous_response_not_found"
-    assert exc_info.value.payload["error"]["param"] == "previous_response_id"
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.payload["error"]["type"] == "server_error"
+    assert exc_info.value.payload["error"]["code"] == "continuity_recovery_required"
+    assert "previous_response_id" not in exc_info.value.payload["error"]
     assert exc_info.value.failure_phase == "pre_dispatch"
-    assert exc_info.value.failure_detail == "client_full_history_recovery"
+    assert exc_info.value.failure_detail == "local_history_recovery_required"
     assert exc_info.value.local_pre_dispatch_refusal is True
     get_or_create.assert_not_awaited()
 

@@ -793,6 +793,25 @@ def _http_bridge_client_full_history_recovery_error() -> OpenAIErrorEnvelope:
     return payload
 
 
+def _local_history_recovery_required_error() -> OpenAIErrorEnvelope:
+    """Return a non-retry contract when only local Codex history can recover.
+
+    This is deliberately distinct from ``previous_response_not_found``.  Native
+    Codex HTTP clients are not assumed to rebuild a full conversation from that
+    upstream-style error, and replaying the current delta without its owner would
+    silently lose context.
+    """
+    return openai_error(
+        "continuity_recovery_required",
+        (
+            "Continuation owner is unavailable and this HTTP delta cannot be moved safely. "
+            "Retrying the same request cannot reconstruct the missing context; recover the "
+            "conversation from local Codex session history."
+        ),
+        error_type="server_error",
+    )
+
+
 def _proxy_admission_wait_timeout_seconds() -> float:
     return cast(Callable[[], float], _service_global("_proxy_admission_wait_timeout_seconds"))()
 

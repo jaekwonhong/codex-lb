@@ -8496,26 +8496,10 @@ def _stream_startup_error_response(
 ) -> JSONResponse:
     if isinstance(error, ProxyResponseError):
         envelope = _parse_error_envelope(error.payload)
-        native_full_history_recovery = (
-            error.local_pre_dispatch_refusal
-            and error.failure_detail == "client_full_history_recovery"
-            and request.url.path.rstrip("/") == "/backend-api/codex/responses"
-            and _is_native_codex_request(request.headers)
+        status_code, envelope = _mask_previous_response_not_found_error(
+            envelope,
+            default_status=error.status_code,
         )
-        if native_full_history_recovery:
-            # This is not an upstream stale-anchor leak. The HTTP bridge
-            # deliberately rejected a quota-bound durable delta *before any
-            # upstream dispatch* so native Codex can drop the proxy-injected
-            # previous_response_id and resend its complete local history.
-            # Preserve the normal public mask for every upstream-originated,
-            # /v1, SDK, and unmarked previous_response_not_found error.
-            status_code = error.status_code
-            envelope = _sanitize_public_error_envelope(envelope)
-        else:
-            status_code, envelope = _mask_previous_response_not_found_error(
-                envelope,
-                default_status=error.status_code,
-            )
         startup_headers = dict(headers)
         retry_after_header = _safe_retry_after_header(
             {"Retry-After": error.retry_after_header} if error.retry_after_header is not None else None
