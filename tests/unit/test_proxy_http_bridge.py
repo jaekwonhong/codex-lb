@@ -28827,12 +28827,12 @@ async def test_fresh_reattach_delta_requires_local_history_recovery_when_owner_q
     with pytest.raises(ProxyResponseError) as exc_info:
         _ = [chunk async for chunk in stream]
 
-    if sdk_contract:
-        # Native identity alone cannot change the /v1 or SDK SSE contract.
-        assert exc_info.value.status_code == 502
-        assert exc_info.value.payload["error"]["code"] == "previous_response_owner_unavailable"
-        get_or_create.assert_not_awaited()
-        return
+    # This helper exercises the backend Codex bridge contract directly
+    # (codex_session_affinity=True), not /v1.  Desktop may carry Stainless
+    # implementation metadata on that route, but the native backend identity
+    # remains authoritative for the pre-dispatch recovery refusal.  /v1 keeps
+    # codex_session_affinity=False and is covered by the recovery-contract
+    # boundary tests.
     assert exc_info.value.status_code == 400
     assert exc_info.value.payload["error"]["type"] == "invalid_request_error"
     assert exc_info.value.payload["error"]["code"] == "continuity_recovery_required"

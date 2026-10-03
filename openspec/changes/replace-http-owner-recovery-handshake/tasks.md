@@ -128,4 +128,28 @@ final Stage-1 product-path qualification.
 - [ ] 8.10 After separate production-promotion authorization, promote that new
   derivative and re-run `01a10030-...` one final time from the real PC2 Desktop.
   Promotion to `sha256:8a59f620...` is complete and post-promotion qualification
-  passed; only the real PC2 retest remains pending.
+  passed, but the real PC2 retest returned `502 previous_response_owner_unavailable`;
+  this candidate is therefore disqualified as the final Stage-1 image.
+
+## 9. Known explicit-anchor owner follow-up
+
+- [x] 9.1 Capture the third real PC2 failure on `01a10030-...`: request
+  `8f866516-...` returned 502 after promotion of `8a59f620...`.
+- [x] 9.2 Trace the failure to the owner-recovery advice branch: the native
+  delta predicate excluded client-supplied `previous_response_id`, so a known
+  unavailable owner fell through to the legacy 502.
+- [x] 9.3 Extend strong native identity to backend session-affinity requests that
+  use native Codex UA plus stable thread/session identity when originator is
+  absent; keep `/v1`, ordinary SDK, and turn-state-only requests excluded.
+- [x] 9.4 Make native explicit-anchor delta-only turns return the same local
+  recovery-required refusal after the bounded short-hold window while preserving
+  verified full-resend, file-bound, non-native, and ambiguous-dispatch behavior.
+- [x] 9.5 Add/adjust regressions for Desktop 0.160 explicit-anchor delta-only,
+  strong-identity boundaries, and backend SDK-compatible wire selection.
+- [x] 9.6 Rerun qualification: owner suite 34 PASS; core 1,282 PASS; extended
+  routes 355 PASS + 319 external-binary SKIPs; Ruff/format/typing/architecture/
+  cancellation/diff PASS; OpenSpec 156/156 PASS.
+- [ ] 9.7 Commit/integrate this correction and build a new minimal derivative
+  from the exact running `8a59f620...` production base.
+- [ ] 9.8 After a new explicit promotion approval, promote that derivative and
+  re-run the real PC2 conversation once more before closing Stage 1.

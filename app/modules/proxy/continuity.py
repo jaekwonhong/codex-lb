@@ -37,6 +37,7 @@ def native_codex_recovery_contract(
     headers: Mapping[str, str],
     *,
     enforce_openai_sdk_contract: bool,
+    codex_session_affinity: bool,
 ) -> bool:
     """Return whether native-only continuity recovery applies to this request.
 
@@ -47,7 +48,7 @@ def native_codex_recovery_contract(
     lookalikes do not gain this exemption.
     """
 
-    if not _is_native_codex_request(headers):
+    if not codex_session_affinity or not _is_native_codex_request(headers):
         return False
     if not enforce_openai_sdk_contract:
         return True
@@ -55,7 +56,18 @@ def native_codex_recovery_contract(
         (value for key, value in headers.items() if key.lower() == "originator"),
         None,
     )
-    return bool(originator) and _is_native_codex_request({"originator": originator})
+    if bool(originator) and _is_native_codex_request({"originator": originator}):
+        return True
+    # First-party Desktop can omit originator while still carrying a stable
+    # backend thread identity.  Do not use turn-state alone here: ordinary SDK
+    # clients can replay that compatibility token.  A native Codex UA plus one
+    # of these backend conversation/session identities is the narrow fallback.
+    return any(
+        key.lower() in {"thread-id", "x-codex-conversation-id", "x-codex-session-id"}
+        and isinstance(value, str)
+        and bool(value.strip())
+        for key, value in headers.items()
+    )
 
 
 def local_history_recovery_required_error() -> OpenAIErrorEnvelope:

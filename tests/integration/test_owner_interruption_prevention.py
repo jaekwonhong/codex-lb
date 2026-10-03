@@ -153,8 +153,8 @@ async def test_sdk_explicit_previous_response_lookup_miss_keeps_existing_stream_
         ({"user-agent": "openai-python/2.0"}, 502, "previous_response_owner_unavailable", "early"),
         (
             {"user-agent": "Codex Desktop/0.159.2", "x-stainless-lang": "python"},
-            502,
-            "previous_response_owner_unavailable",
+            400,
+            "continuity_recovery_required",
             "early",
         ),
         ({"user-agent": "Codex Desktop/0.159.2"}, 400, "continuity_recovery_required", "timeout"),
@@ -628,6 +628,34 @@ async def test_blocked_unmovable_turn_never_dispatches_to_either_account(
     error = response.json()["error"]
     assert error["code"] == "previous_response_owner_unavailable"
     assert error["resets_at"] == case.now + 31
+    assert len(case.original.sent_text) == 1
+    assert case.replacement.sent_text == []
+    assert all(runtime.inflight_response_creates == 0 for runtime in case.service._load_balancer._runtime.values())
+
+
+@pytest.mark.asyncio
+async def test_native_desktop_explicit_anchor_owner_pressure_requires_local_history(
+    pressured_continuation,
+):
+    case = pressured_continuation
+    case.body["previous_response_id"] = case.first["id"]
+    case.body["input"] = [case.body["input"][-1]]
+    response = await case.client.post(
+        "/backend-api/codex/responses",
+        json=case.body,
+        headers={
+            **case.headers,
+            "user-agent": "Codex Desktop/0.160.0 (Windows 10.0.26200; x86_64)",
+            "thread-id": "thread-native-explicit-anchor-pressure",
+            "x-stainless-lang": "rust",
+        },
+    )
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["type"] == "invalid_request_error"
+    assert error["code"] == "continuity_recovery_required"
+    assert response.headers["x-should-retry"] == "false"
+    assert "retry-after" not in response.headers
     assert len(case.original.sent_text) == 1
     assert case.replacement.sent_text == []
     assert all(runtime.inflight_response_creates == 0 for runtime in case.service._load_balancer._runtime.values())

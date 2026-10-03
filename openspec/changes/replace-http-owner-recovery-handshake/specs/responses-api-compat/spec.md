@@ -85,20 +85,29 @@ MUST work without requiring a particular User-Agent spelling.
 #### Scenario: Native Codex carries SDK-compatible transport metadata
 
 - **GIVEN** the same explicit previous-response owner-proof-loss case
-- **AND** the backend request is first-party Codex by a recognized native `originator`
+- **AND** the request is on the backend Codex session-affinity route
+- **AND** first-party Codex identity is proven either by a recognized native
+  `originator`, or by a native Codex User-Agent together with a stable backend
+  conversation/session identity (`thread-id`, `x-codex-conversation-id`, or
+  `x-codex-session-id`)
 - **AND** the request also carries SDK-compatible transport metadata that causes the public response layer to select its SDK-compatible wire contract
 - **WHEN** HTTP-bridge admission evaluates whether the anchored continuation can move
-- **THEN** the native `originator` remains authoritative for this narrow pre-dispatch recovery decision
+- **THEN** that strong native backend identity remains authoritative for this narrow pre-dispatch recovery decision
 - **AND** the proxy returns the same HTTP 400 `continuity_recovery_required` refusal
-- **AND** a request that merely looks Codex-like by User-Agent but lacks a recognized native originator does not gain this exception
+- **AND** a User-Agent-only lookalike, turn-state-only request, ordinary SDK, or
+  request outside Codex session-affinity does not gain this exception
 
-#### Scenario: Explicit client anchor still has a known owner
+#### Scenario: Native explicit client anchor has a known but unavailable owner
 
 - **GIVEN** the client itself supplied `previous_response_id`
 - **AND** the proxy can still prove the required owner inside the current API-key scope
-- **WHEN** that known owner is unavailable and no existing safe replay rule applies
-- **THEN** the existing owner-unavailable or proof-gated recovery behavior is preserved
-- **AND** owner proof is not discarded merely to obtain a local-history recovery response
+- **AND** the request is a native backend Codex delta rather than a verified complete account-neutral resend
+- **AND** no file/account-scoped constraint requires a separate owner
+- **WHEN** that known owner remains unavailable after the bounded short-hold recovery window
+- **THEN** the proxy preserves the explicit anchor and owner proof but returns HTTP 400 `continuity_recovery_required`
+- **AND** the proxy does not advertise an open-ended retry loop or dispatch the delta to another account
+- **AND** a verified full resend keeps the existing proof-gated replay behavior
+- **AND** non-native, file-bound, post-dispatch, or ambiguous-dispatch cases retain their existing fail-closed contract
 
 #### Scenario: SDK owner failure does not become a native recovery command
 

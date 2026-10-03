@@ -1343,6 +1343,7 @@ class _StreamingRetryMixin:
                         if native_codex_recovery_contract(
                             headers,
                             enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+                            codex_session_affinity=codex_session_affinity,
                         ):
                             refusal = local_history_recovery_refusal()
                             detail = refusal.payload.get("error")

@@ -402,3 +402,53 @@ recreation lock.
 
 Stage 2 remains blocked on one final real PC2 retest of conversation
 `01a10030-...` against this promoted candidate.
+
+### Third actual PC2 Desktop retest: known explicit anchor owner
+
+The real PC2 conversation was re-run after promotion of `sha256:8a59f620...`.
+At 2026-10-03 11:55:31 UTC request
+`8f866516-0fb2-4816-9477-1545a0608445` still returned
+`502 previous_response_owner_unavailable` with `account_id=NULL`. The request
+used API key `ee0a3000-...`; the latest successful response in the same
+conversation had used API key `1c6c7caa-...` and account `_992e5245`.
+The admission trace again showed `smart_session`, but that label is only the
+transport-policy decision, not the error producer.
+
+The remaining defect was deeper in HTTP-bridge owner recovery. Codex Desktop
+0.160 sends an explicit `previous_response_id` on this continuation. Once owner
+recovery advice confirmed the known owner remained unavailable beyond the bounded
+short-hold window, `native_delta_requires_owner()` excluded the request because
+that predicate intentionally required `payload.previous_response_id is None`.
+The request therefore fell through to `_http_bridge_previous_response_owner_unavailable_error()`
+and advertised another retryable-looking 502 even though repeating the same
+explicit anchored delta could not make its owner portable.
+
+The corrected boundary is now:
+
+- recognized backend Codex session-affinity is mandatory;
+- when the public layer selects an SDK-compatible wire contract, native identity
+  requires either a recognized native originator or a native Codex User-Agent
+  plus a stable backend thread/session identity;
+- a native explicit-anchor **delta-only** continuation with a known unavailable
+  owner becomes local `400 continuity_recovery_required` after the bounded
+  short-hold window;
+- the explicit anchor and owner proof are preserved; no cross-account dispatch
+  occurs;
+- verified full resend, file/account-bound, non-native, `/v1`, and ambiguous or
+  post-dispatch cases retain their existing contracts.
+
+Validation of this corrected tree:
+
+- owner-interruption suite: 34 PASS
+- core native/SDK/bridge/ownership/source matrix: 1,282 PASS
+- extended HTTP/native-egress/model-source routes: 355 PASS, 319 SKIP for the
+  unconfigured external native-egress binary, 0 FAIL
+- Ruff, format, targeted typing, proxy architecture, cancellation-safety and
+  `git diff --check`: PASS
+- changed OpenSpec CI: 7 PASS
+- strict changed-spec validation: PASS; complete OpenSpec validation: 156 PASS,
+  0 FAIL
+
+The running production Beta remains the operationally healthy but Stage-1-
+disqualified `sha256:8a59f620...` image. This latest correction has not been
+committed, packaged, or promoted yet.

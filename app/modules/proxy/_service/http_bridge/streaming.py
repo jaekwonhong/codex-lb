@@ -2483,11 +2483,31 @@ class _HTTPBridgeStreamingMixin:
                 and native_codex_recovery_contract(
                     headers,
                     enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+                    codex_session_affinity=codex_session_affinity,
                 )
                 and payload.previous_response_id is None
                 and rewritten_file_account_id is None
                 and request_state.proxy_injected_previous_response_id
                 and request_state.previous_response_id is not None
+                and turn_is_unsubmitted(request_state)
+                and not durable_full_resend_allows_account_neutral_replay()
+            )
+
+        def native_explicit_anchor_requires_local_recovery() -> bool:
+            """Stop retrying a native explicit anchor after owner recovery is no longer short."""
+
+            return (
+                not forwarded_request
+                and not account_neutral_recovery
+                and native_codex_recovery_contract(
+                    headers,
+                    enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+                    codex_session_affinity=codex_session_affinity,
+                )
+                and payload.previous_response_id is not None
+                and request_state.previous_response_id is not None
+                and not request_state.proxy_injected_previous_response_id
+                and rewritten_file_account_id is None
                 and turn_is_unsubmitted(request_state)
                 and not durable_full_resend_allows_account_neutral_replay()
             )
@@ -2600,6 +2620,14 @@ class _HTTPBridgeStreamingMixin:
                     ):
                         yield line
                     continue
+                if native_explicit_anchor_requires_local_recovery():
+                    # Current Codex Desktop sends an explicit anchor on normal
+                    # continuation turns.  Once the known owner cannot recover
+                    # inside the bounded short-hold window, repeating this exact
+                    # request cannot make the anchor portable.  Preserve the
+                    # anchor/owner proof and terminate locally instead of
+                    # advertising an open-ended 502 retry loop.
+                    raise local_history_recovery_refusal(advice.hint.reason)
                 if advice.alternate_id is not None and native_delta_requires_owner():
                     # The client did not name the exhausted owner's response;
                     # the bridge injected that anchor while freshly reattaching
@@ -2657,6 +2685,7 @@ class _HTTPBridgeStreamingMixin:
                 and native_codex_recovery_contract(
                     headers,
                     enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+                    codex_session_affinity=codex_session_affinity,
                 )
                 and payload.previous_response_id is not None
                 and request_state.previous_response_id is not None

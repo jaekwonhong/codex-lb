@@ -15,8 +15,45 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _is_local_history_recovery_required,
     _local_history_recovery_required_error,
 )
+from app.modules.proxy.continuity import native_codex_recovery_contract
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    ("headers", "sdk_wire", "session_affinity", "expected"),
+    [
+        (
+            {
+                "user-agent": "Codex Desktop/0.160.0 (Windows 10.0.26200; x86_64)",
+                "thread-id": "thread-native-desktop",
+            },
+            True,
+            True,
+            True,
+        ),
+        ({"user-agent": "Codex Desktop/0.160.0"}, True, True, False),
+        ({"originator": "codex_cli_rs"}, True, True, True),
+        ({"user-agent": "openai-python/2.0", "thread-id": "spoofed-thread"}, True, True, False),
+        (
+            {"user-agent": "Codex Desktop/0.160.0", "thread-id": "thread-v1-like"},
+            True,
+            False,
+            False,
+        ),
+    ],
+)
+def test_native_recovery_contract_strong_identity_boundary(
+    headers: dict[str, str], sdk_wire: bool, session_affinity: bool, expected: bool
+) -> None:
+    assert (
+        native_codex_recovery_contract(
+            headers,
+            enforce_openai_sdk_contract=sdk_wire,
+            codex_session_affinity=session_affinity,
+        )
+        is expected
+    )
 
 
 def _local_refusal() -> ProxyResponseError:
