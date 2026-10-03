@@ -177,7 +177,9 @@ final Stage-1 product-path qualification.
 - [x] 10.6 Requalify: core 1,284 PASS; affected extended tests PASS (one full-run
   setup was interrupted only by host disk-full and passed alone on rerun);
   Ruff/format/typing/architecture/cancellation/change validation PASS.
-- [ ] 10.7 Commit/integrate the scope-loss correction and build a minimal
-  derivative from exact running `291a47e3...` production base.
+- [x] 10.7 Commit/integrate the scope-loss correction and build a minimal
+  derivative from exact running `291a47e3...` production base: commit
+  `28c0f34ed`, image `sha256:de38a145...`, one-file source/image hash and
+  in-image scope-loss code smoke verified.
 - [ ] 10.8 After separate promotion authorization, promote that derivative and
   re-run the real PC2 thread before Stage-1 closeout.

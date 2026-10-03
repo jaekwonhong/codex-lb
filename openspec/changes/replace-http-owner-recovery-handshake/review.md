@@ -566,5 +566,31 @@ Validation of this scope-loss correction:
 - Ruff, format, targeted typing, proxy architecture, cancellation-safety,
   changed-spec validation and `git diff --check`: PASS
 
-The running production Beta remains `sha256:291a47e3...`; this scope-loss
-correction has not yet been committed, packaged, or promoted.
+The scope-loss correction was committed as
+`28c0f34edf84bcda1187383873b6e1d0cd572e24` and fast-forwarded locally into
+`codex/main-d1fd-patch-packet-20260917`; no new production promotion was
+performed.
+
+Before packaging, the only changed product file (`http_bridge/streaming.py`) was
+compared between parent source `50032ef97...` and the running production image
+`sha256:291a47e3...`; both SHA-256 values were
+`8624f6046e995eca0039a95d6149c65e178df718700be35e6d083e83e791d428`.
+The resulting minimal candidate is:
+
+- image:
+  `sha256:de38a1453e8a6589a99ef0056a91b64c46b1a0850fdb577ac109c9c7c399698b`
+- revision:
+  `28c0f34edf84bcda1187383873b6e1d0cd572e24`
+- exact base:
+  `sha256:291a47e3050852faa16fe4332515edd64e3012df033207db9d3af8e883bf9827`
+- scope label: `pc2-durable-owner-proof-loss-reviewed`
+- one-file bundle SHA-256:
+  `85b7b15f1fce621dcd0912c8916082f1ef7a486da36e7a85d06ccb2d40716391`
+- `http_bridge/streaming.py` source/image SHA-256:
+  `99133af498020f42a395f0740c8f4dc7cd08d43eb860d4345ae8e84d43995ffb`
+
+The source/image hash matches byte-for-byte. In-image code smoke verified the
+scope-loss gate, the hashed `continuity_owner_proof_missing` refusal reason, the
+local recovery raise, and absence of any cross-API-key lookup implementation in
+the patched bridge method. The running production Beta remains
+`sha256:291a47e3...`; candidate `sha256:de38a145...` is not promoted.
