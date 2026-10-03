@@ -198,5 +198,46 @@ image. In-image smoke reconfirmed HTTP 400 + `continuity_recovery_required` +
 `availability_reason=continuity_recovery_required`, no retry directive, and the
 one-second bounded preflight-log acknowledgement constant.
 
-This image is a **promotion candidate only**. It has not replaced the production
-Beta container, and the actual PC2 Desktop product-path gate remains outstanding.
+### Production Beta promotion
+
+After explicit user authorization, the reviewed candidate was promoted to Beta
+through a one-shot transaction that cloned the running Beta's actual
+Config/HostConfig/mount contract and changed only the image. The repository's
+older `scripts/recreate_beta.sh` was not used because its image/socket/release
+pins no longer describe the current Beta9 production topology.
+
+- promoted Beta container:
+  `2519dacb15ef0ccec8f22c522db81528b633372784e97bde3cfbe31971ef77f4`
+- promoted image:
+  `sha256:c3fdb1b9f9935574476e66d47a401a12f06bdeac836d3cd82fd4f51b3917a34d`
+- retained rollback predecessor:
+  `0d90b2bbc7ec6a521a72baee3793d90dc62857433aef5456d29910f8a6f14eb9`
+  as `codex-lb-beta-pre-continuity-20261003T093239Z-46333`, stopped with
+  `restart=no`
+- Stable remained container `0c717ce1...` on image `sha256:11eb4370...`
+- PostgreSQL remained container `1e42fec6...`, system identifier
+  `7684501606386458669`, Alembic head
+  `20260913_000000_add_oidc_provider_flow`
+
+Post-promotion qualification returned `PASS_PROMOTED_BETA_QUALIFICATION` both
+immediately after cutover and after a Beta-only restart used to clear synthetic
+canary state. Local and tailnet Beta/Stable readiness were all HTTP 200, the four
+runtime application hashes matched the reviewed image, startup/runtime error
+markers were zero, nonterminal durable operations were zero, and unexpired
+session leases were zero. The recreation lock was released normally.
+
+Two server-generated live canaries were attempted while investigating whether the
+Stage-1 branch could be exercised without direct PC2 control. Neither is product
+qualification: the first supplied only an existing turn-state and the second used
+the raw thread id with a synthetic process-session value. Both therefore resolved
+to fresh synthetic continuity identities and completed normally on an active
+account rather than entering the intended fresh-reattach owner-unavailable branch.
+No retained HTTP-bridge operation was created. The two synthetic durable sessions
+and their four aliases were then removed after proving they owned no operation or
+recovery-attempt rows; the original rate-limited target session and its turn-state
+alias remained intact. Beta was restarted on the same promoted container/image to
+clear the in-process registry, and the full post-promotion qualifier passed again.
+
+The actual PC2 Desktop product-path gate therefore remains outstanding. It requires
+the real Desktop process-session identity; synthetic server calls MUST NOT be used
+as a substitute for that evidence.

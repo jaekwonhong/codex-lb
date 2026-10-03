@@ -38,7 +38,7 @@
   Beta base and verify source/image hashes plus the JSON/SSE contracts in-image.
 - [x] 4.1 After explicit commit/integration authorization, rebuild a
   commit-addressable minimal Beta derivative from the corrected source.
-- [ ] 4.2 After explicit production-promotion authorization, preserve the rollback
+- [x] 4.2 After explicit production-promotion authorization, preserve the rollback
   container, wait for a safe cutover boundary, replace Beta, and verify readiness;
   leave Stable untouched.
 
@@ -84,6 +84,15 @@ Pre-promotion corrected source: 1,271 core tests + 355 extended-route tests PASS
 The additional native-egress wire suite has 319 SKIPs due to its unconfigured
 external binary; these are not product-path qualification. Ruff/format/typing,
 architecture, cancellation-safety, diff and OpenSpec (66 specs) all pass.
-Promotion and actual PC2 Desktop qualification remain unchecked in sections 3/4.
+Production promotion is complete; actual PC2 Desktop qualification remains
+unchecked in section 3.6.
 
 - [x] 6.5 Commit/integrate the additional reviewed correction and rebuild/verify the four-file derivative. Replacement commit: `aa059dea8`; image: `sha256:c3fdb1b9...`. The earlier `f51b1047...` image remains disqualified and MUST NOT be reused.
+
+## 7. Production promotion evidence
+
+- [x] 7.1 Promote only Beta to `sha256:c3fdb1b9...` after an idle durable-state gate; keep Stable and PostgreSQL identities unchanged.
+- [x] 7.2 Retain predecessor `0d90b2bb...` stopped with `restart=no` for rollback.
+- [x] 7.3 Verify local and tailnet readiness, exact four-file runtime hashes, PostgreSQL identity/head, zero startup/runtime error markers, zero nonterminal operations, and zero unexpired leases.
+- [x] 7.4 Remove the two non-qualifying synthetic canary sessions/aliases after proving they owned no operation or recovery-attempt rows; restart Beta only and re-run the post-promotion qualifier.
+- [ ] 7.5 Exercise the intended failure lifecycle from the actual PC2 Codex Desktop using its real process-session identity; synthetic HTTP calls do not satisfy this gate.
