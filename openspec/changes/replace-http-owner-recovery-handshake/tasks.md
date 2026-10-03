@@ -149,7 +149,9 @@ final Stage-1 product-path qualification.
 - [x] 9.6 Rerun qualification: owner suite 34 PASS; core 1,282 PASS; extended
   routes 355 PASS + 319 external-binary SKIPs; Ruff/format/typing/architecture/
   cancellation/diff PASS; OpenSpec 156/156 PASS.
-- [ ] 9.7 Commit/integrate this correction and build a new minimal derivative
-  from the exact running `8a59f620...` production base.
+- [x] 9.7 Commit/integrate this correction and build a new minimal derivative
+  from the exact running `8a59f620...` production base: commit `6ff174e73`,
+  candidate `sha256:291a47e3...`, exact-base/source/image hashes and in-image
+  native session-affinity/400-no-retry smoke verified.
 - [ ] 9.8 After a new explicit promotion approval, promote that derivative and
   re-run the real PC2 conversation once more before closing Stage 1.

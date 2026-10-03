@@ -449,6 +449,37 @@ Validation of this corrected tree:
 - strict changed-spec validation: PASS; complete OpenSpec validation: 156 PASS,
   0 FAIL
 
+The correction was committed as
+`6ff174e733871d3efefa53838a7c22c9b68031b7` and fast-forwarded locally into
+`codex/main-d1fd-patch-packet-20260917`; no remote push was performed.
+
+Before packaging, the three changed application files were compared between
+parent source `515fb16a5...` and the running production image
+`sha256:8a59f620...`; every SHA-256 matched. The new unpromoted candidate is:
+
+- image:
+  `sha256:291a47e3050852faa16fe4332515edd64e3012df033207db9d3af8e883bf9827`
+- revision:
+  `6ff174e733871d3efefa53838a7c22c9b68031b7`
+- exact base:
+  `sha256:8a59f62018a4f6209ed4aa5dcc517bea707fb5a223241b5aeeab12f4a6fe5612`
+- scope label: `pc2-native-explicit-owner-recovery-reviewed`
+- three-file bundle SHA-256:
+  `55244fde2168623a6373b1857c289fd1e04017ef8e6b62e1f299436ccb950d1e`
+- `continuity.py`:
+  `ed06a87ab70d0061187f1659beaaaf75c23ec50872b2809f36870062871034ca`
+- HTTP-bridge `streaming.py`:
+  `8624f6046e995eca0039a95d6149c65e178df718700be35e6d083e83e791d428`
+- raw streaming `retry.py`:
+  `4241f533e9ec8fea91f3b93f9f10cc4d01761ac89c561e97df2f049a3cd2bd4b`
+
+All three source/image hashes match byte-for-byte. In-image smoke reconfirmed
+the strong native session-affinity boundary: native Codex UA plus real thread
+identity qualifies even under SDK-compatible wire selection, whereas UA-only,
+ordinary SDK, and non-session-affinity requests do not. The same smoke returned
+HTTP 400 `continuity_recovery_required`, `x-should-retry:false`, and no
+Retry-After / Retry-After-Ms.
+
 The running production Beta remains the operationally healthy but Stage-1-
-disqualified `sha256:8a59f620...` image. This latest correction has not been
-committed, packaged, or promoted yet.
+disqualified `sha256:8a59f620...` image. Candidate `sha256:291a47e3...` has not
+been promoted and still requires a new explicit production-promotion approval.
