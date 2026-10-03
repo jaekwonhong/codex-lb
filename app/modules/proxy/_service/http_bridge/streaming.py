@@ -264,6 +264,7 @@ from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
 from app.modules.proxy.continuity import (
     is_http_bridge_account_neutral_replay,
     make_http_bridge_account_neutral_replay_key,
+    native_codex_recovery_contract,
     resolve_required_account_id,
     without_http_bridge_session_affinity_headers,
 )
@@ -2479,8 +2480,10 @@ class _HTTPBridgeStreamingMixin:
             return (
                 not forwarded_request
                 and not account_neutral_recovery
-                and not enforce_openai_sdk_contract
-                and _is_native_codex_request(headers)
+                and native_codex_recovery_contract(
+                    headers,
+                    enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+                )
                 and payload.previous_response_id is None
                 and rewritten_file_account_id is None
                 and request_state.proxy_injected_previous_response_id
@@ -2651,8 +2654,10 @@ class _HTTPBridgeStreamingMixin:
         if required_continuity_owner_missing:
             if (
                 not forwarded_request
-                and not enforce_openai_sdk_contract
-                and _is_native_codex_request(headers)
+                and native_codex_recovery_contract(
+                    headers,
+                    enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+                )
                 and payload.previous_response_id is not None
                 and request_state.previous_response_id is not None
                 and request_state.preferred_account_id is None

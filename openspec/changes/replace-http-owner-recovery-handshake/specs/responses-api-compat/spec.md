@@ -82,6 +82,16 @@ MUST work without requiring a particular User-Agent spelling.
 - **AND** the response says `x-should-retry: false` and advertises no Retry-After
 - **AND** the proxy neither performs a cross-API-key owner lookup nor dispatches the request
 
+#### Scenario: Native Codex carries SDK-compatible transport metadata
+
+- **GIVEN** the same explicit previous-response owner-proof-loss case
+- **AND** the backend request is first-party Codex by a recognized native `originator`
+- **AND** the request also carries SDK-compatible transport metadata that causes the public response layer to select its SDK-compatible wire contract
+- **WHEN** HTTP-bridge admission evaluates whether the anchored continuation can move
+- **THEN** the native `originator` remains authoritative for this narrow pre-dispatch recovery decision
+- **AND** the proxy returns the same HTTP 400 `continuity_recovery_required` refusal
+- **AND** a request that merely looks Codex-like by User-Agent but lacks a recognized native originator does not gain this exception
+
 #### Scenario: Explicit client anchor still has a known owner
 
 - **GIVEN** the client itself supplied `previous_response_id`

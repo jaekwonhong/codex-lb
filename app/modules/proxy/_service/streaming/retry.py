@@ -99,7 +99,11 @@ from app.modules.proxy.affinity import (
 )
 from app.modules.proxy.affinity_observation import AffinityObservation
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
-from app.modules.proxy.continuity import local_history_recovery_refusal, resolve_required_account_id
+from app.modules.proxy.continuity import (
+    local_history_recovery_refusal,
+    native_codex_recovery_contract,
+    resolve_required_account_id,
+)
 from app.modules.proxy.helpers import (
     _apply_error_metadata,
     _is_account_model_unsupported_error,
@@ -1336,7 +1340,10 @@ class _StreamingRetryMixin:
                         account_ids=None,
                     )
                     if len(selection_inputs.accounts) != 1:
-                        if preserve_native_failure_lifecycle:
+                        if native_codex_recovery_contract(
+                            headers,
+                            enforce_openai_sdk_contract=enforce_openai_sdk_contract,
+                        ):
                             refusal = local_history_recovery_refusal()
                             detail = refusal.payload.get("error")
                             message = (

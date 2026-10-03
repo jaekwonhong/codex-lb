@@ -324,7 +324,37 @@ Startup-log qualification found no actual `ERROR`, `FATAL`, `PANIC`,
 case-insensitive grep counted four lines only because the Uvicorn logger is named
 `uvicorn.error`; those lines were ordinary INFO startup messages.
 
-The remaining Stage-1 gate is to re-run the real PC2 Codex Desktop 0.160
-conversation `01a10030-...` and confirm that the same explicit-owner-proof-loss
-path now terminates as HTTP 400 `continuity_recovery_required` without upstream
-dispatch or a retry loop.
+The real PC2 Codex Desktop 0.160 conversation `01a10030-...` was re-run after
+this promotion. At 2026-10-03 11:16:30 UTC the request still terminated as
+`502 previous_response_owner_unavailable` on Beta, with `account_id=NULL` and
+`http_bridge_routing stage=admission reason=smart_session`. This second product-
+path result disqualifies `sha256:b57e00a8...` as the final Stage-1 image even
+though its deployment/runtime qualification remained healthy.
+
+Source review isolated the remaining bypass to the HTTP-bridge recovery gate.
+The raw HTTP fallback had already adopted a strong native-recovery predicate,
+but the bridge still required `not enforce_openai_sdk_contract` before allowing
+the local recovery refusal. Codex Desktop 0.160 is a recognized first-party
+native client while also being able to select the SDK-compatible public wire
+contract, so the bridge skipped the native refusal and surfaced the legacy 502.
+
+The follow-up correction introduces one shared `native_codex_recovery_contract`
+predicate. Native identity remains required. When the public layer selected the
+SDK-compatible wire contract, only a recognized native `originator` can retain
+the native recovery contract; a User-Agent-only lookalike remains excluded. The
+same predicate is now used by fresh durable reattach, explicit-anchor bridge
+admission, and the raw-HTTP fallback.
+
+Validation after this second product-path correction:
+
+- owner-interruption suite: 33 PASS, including bridge enabled/disabled with and
+  without SDK-compatible request metadata
+- core native/SDK/bridge/ownership/source matrix: 1,276 PASS
+- extended HTTP/native-egress/model-source routes: 355 PASS, 319 SKIP for the
+  unconfigured external native-egress binary, 0 FAIL
+- Ruff, format, targeted typing and `git diff --check`: PASS
+
+Production remains on the healthy-but-disqualified `b57e00a8...` image until a
+new derivative is committed, built, reviewed and separately authorized for
+promotion. Stage 2 remains blocked on one final real PC2 retest of that next
+candidate.

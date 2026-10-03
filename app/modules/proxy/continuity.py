@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from hashlib import sha256
 from typing import Protocol
 
-from app.core.clients.proxy import ProxyResponseError
+from app.core.clients.proxy import ProxyResponseError, _is_native_codex_request
 from app.core.errors import OpenAIErrorEnvelope, openai_error
 
 HTTP_BRIDGE_ACCOUNT_NEUTRAL_REPLAY_KIND = "internal_unanchored_parallel"
@@ -31,6 +31,31 @@ _HTTP_BRIDGE_SESSION_AFFINITY_HEADERS = frozenset(
     }
 )
 logger = logging.getLogger("app.modules.proxy.continuity")
+
+
+def native_codex_recovery_contract(
+    headers: Mapping[str, str],
+    *,
+    enforce_openai_sdk_contract: bool,
+) -> bool:
+    """Return whether native-only continuity recovery applies to this request.
+
+    Some first-party Codex clients carry SDK implementation metadata, so the
+    public response normalizer can conservatively select the SDK-compatible
+    wire contract.  A native ``originator`` remains a stronger first-party
+    identity signal for this narrow pre-dispatch recovery decision.  UA-only
+    lookalikes do not gain this exemption.
+    """
+
+    if not _is_native_codex_request(headers):
+        return False
+    if not enforce_openai_sdk_contract:
+        return True
+    originator = next(
+        (value for key, value in headers.items() if key.lower() == "originator"),
+        None,
+    )
+    return bool(originator) and _is_native_codex_request({"originator": originator})
 
 
 def local_history_recovery_required_error() -> OpenAIErrorEnvelope:

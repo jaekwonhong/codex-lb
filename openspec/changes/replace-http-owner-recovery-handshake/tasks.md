@@ -113,6 +113,15 @@ final Stage-1 product-path qualification.
   commit-addressable Beta derivative: commit `677128a72`, image
   `sha256:b57e00a8...`, exact base `sha256:c3fdb1b9...`; source/image hashes and
   in-image 400/no-retry contract verified.
-- [ ] 8.7 Promote the new candidate after separate authorization, then re-run
-  the same actual PC2 Desktop thread path. Promotion is complete on
-  `sha256:b57e00a8...`; the real PC2 re-test remains pending.
+- [x] 8.7 Promote `sha256:b57e00a8...` after separate authorization and re-run
+  the same actual PC2 Desktop thread path. The real 0.160 request still returned
+  `502 previous_response_owner_unavailable`, so this image is disqualified as
+  the final Stage-1 candidate.
+- [x] 8.8 Replace the bridge's remaining `not enforce_openai_sdk_contract`
+  native gate with the shared strong-originator recovery predicate; preserve the
+  SDK and User-Agent-only boundaries. Owner suite 33 PASS; core matrix 1,276
+  PASS; extended routes 355 PASS + 319 external-binary SKIPs.
+- [ ] 8.9 Commit/integrate this second product-path correction and build a new
+  commit-addressable Beta derivative from the exact running `b57e00a8...` base.
+- [ ] 8.10 After separate production-promotion authorization, promote that new
+  derivative and re-run `01a10030-...` one final time from the real PC2 Desktop.

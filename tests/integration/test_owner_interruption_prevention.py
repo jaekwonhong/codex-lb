@@ -41,8 +41,9 @@ pytestmark = pytest.mark.integration
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bridge_enabled", [True, False])
+@pytest.mark.parametrize("sdk_marker", [False, True])
 async def test_native_explicit_previous_response_lookup_miss_requires_local_history(
-    async_client, app_instance, monkeypatch, bridge_enabled
+    async_client, app_instance, monkeypatch, bridge_enabled, sdk_marker
 ):
     _install_bridge_settings(monkeypatch, enabled=bridge_enabled)
     service = get_proxy_service_for_app(app_instance)
@@ -61,7 +62,15 @@ async def test_native_explicit_previous_response_lookup_miss_requires_local_hist
             AsyncMock(return_value=SimpleNamespace(accounts=[object(), object()])),
         )
 
-    thread_id = f"thread-explicit-owner-miss-{int(bridge_enabled)}"
+    thread_id = f"thread-explicit-owner-miss-{int(bridge_enabled)}-{int(sdk_marker)}"
+    headers = {
+        "user-agent": "Codex Desktop/0.160.0 (Windows 10.0.26200; x86_64)",
+        "originator": "codex_cli_rs",
+        "session_id": "process-session-explicit-owner-miss",
+        "thread-id": thread_id,
+    }
+    if sdk_marker:
+        headers["x-stainless-lang"] = "rust"
     response = await async_client.post(
         "/backend-api/codex/responses",
         json={
@@ -71,12 +80,7 @@ async def test_native_explicit_previous_response_lookup_miss_requires_local_hist
             "previous_response_id": "resp_explicit_owner_miss",
             "input": [{"role": "user", "content": [{"type": "input_text", "text": "delta"}]}],
         },
-        headers={
-            "user-agent": "Codex Desktop/0.160.0 (Windows 10.0.26200; x86_64)",
-            "originator": "codex_cli_rs",
-            "session_id": "process-session-explicit-owner-miss",
-            "thread-id": thread_id,
-        },
+        headers=headers,
     )
 
     assert response.status_code == 400
