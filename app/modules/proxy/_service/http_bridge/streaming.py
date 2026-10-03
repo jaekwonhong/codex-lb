@@ -2589,6 +2589,9 @@ class _HTTPBridgeStreamingMixin:
                     raise ProxyResponseError(
                         400,
                         _http_bridge_client_full_history_recovery_error(),
+                        failure_phase="pre_dispatch",
+                        failure_detail="client_full_history_recovery",
+                        local_pre_dispatch_refusal=True,
                     )
                 # Cached sockets must not bypass fresh, confirmed admission
                 # failure. Preserve an explicit client's anchor, not its retry

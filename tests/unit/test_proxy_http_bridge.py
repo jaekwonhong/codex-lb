@@ -28827,6 +28827,9 @@ async def test_fresh_reattach_delta_requests_client_full_history_when_owner_quot
     assert exc_info.value.payload["error"]["type"] == "invalid_request_error"
     assert exc_info.value.payload["error"]["code"] == "previous_response_not_found"
     assert exc_info.value.payload["error"]["param"] == "previous_response_id"
+    assert exc_info.value.failure_phase == "pre_dispatch"
+    assert exc_info.value.failure_detail == "client_full_history_recovery"
+    assert exc_info.value.local_pre_dispatch_refusal is True
     get_or_create.assert_not_awaited()
 
 

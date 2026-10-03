@@ -804,6 +804,72 @@ def test_stream_startup_error_response_masks_proxy_previous_response_error():
     assert "resp_missing" not in response_body.decode()
 
 
+def test_stream_startup_error_response_exposes_marked_native_full_history_recovery():
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/backend-api/codex/responses",
+            "headers": [(b"user-agent", b"Codex Desktop/0.159.0-alpha.12.1 (Windows; x86_64)")],
+        }
+    )
+    error = ProxyResponseError(
+        400,
+        {
+            "error": {
+                "message": "Previous response was not found; retry without previous_response_id.",
+                "type": "invalid_request_error",
+                "code": "previous_response_not_found",
+                "param": "previous_response_id",
+            }
+        },
+        failure_phase="pre_dispatch",
+        failure_detail="client_full_history_recovery",
+        local_pre_dispatch_refusal=True,
+    )
+
+    response = proxy_api_module._stream_startup_error_response(request, error, headers={})
+
+    assert response.status_code == 400
+    body = json.loads(bytes(response.body))
+    assert body["error"] == {
+        "message": "Previous response was not found; retry without previous_response_id.",
+        "type": "invalid_request_error",
+        "code": "previous_response_not_found",
+        "param": "previous_response_id",
+    }
+
+
+@pytest.mark.parametrize(
+    ("path", "headers"),
+    [
+        ("/v1/responses", [(b"user-agent", b"Codex Desktop/0.159.0-alpha.12.1")]),
+        ("/backend-api/codex/responses", [(b"user-agent", b"openai-python/2.0")]),
+    ],
+)
+def test_marked_full_history_recovery_stays_masked_outside_native_codex_route(path, headers):
+    request = Request({"type": "http", "method": "POST", "path": path, "headers": headers})
+    error = ProxyResponseError(
+        400,
+        {
+            "error": {
+                "message": "Previous response was not found; retry without previous_response_id.",
+                "type": "invalid_request_error",
+                "code": "previous_response_not_found",
+                "param": "previous_response_id",
+            }
+        },
+        failure_phase="pre_dispatch",
+        failure_detail="client_full_history_recovery",
+        local_pre_dispatch_refusal=True,
+    )
+
+    response = proxy_api_module._stream_startup_error_response(request, error, headers={})
+
+    assert response.status_code == 502
+    assert json.loads(bytes(response.body))["error"]["code"] == "stream_incomplete"
+
+
 def test_public_stream_incomplete_error_event_is_not_rewritten_when_already_public():
     payload = {
         "type": "error",
