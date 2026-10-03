@@ -451,7 +451,9 @@ Validation of this corrected tree:
 
 The correction was committed as
 `6ff174e733871d3efefa53838a7c22c9b68031b7` and fast-forwarded locally into
-`codex/main-d1fd-patch-packet-20260917`; no remote push was performed.
+`codex/main-d1fd-patch-packet-20260917`. The reviewed line, including candidate
+evidence commit `59a61b37634d4a30cea73b3d11a4d09b0d0c19ee`, is also preserved on
+XZ remote branch `codex/fix-pc2-owner-recovery-handshake-20261003`.
 
 Before packaging, the three changed application files were compared between
 parent source `515fb16a5...` and the running production image
@@ -483,3 +485,12 @@ Retry-After / Retry-After-Ms.
 The running production Beta remains the operationally healthy but Stage-1-
 disqualified `sha256:8a59f620...` image. Candidate `sha256:291a47e3...` has not
 been promoted and still requires a new explicit production-promotion approval.
+
+A dedicated copy of the previously qualified rollback-safe Beta transaction was
+prepared as `artifacts/pc2-owner-final-review-20261003/promote_beta_native_explicit_owner_recovery.py`.
+Its read-only `check` action passed against the live topology immediately before
+the approval gate: Beta container `db514103...` remained on `8a59f620...`, Stable
+remained `0c717ce1...`, PostgreSQL remained `1e42fec6...` at Alembic head
+`20260913_000000_add_oidc_provider_flow`, and both nonterminal operations and
+unexpired session leases were zero. The script also pins candidate revision,
+base, bundle and scope labels. `execute` has not been run.

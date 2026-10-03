@@ -152,6 +152,8 @@ final Stage-1 product-path qualification.
 - [x] 9.7 Commit/integrate this correction and build a new minimal derivative
   from the exact running `8a59f620...` production base: commit `6ff174e73`,
   candidate `sha256:291a47e3...`, exact-base/source/image hashes and in-image
-  native session-affinity/400-no-retry smoke verified.
+  native session-affinity/400-no-retry smoke verified. Preserve the reviewed
+  line on XZ remote branch `codex/fix-pc2-owner-recovery-handshake-20261003`;
+  read-only promotion preflight reports ready with zero durable operations/leases.
 - [ ] 9.8 After a new explicit promotion approval, promote that derivative and
   re-run the real PC2 conversation once more before closing Stage 1.
