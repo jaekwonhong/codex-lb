@@ -279,3 +279,26 @@ The running production Beta remains the earlier `c3fdb1b9...` image until a new
 follow-up candidate is committed, built, reviewed and separately authorized for
 promotion. Stage 2 remains blocked on the corrected candidate passing the actual
 PC2 Desktop path.
+
+### Follow-up candidate for the actual PC2 0.160 defect
+
+The follow-up correction was committed as
+`677128a72265766bd98f67494b7182a1a085b99f` and fast-forwarded locally into
+`codex/main-d1fd-patch-packet-20260917`. No remote push was performed.
+
+The four follow-up application files were first compared between parent source
+`4dc672158...` and running production image `sha256:c3fdb1b9...`; every SHA-256
+matched, so the production image is an exact packaging base for this delta.
+
+The new unpromoted candidate is
+`sha256:b57e00a806013619d0c122a20ef28116b1c81ea3e3123226af1ecd51f053ab2e`,
+built from exact base `sha256:c3fdb1b9f9935574476e66d47a401a12f06bdeac836d3cd82fd4f51b3917a34d`
+with revision `677128a72265766bd98f67494b7182a1a085b99f`. Its four-file bundle
+SHA-256 is `fc238da018b317261d46fc30f99587aea0f0d26a4b17101d0ffa53bbb3699589`.
+
+Source and image hashes match byte-for-byte for `continuity.py`, HTTP-bridge
+`helpers.py`, HTTP-bridge `streaming.py`, and raw streaming `retry.py`. In-image
+smoke reconfirmed HTTP 400 + `invalid_request_error` +
+`continuity_recovery_required`, `x-should-retry:false`, and no Retry-After or
+Retry-After-Ms. Production remains on `c3fdb1b9...` pending a new explicit
+promotion authorization.

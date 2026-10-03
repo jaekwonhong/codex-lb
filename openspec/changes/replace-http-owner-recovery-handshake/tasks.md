@@ -109,5 +109,8 @@ final Stage-1 product-path qualification.
   architecture, cancellation, diff and OpenSpec checks: owner suite 31 PASS;
   core matrix 1,274 PASS; extended routes 355 PASS + 319 external-binary SKIPs;
   complete OpenSpec validation 156 PASS, 0 FAIL.
-- [ ] 8.6 Commit/integrate the follow-up source correction and build a new commit-addressable Beta derivative.
+- [x] 8.6 Commit/integrate the follow-up source correction and build a new
+  commit-addressable Beta derivative: commit `677128a72`, image
+  `sha256:b57e00a8...`, exact base `sha256:c3fdb1b9...`; source/image hashes and
+  in-image 400/no-retry contract verified.
 - [ ] 8.7 After separate production-promotion authorization, promote the new candidate and re-run the same actual PC2 Desktop thread path.
