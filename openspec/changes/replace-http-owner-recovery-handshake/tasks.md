@@ -127,3 +127,5 @@ final Stage-1 product-path qualification.
   and in-image native-originator/SDK boundary smoke verified.
 - [ ] 8.10 After separate production-promotion authorization, promote that new
   derivative and re-run `01a10030-...` one final time from the real PC2 Desktop.
+  Promotion to `sha256:8a59f620...` is complete and post-promotion qualification
+  passed; only the real PC2 retest remains pending.

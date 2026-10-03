@@ -385,6 +385,20 @@ SDK do not. The same smoke reconfirmed HTTP 400 + `invalid_request_error` +
 `continuity_recovery_required`, `x-should-retry:false`, and no Retry-After or
 Retry-After-Ms.
 
-Production remains on the healthy-but-disqualified `b57e00a8...` image until
-this `8a59f620...` derivative is separately authorized for promotion. Stage 2
-remains blocked on one final real PC2 retest after that promotion.
+After explicit authorization, `sha256:8a59f620...` was promoted to production
+Beta with the same rollback-safe transaction pattern. The new running Beta is
+container `db514103...` on image
+`sha256:8a59f62018a4f6209ed4aa5dcc517bea707fb5a223241b5aeeab12f4a6fe5612`.
+The predecessor `sha256:b57e00a8...` is retained stopped with `restart=no` as
+container `40fce5b7...` under
+`codex-lb-beta-pre-native-originator-recovery-20261003T115033Z-69592`.
+
+Post-promotion qualification confirmed local and tailnet Beta/Stable readiness
+HTTP 200, unchanged Stable and PostgreSQL identities, the expected revision/base/
+scope/bundle labels, byte-for-byte runtime hashes for the three overlay files,
+zero nonterminal operations, zero unexpired leases, unchanged PostgreSQL system
+identifier/Alembic head, no actual startup/runtime error markers, and a released
+recreation lock.
+
+Stage 2 remains blocked on one final real PC2 retest of conversation
+`01a10030-...` against this promoted candidate.
