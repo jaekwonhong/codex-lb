@@ -8,7 +8,7 @@ from hashlib import sha256
 from typing import Protocol
 
 from app.core.clients.proxy import ProxyResponseError
-from app.core.errors import openai_error
+from app.core.errors import OpenAIErrorEnvelope, openai_error
 
 HTTP_BRIDGE_ACCOUNT_NEUTRAL_REPLAY_KIND = "internal_unanchored_parallel"
 HTTP_BRIDGE_ACCOUNT_NEUTRAL_REPLAY_KEY_PREFIX = "account-neutral-replay:v1:"
@@ -31,6 +31,47 @@ _HTTP_BRIDGE_SESSION_AFFINITY_HEADERS = frozenset(
     }
 )
 logger = logging.getLogger("app.modules.proxy.continuity")
+
+
+def local_history_recovery_required_error() -> OpenAIErrorEnvelope:
+    """Describe a native continuation that cannot be replayed unchanged."""
+
+    return openai_error(
+        "continuity_recovery_required",
+        (
+            "This continuation cannot be safely reassigned with the context available to the proxy. "
+            "Repeating it unchanged cannot restore context. Preserve this thread; wait for the original "
+            "owner to become available or recover a new thread from local Codex session history."
+        ),
+        error_type="invalid_request_error",
+    )
+
+
+def local_history_recovery_refusal() -> ProxyResponseError:
+    """Return the typed pre-dispatch refusal understood by the public wrapper."""
+
+    return ProxyResponseError(
+        400,
+        local_history_recovery_required_error(),
+        failure_phase="pre_dispatch",
+        failure_detail="local_history_recovery_required",
+        local_pre_dispatch_refusal=True,
+    )
+
+
+def is_local_history_recovery_required(error: ProxyResponseError) -> bool:
+    """Recognize only proxy-authored recovery refusals, not provider lookalikes."""
+
+    detail = error.payload.get("error")
+    return (
+        error.status_code == 400
+        and error.local_pre_dispatch_refusal
+        and error.failure_phase == "pre_dispatch"
+        and error.failure_detail == "local_history_recovery_required"
+        and isinstance(detail, dict)
+        and detail.get("code") == "continuity_recovery_required"
+        and detail.get("type") == "invalid_request_error"
+    )
 
 
 def make_http_bridge_account_neutral_replay_key(nonce: str) -> tuple[str, str]:

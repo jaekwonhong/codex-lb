@@ -2,7 +2,7 @@
 
 ### Requirement: Local-history continuity recovery failures are attributable
 
-A locally proven pre-submit HTTP bridge failure with error code
+A locally proven pre-submit HTTP continuity failure with error code
 `continuity_recovery_required` MUST use the preflight request-log writer exactly
 once. When the log store acknowledges within the one-second persistence budget,
 one `request_logs` row MUST be written before the error reaches the client.
@@ -23,6 +23,13 @@ The bridge MUST also emit one structured
 owner-pressure reason, hashed bridge identity, affinity kind, model and failed
 owner account id. The event MUST NOT expose the raw previous-response id or raw
 conversation content.
+
+For an explicit `previous_response_id` whose owner proof is missing in the current
+API-key scope, the bridge or raw-HTTP path MUST record the existing hashed
+`continuity_fail_closed` diagnostic with reason
+`owner_lookup_miss_local_history_recovery_required`. It MUST NOT log the raw
+response id. This diagnostic supplements, rather than duplicates, the single
+NULL-account preflight request-log row.
 
 #### Scenario: Fresh reattach cannot move safely
 
@@ -50,3 +57,13 @@ conversation content.
 - **WHEN** the preflight row is written
 - **THEN** its conversation_id MUST retain that thread-id
 - **AND** unrelated SDK/provider log attribution MUST remain unchanged
+
+#### Scenario: Explicit anchor owner proof is missing
+
+- **GIVEN** native Codex supplies an explicit previous-response anchor
+- **AND** current API-key-scoped owner lookup returns no owner proof
+- **WHEN** the proxy refuses the request before dispatch
+- **THEN** exactly one request-log row records `continuity_recovery_required` with `account_id=NULL`
+- **AND** the conversation id comes from native thread identity when available
+- **AND** a hashed continuity-fail-closed diagnostic records the owner-lookup-miss recovery reason
+- **AND** no raw previous-response id or conversation content is logged

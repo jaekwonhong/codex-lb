@@ -2649,6 +2649,22 @@ class _HTTPBridgeStreamingMixin:
             switch_to_account_neutral_replay()
 
         if required_continuity_owner_missing:
+            if (
+                not forwarded_request
+                and not enforce_openai_sdk_contract
+                and _is_native_codex_request(headers)
+                and payload.previous_response_id is not None
+                and request_state.previous_response_id is not None
+                and request_state.preferred_account_id is None
+            ):
+                _record_continuity_fail_closed(
+                    surface="http_bridge",
+                    reason="owner_lookup_miss_local_history_recovery_required",
+                    previous_response_id=request_state.previous_response_id,
+                    session_id=request_state.session_id,
+                    upstream_error_code="owner_lookup_miss",
+                )
+                raise local_history_recovery_refusal("owner_lookup_miss")
             owner_unavailable = ProxyResponseError(
                 502,
                 openai_error(

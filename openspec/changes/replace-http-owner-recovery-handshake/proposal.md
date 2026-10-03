@@ -7,6 +7,15 @@ proxy-injected anchor and resend its complete local history. Production proved
 that assumption false for the PC2 Codex Desktop HTTP path: the client surfaced
 the error and resent another delta instead of reconstructing the conversation.
 
+The first production promotion also exposed a second native Desktop shape that
+the initial contract did not cover. Codex Desktop 0.160 can send an explicit
+`previous_response_id`; after the PC2 ProviderSwitcher API-key identity changed,
+the prior successful response remained intentionally outside the new API-key
+owner-lookup scope. The proxy therefore had no safe owner proof and returned
+`502 previous_response_owner_unavailable`. Retrying the identical request cannot
+restore that scoped proof, so the transient-looking 502 is also the wrong native
+client contract even though cross-API-key owner lookup must remain forbidden.
+
 The proxy must not depend on an unverified client-side full-history fallback.
 Until codex-lb can reconstruct portable context itself, this exact state should
 fail before dispatch with an explicit non-retry recovery contract and leave all
@@ -44,6 +53,11 @@ source rules unchanged.
 - Preserve thread attribution for originator-only native identity. For this local
   refusal alone, wait at most one second for the already tracked log insertion;
   keep ordinary request logging detached and never resubmit a timed-out insert.
+- Apply the same native-only terminal recovery contract when the client supplied
+  `previous_response_id` but the proxy cannot resolve its owner inside the current
+  API-key scope. Do not widen owner lookup across API keys and do not guess a new
+  owner. The bridge path and its raw-HTTP fallback MUST converge on the same
+  pre-dispatch refusal; SDK and `/v1/responses` behavior remains unchanged.
 
 ## Capabilities
 

@@ -241,3 +241,41 @@ clear the in-process registry, and the full post-promotion qualifier passed agai
 The actual PC2 Desktop product-path gate therefore remains outstanding. It requires
 the real Desktop process-session identity; synthetic server calls MUST NOT be used
 as a substitute for that evidence.
+
+### Actual PC2 Desktop 0.160 result and residual defect
+
+The product-path gate was subsequently exercised from the real PC2 Codex Desktop
+on conversation `01a10030-...`. At 2026-10-03 10:25:09 UTC the promoted Beta
+returned `502 previous_response_owner_unavailable` before upstream dispatch
+(`http_bridge_routing stage=admission reason=smart_session`). This is a genuine
+Stage-1 qualification failure for image `sha256:c3fdb1b9...`, not a synthetic
+canary result.
+
+The prior successful response was attributable under proxy API-key id
+`1c6c7caa-...`; the failing Desktop 0.160 request arrived under API-key id
+`ee0a3000-...`. Previous-response owner lookup is intentionally API-key scoped, so
+the proxy correctly did not reuse owner proof across those scopes. The defect was
+the public contract after that safe lookup miss: an unchanged retry cannot restore
+the missing owner proof, yet the native client received a transient-looking 502.
+
+The follow-up source correction keeps API-key isolation intact and changes only
+the native backend pre-dispatch outcome. An explicit previous-response owner-proof
+miss now raises the same typed local recovery refusal from both HTTP-bridge
+admission and the raw-HTTP fallback. The raw path writes the same bounded,
+NULL-account preflight log; SDK/non-native behavior remains unchanged.
+
+Follow-up validation after this correction:
+
+- actual-shape owner-interruption suite: 31 PASS
+- core native/SDK/bridge/ownership/source matrix: 1,274 PASS
+- extended HTTP/native-egress/model-source routes: 355 PASS, 319 SKIP for the
+  still-unconfigured external native-egress binary, 0 FAIL
+- Ruff, format, targeted typing, proxy architecture, cancellation-safety and
+  `git diff --check`: PASS
+- strict changed-spec validation: PASS; complete OpenSpec validation: 156 PASS,
+  0 FAIL
+
+The running production Beta remains the earlier `c3fdb1b9...` image until a new
+follow-up candidate is committed, built, reviewed and separately authorized for
+promotion. Stage 2 remains blocked on the corrected candidate passing the actual
+PC2 Desktop path.

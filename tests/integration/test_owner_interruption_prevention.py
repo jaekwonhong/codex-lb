@@ -40,6 +40,106 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("bridge_enabled", [True, False])
+async def test_native_explicit_previous_response_lookup_miss_requires_local_history(
+    async_client, app_instance, monkeypatch, bridge_enabled
+):
+    _install_bridge_settings(monkeypatch, enabled=bridge_enabled)
+    service = get_proxy_service_for_app(app_instance)
+    resolver = AsyncMock(return_value=None)
+    monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", resolver)
+    monkeypatch.setattr(service, "_resolve_file_account_for_responses", AsyncMock(return_value=None))
+    create_session = AsyncMock(side_effect=AssertionError("refusal must precede upstream creation"))
+    monkeypatch.setattr(service, "_get_or_create_http_bridge_session", create_session)
+    if bridge_enabled:
+        monkeypatch.setattr(service._durable_bridge, "lookup_request_targets", AsyncMock(return_value=None))
+        monkeypatch.setattr(service, "_http_bridge_local_owner_account_id", AsyncMock(return_value=None))
+    else:
+        monkeypatch.setattr(
+            service._load_balancer,
+            "_load_selection_inputs",
+            AsyncMock(return_value=SimpleNamespace(accounts=[object(), object()])),
+        )
+
+    thread_id = f"thread-explicit-owner-miss-{int(bridge_enabled)}"
+    response = await async_client.post(
+        "/backend-api/codex/responses",
+        json={
+            "model": "gpt-6-astra",
+            "instructions": "continue",
+            "stream": True,
+            "previous_response_id": "resp_explicit_owner_miss",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "delta"}]}],
+        },
+        headers={
+            "user-agent": "Codex Desktop/0.160.0 (Windows 10.0.26200; x86_64)",
+            "originator": "codex_cli_rs",
+            "session_id": "process-session-explicit-owner-miss",
+            "thread-id": thread_id,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "invalid_request_error"
+    assert response.json()["error"]["code"] == "continuity_recovery_required"
+    assert response.headers["x-should-retry"] == "false"
+    assert "retry-after" not in response.headers
+    create_session.assert_not_awaited()
+    resolver.assert_awaited()
+
+    async with SessionLocal() as session:
+        rows = list(
+            (
+                await session.execute(
+                    select(RequestLog).where(
+                        RequestLog.conversation_id == thread_id,
+                        RequestLog.error_code == "continuity_recovery_required",
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert len(rows) == 1
+    assert rows[0].account_id is None
+    assert rows[0].status == "error"
+
+
+@pytest.mark.asyncio
+async def test_sdk_explicit_previous_response_lookup_miss_keeps_existing_stream_contract(
+    async_client, app_instance, monkeypatch
+):
+    _install_bridge_settings(monkeypatch, enabled=False)
+    service = get_proxy_service_for_app(app_instance)
+    monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_resolve_file_account_for_responses", AsyncMock(return_value=None))
+    monkeypatch.setattr(
+        service._load_balancer,
+        "_load_selection_inputs",
+        AsyncMock(return_value=SimpleNamespace(accounts=[object(), object()])),
+    )
+
+    response = await async_client.post(
+        "/backend-api/codex/responses",
+        json={
+            "model": "gpt-6-astra",
+            "instructions": "continue",
+            "stream": True,
+            "previous_response_id": "resp_sdk_owner_miss",
+            "input": "delta",
+        },
+        headers={"user-agent": "openai-python/2.0", "x-stainless-lang": "python"},
+    )
+
+    assert response.status_code == 200
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: {")]
+    failures = [event for event in events if event.get("type") == "response.failed"]
+    assert len(failures) == 1
+    assert failures[0]["response"]["error"]["code"] == "previous_response_owner_unavailable"
+    assert "x-should-retry" not in response.headers
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("identity_headers", "expected_status", "expected_code", "admission_case"),
     [

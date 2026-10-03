@@ -21,13 +21,20 @@ Codex history while preserving the existing thread. The
 failure MUST be recorded as a local pre-dispatch refusal so native transport-
 failure lifecycle handling does not convert it into an empty or truncated stream.
 
-This rule applies only when the previous-response anchor was injected by the
-proxy onto a client-unanchored fresh reattach and an otherwise eligible alternate
-exists. A verified full resend MUST keep the existing transparent cross-account
-replay path. A client-supplied anchor, file/account-scoped request, no-alternate
-case, post-dispatch or downstream-visible failure, or any state whose dispatch
-status is uncertain MUST retain the existing fail-closed or ordinary failure
-contract and MUST NOT be widened by this requirement.
+The same terminal recovery contract also applies to a native backend request that
+contains a client-supplied `previous_response_id` when its owner cannot be proven
+inside the current API-key scope before dispatch. The proxy MUST NOT resolve that
+anchor across API-key scopes, guess an owner, or dispatch the anchored delta to a
+different account. This owner-proof-loss case is distinct from a known owner that
+is merely unavailable: when a known owner remains provable, existing safe replay,
+wait, and fail-closed rules continue to apply unless another requirement explicitly
+permits recovery.
+
+A verified full resend MUST keep the existing transparent cross-account replay
+path. File/account-scoped requests, post-dispatch or downstream-visible failures,
+and any state whose dispatch status is uncertain MUST retain the existing
+fail-closed or ordinary failure contract and MUST NOT be widened by this
+requirement.
 
 Both the native Codex identity and the native backend SSE contract MUST be
 present. SDK requests on the backend route and all `/v1/responses` requests MUST
@@ -65,12 +72,23 @@ MUST work without requiring a particular User-Agent spelling.
 - **AND** a bounded read-only reassessment that confirms a healthy alternate produces the same recovery-required refusal
 - **AND** absent alternate evidence preserves the ordinary owner-unavailable failure without retirement or a second dispatch
 
-#### Scenario: Explicit client anchor remains fail-closed
+#### Scenario: Explicit client anchor loses owner proof after API-key scope changes
+
+- **GIVEN** native Codex supplies `previous_response_id` from a prior successful turn
+- **AND** the prior response belongs to a different proxy API-key scope
+- **AND** current-scope owner lookup therefore returns no owner proof
+- **WHEN** the request reaches either HTTP-bridge admission or the raw-HTTP fallback before dispatch
+- **THEN** the proxy returns HTTP 400 with `continuity_recovery_required`
+- **AND** the response says `x-should-retry: false` and advertises no Retry-After
+- **AND** the proxy neither performs a cross-API-key owner lookup nor dispatches the request
+
+#### Scenario: Explicit client anchor still has a known owner
 
 - **GIVEN** the client itself supplied `previous_response_id`
-- **WHEN** that required owner is unavailable and no existing safe replay rule applies
-- **THEN** the proxy preserves the existing owner-unavailable contract
-- **AND** it does not reinterpret the request as local-history recovery eligible
+- **AND** the proxy can still prove the required owner inside the current API-key scope
+- **WHEN** that known owner is unavailable and no existing safe replay rule applies
+- **THEN** the existing owner-unavailable or proof-gated recovery behavior is preserved
+- **AND** owner proof is not discarded merely to obtain a local-history recovery response
 
 #### Scenario: SDK owner failure does not become a native recovery command
 

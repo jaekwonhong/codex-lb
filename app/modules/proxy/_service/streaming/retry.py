@@ -89,6 +89,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _websocket_input_items_are_self_contained_fresh_replay,
 )
 from app.modules.proxy.affinity import (
+    _codex_backend_identity,
     _is_synthesized_turn_state,
     _owner_lookup_session_id_from_headers,
     _prompt_cache_key_from_request_model,
@@ -98,7 +99,7 @@ from app.modules.proxy.affinity import (
 )
 from app.modules.proxy.affinity_observation import AffinityObservation
 from app.modules.proxy.api_key_usage import estimate_api_key_request_usage
-from app.modules.proxy.continuity import resolve_required_account_id
+from app.modules.proxy.continuity import local_history_recovery_refusal, resolve_required_account_id
 from app.modules.proxy.helpers import (
     _apply_error_metadata,
     _is_account_model_unsupported_error,
@@ -1335,6 +1336,40 @@ class _StreamingRetryMixin:
                         account_ids=None,
                     )
                     if len(selection_inputs.accounts) != 1:
+                        if preserve_native_failure_lifecycle:
+                            refusal = local_history_recovery_refusal()
+                            detail = refusal.payload.get("error")
+                            message = (
+                                str(detail.get("message"))
+                                if isinstance(detail, Mapping) and detail.get("message") is not None
+                                else "Continuity recovery requires local Codex history"
+                            )
+                            _record_continuity_fail_closed(
+                                surface="http_stream",
+                                reason="owner_lookup_miss_local_history_recovery_required",
+                                previous_response_id=payload.previous_response_id,
+                                session_id=previous_response_lookup_session_id,
+                                upstream_error_code="owner_lookup_miss",
+                            )
+                            native_thread_id = _codex_backend_identity(headers).thread_id
+                            await proxy._write_stream_preflight_error(
+                                affinity_observation=affinity_observation,
+                                account_id=None,
+                                api_key=api_key,
+                                request_id=request_id,
+                                model=payload.model,
+                                start=start,
+                                error_code="continuity_recovery_required",
+                                error_message=message,
+                                wait_for_persistence=True,
+                                reasoning_effort=payload.reasoning.effort if payload.reasoning else None,
+                                service_tier=payload.service_tier,
+                                useragent=useragent,
+                                useragent_group=useragent_group,
+                                conversation_id=native_thread_id or conversation_id,
+                                client_ip=client_ip,
+                            )
+                            raise refusal
                         message = "Previous response owner account is unavailable; retry later."
                         _record_continuity_fail_closed(
                             surface="http_stream",

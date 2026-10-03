@@ -187,6 +187,8 @@ from app.modules.proxy.affinity import (
 )
 from app.modules.proxy.continuity import (
     is_http_bridge_account_neutral_replay,
+    is_local_history_recovery_required,
+    local_history_recovery_required_error,
     make_http_bridge_account_neutral_replay_key,
 )
 from app.modules.proxy.durable_bridge_coordinator import (
@@ -801,29 +803,12 @@ def _local_history_recovery_required_error() -> OpenAIErrorEnvelope:
     upstream-style error, and replaying the current delta without its owner would
     silently lose context.
     """
-    return openai_error(
-        "continuity_recovery_required",
-        (
-            "This continuation cannot be safely reassigned with the context available to the proxy. "
-            "Repeating it unchanged cannot restore context. Preserve this thread; wait for the original "
-            "owner to become available or recover a new thread from local Codex session history."
-        ),
-        error_type="invalid_request_error",
-    )
+    return local_history_recovery_required_error()
 
 
 def _is_local_history_recovery_required(error: ProxyResponseError) -> bool:
     """Recognize our own refusal, never a provider's similarly named error."""
-    detail = error.payload.get("error")
-    return (
-        error.status_code == 400
-        and error.local_pre_dispatch_refusal
-        and error.failure_phase == "pre_dispatch"
-        and error.failure_detail == "local_history_recovery_required"
-        and isinstance(detail, dict)
-        and detail.get("code") == "continuity_recovery_required"
-        and detail.get("type") == "invalid_request_error"
-    )
+    return is_local_history_recovery_required(error)
 
 
 def _proxy_admission_wait_timeout_seconds() -> float:

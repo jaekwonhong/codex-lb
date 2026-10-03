@@ -17,7 +17,7 @@
 - [x] 3.3 Rerun existing owner interruption, HTTP bridge replay, stale-anchor masking and model-source regressions.
 - [x] 3.4 Rerun Ruff, format, targeted typing, diff check and strict OpenSpec validation.
 - [x] 3.5 Execute the actual-SDK MockTransport retry regression and committed-native-SSE test.
-- [ ] 3.6 Verify the actual PC2 Desktop failure lifecycle before any production qualification claim.
+- [x] 3.6 Exercise the actual PC2 Desktop failure lifecycle and record the residual explicit-anchor owner-proof-loss defect in the first promoted candidate.
 
 ### Corrected-tree qualification
 
@@ -84,8 +84,10 @@ Pre-promotion corrected source: 1,271 core tests + 355 extended-route tests PASS
 The additional native-egress wire suite has 319 SKIPs due to its unconfigured
 external binary; these are not product-path qualification. Ruff/format/typing,
 architecture, cancellation-safety, diff and OpenSpec (66 specs) all pass.
-Production promotion is complete; actual PC2 Desktop qualification remains
-unchecked in section 3.6.
+The first production promotion completed, but actual PC2 Desktop 0.160 validation
+found a residual explicit-`previous_response_id` owner-lookup-miss path. Therefore
+image `sha256:c3fdb1b9...` is operationally healthy but does **not** satisfy the
+final Stage-1 product-path qualification.
 
 - [x] 6.5 Commit/integrate the additional reviewed correction and rebuild/verify the four-file derivative. Replacement commit: `aa059dea8`; image: `sha256:c3fdb1b9...`. The earlier `f51b1047...` image remains disqualified and MUST NOT be reused.
 
@@ -96,3 +98,16 @@ unchecked in section 3.6.
 - [x] 7.3 Verify local and tailnet readiness, exact four-file runtime hashes, PostgreSQL identity/head, zero startup/runtime error markers, zero nonterminal operations, and zero unexpired leases.
 - [x] 7.4 Remove the two non-qualifying synthetic canary sessions/aliases after proving they owned no operation or recovery-attempt rows; restart Beta only and re-run the post-promotion qualifier.
 - [ ] 7.5 Exercise the intended failure lifecycle from the actual PC2 Codex Desktop using its real process-session identity; synthetic HTTP calls do not satisfy this gate.
+
+## 8. Actual PC2 Desktop 0.160 follow-up
+
+- [x] 8.1 Capture the real PC2 failure on conversation `01a10030-...`: native Desktop 0.160 returned `502 previous_response_owner_unavailable` before dispatch.
+- [x] 8.2 Prove the prior successful response and failing request used different proxy API-key ids, so current-scope owner lookup correctly refused to cross the API-key boundary.
+- [x] 8.3 Extend the native backend contract so an explicit previous-response owner-proof miss returns the same local `400 continuity_recovery_required` refusal in both bridge and raw-HTTP paths; leave SDK behavior unchanged.
+- [x] 8.4 Add Codex Desktop 0.160 route regressions for bridge enabled/disabled and an SDK boundary regression.
+- [x] 8.5 Rerun owner-interruption, core, extended-route, Ruff, format, typing,
+  architecture, cancellation, diff and OpenSpec checks: owner suite 31 PASS;
+  core matrix 1,274 PASS; extended routes 355 PASS + 319 external-binary SKIPs;
+  complete OpenSpec validation 156 PASS, 0 FAIL.
+- [ ] 8.6 Commit/integrate the follow-up source correction and build a new commit-addressable Beta derivative.
+- [ ] 8.7 After separate production-promotion authorization, promote the new candidate and re-run the same actual PC2 Desktop thread path.
