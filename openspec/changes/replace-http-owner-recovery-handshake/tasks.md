@@ -121,7 +121,9 @@ final Stage-1 product-path qualification.
   native gate with the shared strong-originator recovery predicate; preserve the
   SDK and User-Agent-only boundaries. Owner suite 33 PASS; core matrix 1,276
   PASS; extended routes 355 PASS + 319 external-binary SKIPs.
-- [ ] 8.9 Commit/integrate this second product-path correction and build a new
-  commit-addressable Beta derivative from the exact running `b57e00a8...` base.
+- [x] 8.9 Commit/integrate this second product-path correction and build a new
+  commit-addressable Beta derivative from the exact running `b57e00a8...` base:
+  commit `f0ac5a3f2`, image `sha256:8a59f620...`, three-file source/image hashes
+  and in-image native-originator/SDK boundary smoke verified.
 - [ ] 8.10 After separate production-promotion authorization, promote that new
   derivative and re-run `01a10030-...` one final time from the real PC2 Desktop.

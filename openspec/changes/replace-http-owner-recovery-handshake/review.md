@@ -354,7 +354,37 @@ Validation after this second product-path correction:
   unconfigured external native-egress binary, 0 FAIL
 - Ruff, format, targeted typing and `git diff --check`: PASS
 
-Production remains on the healthy-but-disqualified `b57e00a8...` image until a
-new derivative is committed, built, reviewed and separately authorized for
-promotion. Stage 2 remains blocked on one final real PC2 retest of that next
-candidate.
+The second product-path correction was committed as
+`f0ac5a3f217d399e31b7b5a145b2b885facbecf7` and fast-forwarded locally into
+`codex/main-d1fd-patch-packet-20260917`; no remote push was performed.
+
+Before packaging, all three changed application files were compared between
+parent source `9e2e7ada...` and the running production image
+`sha256:b57e00a8...`; every SHA-256 matched. The new unpromoted candidate is:
+
+- image:
+  `sha256:8a59f62018a4f6209ed4aa5dcc517bea707fb5a223241b5aeeab12f4a6fe5612`
+- revision:
+  `f0ac5a3f217d399e31b7b5a145b2b885facbecf7`
+- exact base:
+  `sha256:b57e00a806013619d0c122a20ef28116b1c81ea3e3123226af1ecd51f053ab2e`
+- scope label: `pc2-native-originator-recovery-reviewed`
+- three-file bundle SHA-256:
+  `ca963adf2ce8fac77fff4dd8dd621c7186c21969cc8f7bde7232b89bfe1573bc`
+- `continuity.py`:
+  `307e458b8ae50e2d5f5ef5e3be6ab1e5c36726c45673ded6629908edbc6c1ea8`
+- HTTP-bridge `streaming.py`:
+  `aaa65436adf2152ca3b68974b078ab8047d2181c8b63398a403c07fd7ab6eaa9`
+- raw streaming `retry.py`:
+  `b16b0fa093f3df24da0e2fbdfcd6d0fbbbce5aa1e1af7e72bbd39c5498ccbfe2`
+
+All three source/image hashes match byte-for-byte. In-image smoke proved that
+SDK-compatible wire selection plus a recognized native `originator` retains the
+native recovery contract, while a User-Agent-only Codex lookalike and an ordinary
+SDK do not. The same smoke reconfirmed HTTP 400 + `invalid_request_error` +
+`continuity_recovery_required`, `x-should-retry:false`, and no Retry-After or
+Retry-After-Ms.
+
+Production remains on the healthy-but-disqualified `b57e00a8...` image until
+this `8a59f620...` derivative is separately authorized for promotion. Stage 2
+remains blocked on one final real PC2 retest after that promotion.
