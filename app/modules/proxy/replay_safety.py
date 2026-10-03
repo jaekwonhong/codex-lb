@@ -22,10 +22,11 @@ _ACCOUNT_NEUTRAL_REPLAY_OMITTED_ITEM_TYPES = frozenset(
 )
 _INTERNAL_CHAT_MESSAGE_METADATA_FIELD = "internal_chat_message_metadata_passthrough"
 _ACCOUNT_NEUTRAL_INTERNAL_CHAT_MESSAGE_METADATA_FIELDS = frozenset({"turn_id"})
-_ACCOUNT_NEUTRAL_TOOL_TYPES = frozenset({"custom", "function", "web_search", "web_search_preview"})
+_ACCOUNT_NEUTRAL_TOOL_TYPES = frozenset({"custom", "function", "namespace", "web_search", "web_search_preview"})
 _ACCOUNT_NEUTRAL_TOOL_DECLARATION_FIELDS = {
     "custom": frozenset({"description", "format", "name", "type"}),
     "function": frozenset({"description", "name", "parameters", "strict", "type"}),
+    "namespace": frozenset({"description", "name", "tools", "type"}),
     "web_search": frozenset({"filters", "search_context_size", "type", "user_location"}),
     "web_search_preview": frozenset({"filters", "search_context_size", "type", "user_location"}),
 }
@@ -151,6 +152,7 @@ class AccountNeutralReplayProjection:
     input_items: list[JsonValue]
     stored_prefix_count: int
     canonical_lite_developer_index: int | None = None
+    canonical_lite_developer_indexes: frozenset[int] = frozenset()
     """Projected index of the canonical Responses-Lite developer instruction.
 
     Set only when the original stored prefix begins with a valid
@@ -180,7 +182,26 @@ def project_responses_input_for_account_neutral_fresh_replay(
     projected_items: list[JsonValue] = []
     projected_stored_count = 0
     canonical_lite_developer_index: int | None = None
+    canonical_lite_developer_indexes: set[int] = set()
     prefix_begins_with_lite_tool_bundle = stored_count >= 2 and _is_canonical_lite_tool_bundle(input_items[0])
+    lite_bundle_has_source_id = (
+        prefix_begins_with_lite_tool_bundle
+        and isinstance(input_items[0], dict)
+        and _is_nonblank_string(input_items[0].get("id"))
+    )
+    canonical_lite_developer_original_indexes: set[int] = set()
+    if lite_bundle_has_source_id:
+        # Real Codex Responses-Lite bodies carry a run of client-authored
+        # developer instructions immediately after additional_tools. They may
+        # carry source-minted item IDs, and the bundle itself carries a
+        # source-minted ID in captured traffic. Requiring that bundle ID keeps
+        # a lone response-owned developer ID behind an un-ID'd synthetic
+        # bundle fail-closed. Record positions against the original input so
+        # projection cannot make a later developer item canonical.
+        for index in range(1, stored_count):
+            if not _is_inline_developer_message(input_items[index]):
+                break
+            canonical_lite_developer_original_indexes.add(index)
     for index, item in enumerate(input_items):
         projected_item = _project_account_neutral_replay_item(
             item,
@@ -199,6 +220,8 @@ def project_responses_input_for_account_neutral_fresh_replay(
                 and _is_inline_developer_message(item)
             ):
                 canonical_lite_developer_index = 1
+            if index in canonical_lite_developer_original_indexes:
+                canonical_lite_developer_indexes.add(len(projected_items) - 1)
         if index + 1 == stored_count:
             projected_stored_count = len(projected_items)
 
@@ -206,6 +229,7 @@ def project_responses_input_for_account_neutral_fresh_replay(
         input_items=projected_items,
         stored_prefix_count=projected_stored_count,
         canonical_lite_developer_index=canonical_lite_developer_index,
+        canonical_lite_developer_indexes=frozenset(canonical_lite_developer_indexes),
     )
 
 
@@ -214,7 +238,8 @@ def _is_canonical_lite_tool_bundle(item: JsonValue) -> bool:
         isinstance(item, dict)
         and item.get("type") == "additional_tools"
         and item.get("role") == "developer"
-        and _input_item_has_only_known_fields(item, "additional_tools")
+        and set(item) <= {"id", "role", "tools", "type"}
+        and (item.get("id") is None or _is_nonblank_string(item.get("id")))
         and _tools_are_account_neutral(item.get("tools"))
     )
 
@@ -312,6 +337,7 @@ def responses_input_suffix_retains_prior_output(
     *,
     stored_count: int,
     canonical_lite_developer_index: int | None = None,
+    canonical_lite_developer_indexes: frozenset[int] | None = None,
 ) -> bool:
     """Prove that a stored input prefix is followed by prior output and new input."""
 
@@ -320,6 +346,7 @@ def responses_input_suffix_retains_prior_output(
     prefix_state = _direct_tool_call_prefix_state(
         input_items[:stored_count],
         canonical_lite_developer_index=canonical_lite_developer_index,
+        canonical_lite_developer_indexes=canonical_lite_developer_indexes,
     )
     if prefix_state is None:
         return False
@@ -402,6 +429,7 @@ def responses_input_suffix_matches_pending_tool_calls(
     stored_count: int,
     pending_tool_calls: Mapping[str, str],
     canonical_lite_developer_index: int | None = None,
+    canonical_lite_developer_indexes: frozenset[int] | None = None,
 ) -> bool:
     """Prove the suffix exactly settles the durable prior-response call manifest."""
 
@@ -411,6 +439,7 @@ def responses_input_suffix_matches_pending_tool_calls(
         input_items[:stored_count],
         allow_historical_developer_interleave=True,
         canonical_lite_developer_index=canonical_lite_developer_index,
+        canonical_lite_developer_indexes=canonical_lite_developer_indexes,
     )
     if prefix_state is None or prefix_state[0] or prefix_state[1] & pending_tool_calls.keys():
         return False
@@ -449,6 +478,7 @@ def _direct_tool_call_prefix_state(
     *,
     allow_historical_developer_interleave: bool = False,
     canonical_lite_developer_index: int | None = None,
+    canonical_lite_developer_indexes: frozenset[int] | None = None,
 ) -> tuple[deque[tuple[str, str]], set[str]] | None:
     pending_calls: deque[tuple[str, str]] = deque()
     seen_call_ids: set[str] = set()
@@ -465,15 +495,19 @@ def _direct_tool_call_prefix_state(
             return None
         item_type = item_type_value if isinstance(item_type_value, str) else None
         if item.get("role") == "developer" and item_type != "additional_tools":
+            occupies_captured_lite_prefix = bool(
+                canonical_lite_developer_indexes and index in canonical_lite_developer_indexes
+            )
             developer_message_is_transparent = _historical_pending_developer_message_is_transparent(
                 item,
                 item_type=item_type,
+                allow_source_id=occupies_captured_lite_prefix,
             )
             # Canonical position is proven by the projection against the
             # original input, not by adjacency inside the projected prefix.
             occupies_canonical_lite_position = (
                 canonical_lite_developer_index is not None and index == canonical_lite_developer_index
-            )
+            ) or occupies_captured_lite_prefix
             if developer_message_is_transparent and occupies_canonical_lite_position:
                 continue
             historical_interleave_is_bounded = (
@@ -535,12 +569,13 @@ def _historical_pending_developer_message_is_transparent(
     item: Mapping[str, JsonValue],
     *,
     item_type: str | None,
+    allow_source_id: bool = False,
 ) -> bool:
     return (
         item_type in (None, "message")
         and ("type" not in item or _is_nonblank_string(item.get("type")))
         and item.get("role") == "developer"
-        and item.get("id") is None
+        and (item.get("id") is None or (allow_source_id and _is_nonblank_string(item.get("id"))))
         and item.get("phase") is None
         and item.get("status") in (None, "completed")
         and _internal_chat_message_metadata_is_account_neutral(item.get(_INTERNAL_CHAT_MESSAGE_METADATA_FIELD))
@@ -824,6 +859,18 @@ def _tool_declaration_is_account_neutral(tool: Mapping[str, JsonValue]) -> bool:
         return False
     if any(key not in _ACCOUNT_NEUTRAL_TOOL_DECLARATION_FIELDS[tool_type] for key in tool):
         return False
+    if tool_type == "namespace":
+        nested_tools = tool.get("tools")
+        return (
+            _is_nonblank_string(tool.get("name"))
+            and (tool.get("description") is None or isinstance(tool.get("description"), str))
+            and isinstance(nested_tools, list)
+            and bool(nested_tools)
+            and all(
+                isinstance(nested_tool, dict) and _tool_declaration_is_account_neutral(nested_tool)
+                for nested_tool in nested_tools
+            )
+        )
     if _contains_account_scoped_tool_state(tool):
         return False
     if tool_type in {"custom", "function"} and not _is_nonblank_string(tool.get("name")):

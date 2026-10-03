@@ -40,6 +40,9 @@ from app.modules.proxy.replay_safety import (
     _ACCOUNT_NEUTRAL_CONTENT_FIELDS,
     _ACCOUNT_NEUTRAL_INPUT_ITEM_FIELDS,
     _ACCOUNT_NEUTRAL_MESSAGE_FIELDS,
+    project_responses_input_for_account_neutral_fresh_replay,
+    responses_input_suffix_retains_prior_output,
+    responses_payload_is_account_neutral_fresh_replay,
 )
 from app.modules.proxy.request_policy import normalize_responses_request_payload
 from scripts.traffic_analysis import codex_body_sanitize, fixture_privacy_scan
@@ -309,6 +312,48 @@ def test_every_fixture_body_names_the_slug_its_provenance_records(name: str) -> 
     body = _load(name)
 
     assert body["model"] == PROVENANCE[name]["model_slug"], _label(name)
+
+
+def test_captured_lite_prefix_is_portable_after_source_ids_are_stripped() -> None:
+    body = _stripped("captured_gpt56sol_lite_http.json")
+    stored_input = cast(list[JsonValue], body["input"])
+    full_resend: list[JsonValue] = [
+        *stored_input,
+        {
+            "type": "message",
+            "id": "msg_prior_answer",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "prior answer"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_next_user",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "next question"}],
+        },
+    ]
+
+    classification_projection = project_responses_input_for_account_neutral_fresh_replay(
+        full_resend,
+        stored_count=len(stored_input),
+        preserve_developer_message_ids=True,
+    )
+    assert classification_projection is not None
+    assert classification_projection.canonical_lite_developer_indexes == frozenset({1, 2, 3, 4})
+    assert responses_input_suffix_retains_prior_output(
+        classification_projection.input_items,
+        stored_count=classification_projection.stored_prefix_count,
+        canonical_lite_developer_index=classification_projection.canonical_lite_developer_index,
+        canonical_lite_developer_indexes=classification_projection.canonical_lite_developer_indexes,
+    )
+
+    replay_projection = project_responses_input_for_account_neutral_fresh_replay(
+        full_resend,
+        stored_count=len(stored_input),
+    )
+    assert replay_projection is not None
+    assert responses_payload_is_account_neutral_fresh_replay({"input": replay_projection.input_items})
 
 
 def test_the_committed_catalog_is_the_one_every_captured_fixture_records() -> None:

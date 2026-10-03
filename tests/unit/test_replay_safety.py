@@ -1374,6 +1374,7 @@ def test_full_resend_exact_manifest_accepts_canonical_lite_prefix_developer_with
     stored_input: list[JsonValue] = [
         {
             "type": "additional_tools",
+            "id": "at_client_bundle",
             "role": "developer",
             "tools": [{"type": "custom", "name": "shell"}],
         },
@@ -1641,6 +1642,157 @@ def test_full_resend_retained_output_tolerates_fresh_developer_after_user() -> N
             stored_count=projection.stored_prefix_count,
         )
         is True
+    )
+
+
+def test_full_resend_accepts_captured_lite_multi_developer_prefix_with_source_ids() -> None:
+    stored_input: list[JsonValue] = [
+        {
+            "type": "additional_tools",
+            "id": "at_client_bundle",
+            "role": "developer",
+            "tools": [
+                {
+                    "type": "namespace",
+                    "name": "functions",
+                    "description": "",
+                    "tools": [
+                        {
+                            "type": "custom",
+                            "name": "shell",
+                            "description": "run a command",
+                        },
+                        {
+                            "type": "function",
+                            "name": "wait",
+                            "description": "wait for completion",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"session": {"type": "string"}},
+                            },
+                            "strict": False,
+                        },
+                    ],
+                }
+            ],
+        },
+        {
+            "type": "message",
+            "id": "msg_dev_1",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "control one"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_dev_2",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "control two"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_dev_3",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "control three"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_dev_4",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "control four"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_user_old",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "old question"}],
+        },
+    ]
+    full_resend: list[JsonValue] = [
+        *stored_input,
+        {
+            "type": "message",
+            "id": "msg_answer",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "prior answer"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_user_new",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "next question"}],
+        },
+    ]
+
+    classification_projection = project_responses_input_for_account_neutral_fresh_replay(
+        full_resend,
+        stored_count=len(stored_input),
+        preserve_developer_message_ids=True,
+    )
+    assert classification_projection is not None
+    assert classification_projection.canonical_lite_developer_indexes == frozenset({1, 2, 3, 4})
+    assert responses_input_suffix_retains_prior_output(
+        classification_projection.input_items,
+        stored_count=classification_projection.stored_prefix_count,
+        canonical_lite_developer_index=classification_projection.canonical_lite_developer_index,
+        canonical_lite_developer_indexes=classification_projection.canonical_lite_developer_indexes,
+    )
+
+    replay_projection = project_responses_input_for_account_neutral_fresh_replay(
+        full_resend,
+        stored_count=len(stored_input),
+    )
+    assert replay_projection is not None
+    assert all(not isinstance(item, dict) or "id" not in item for item in replay_projection.input_items)
+    assert responses_payload_is_account_neutral_fresh_replay({"input": replay_projection.input_items})
+
+
+def test_lite_prefix_marker_does_not_cross_projected_out_gap() -> None:
+    stored_input: list[JsonValue] = [
+        {
+            "type": "additional_tools",
+            "id": "at_client_bundle_gap",
+            "role": "developer",
+            "tools": [{"type": "custom", "name": "shell"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_dev_1",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "canonical control"}],
+        },
+        {"type": "reasoning", "id": "rs_hidden", "summary": []},
+        {
+            "type": "message",
+            "id": "msg_dev_late",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "late control"}],
+        },
+        {"role": "user", "content": "first question"},
+    ]
+    full_resend: list[JsonValue] = [
+        *stored_input,
+        {
+            "role": "assistant",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "prior answer"}],
+        },
+        {"role": "user", "content": "next question"},
+    ]
+
+    projection = project_responses_input_for_account_neutral_fresh_replay(
+        full_resend,
+        stored_count=len(stored_input),
+        preserve_developer_message_ids=True,
+    )
+
+    assert projection is not None
+    assert projection.canonical_lite_developer_indexes == frozenset({1})
+    assert not responses_input_suffix_retains_prior_output(
+        projection.input_items,
+        stored_count=projection.stored_prefix_count,
+        canonical_lite_developer_index=projection.canonical_lite_developer_index,
+        canonical_lite_developer_indexes=projection.canonical_lite_developer_indexes,
     )
 
 

@@ -473,6 +473,7 @@ class _VerifiedDurableFullResend:
             replay_projection.input_items,
             stored_count=replay_projection.stored_prefix_count,
             canonical_lite_developer_index=replay_projection.canonical_lite_developer_index,
+            canonical_lite_developer_indexes=replay_projection.canonical_lite_developer_indexes,
         ) or (
             pending_tool_calls is not None
             and responses_input_suffix_matches_pending_tool_calls(
@@ -480,6 +481,7 @@ class _VerifiedDurableFullResend:
                 stored_count=replay_projection.stored_prefix_count,
                 pending_tool_calls=pending_tool_calls,
                 canonical_lite_developer_index=replay_projection.canonical_lite_developer_index,
+                canonical_lite_developer_indexes=replay_projection.canonical_lite_developer_indexes,
             )
         )
         if not safe_fresh_context:
@@ -1619,6 +1621,7 @@ class _HTTPBridgeStreamingMixin:
                 replay_projection.input_items,
                 stored_count=replay_projection.stored_prefix_count,
                 canonical_lite_developer_index=replay_projection.canonical_lite_developer_index,
+                canonical_lite_developer_indexes=replay_projection.canonical_lite_developer_indexes,
             ) or (
                 lookup.latest_pending_tool_calls is not None
                 and responses_input_suffix_matches_pending_tool_calls(
@@ -1626,6 +1629,7 @@ class _HTTPBridgeStreamingMixin:
                     stored_count=replay_projection.stored_prefix_count,
                     pending_tool_calls=lookup.latest_pending_tool_calls,
                     canonical_lite_developer_index=replay_projection.canonical_lite_developer_index,
+                    canonical_lite_developer_indexes=replay_projection.canonical_lite_developer_indexes,
                 )
             )
 
