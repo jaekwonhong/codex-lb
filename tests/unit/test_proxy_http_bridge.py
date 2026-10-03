@@ -28728,8 +28728,10 @@ async def test_stream_via_http_bridge_recovers_dead_owner_with_replayable_full_r
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sdk_contract", [False, True])
 async def test_fresh_reattach_delta_requires_local_history_recovery_when_owner_quota_is_exhausted(
     monkeypatch: pytest.MonkeyPatch,
+    sdk_contract: bool,
 ) -> None:
     """A durable reattach delta must fail explicitly instead of soliciting history.
 
@@ -28808,7 +28810,7 @@ async def test_fresh_reattach_delta_requires_local_history_recovery_when_owner_q
 
     stream = service._stream_via_http_bridge(
         payload,
-        headers={"x-codex-session-id": "sid-owner-quota"},
+        headers={"x-codex-session-id": "sid-owner-quota", "user-agent": "Codex Desktop/0.159.2"},
         codex_session_affinity=True,
         propagate_http_errors=True,
         openai_cache_affinity=True,
@@ -28819,15 +28821,22 @@ async def test_fresh_reattach_delta_requires_local_history_recovery_when_owner_q
         codex_idle_ttl_seconds=1800.0,
         max_sessions=8,
         queue_limit=4,
+        enforce_openai_sdk_contract=sdk_contract,
     )
 
     with pytest.raises(ProxyResponseError) as exc_info:
         _ = [chunk async for chunk in stream]
 
-    assert exc_info.value.status_code == 409
-    assert exc_info.value.payload["error"]["type"] == "server_error"
+    if sdk_contract:
+        # Native identity alone cannot change the /v1 or SDK SSE contract.
+        assert exc_info.value.status_code == 502
+        assert exc_info.value.payload["error"]["code"] == "previous_response_owner_unavailable"
+        get_or_create.assert_not_awaited()
+        return
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.payload["error"]["type"] == "invalid_request_error"
     assert exc_info.value.payload["error"]["code"] == "continuity_recovery_required"
-    assert "previous_response_id" not in exc_info.value.payload["error"]
+    assert "param" not in exc_info.value.payload["error"]
     assert exc_info.value.failure_phase == "pre_dispatch"
     assert exc_info.value.failure_detail == "local_history_recovery_required"
     assert exc_info.value.local_pre_dispatch_refusal is True

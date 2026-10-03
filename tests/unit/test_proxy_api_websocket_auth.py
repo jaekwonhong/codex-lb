@@ -814,11 +814,11 @@ def test_stream_startup_error_response_preserves_continuity_recovery_required():
         }
     )
     error = ProxyResponseError(
-        409,
+        400,
         {
             "error": {
                 "message": "Continuation requires local Codex session history recovery.",
-                "type": "server_error",
+                "type": "invalid_request_error",
                 "code": "continuity_recovery_required",
             }
         },
@@ -829,11 +829,12 @@ def test_stream_startup_error_response_preserves_continuity_recovery_required():
 
     response = proxy_api_module._stream_startup_error_response(request, error, headers={})
 
-    assert response.status_code == 409
+    assert response.status_code == 400
+    assert response.headers["x-should-retry"] == "false"
     body = json.loads(bytes(response.body))
     assert body["error"] == {
         "message": "Continuation requires local Codex session history recovery.",
-        "type": "server_error",
+        "type": "invalid_request_error",
         "code": "continuity_recovery_required",
     }
 

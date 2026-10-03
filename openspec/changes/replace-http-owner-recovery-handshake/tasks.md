@@ -12,21 +12,61 @@
 
 ## 3. Verification
 
-- [x] 3.1 Unit regression for the production fresh-reattach delta shape.
-- [x] 3.2 Route-level regression proving HTTP 409, no upstream dispatch, and one request-log row.
-- [x] 3.3 Existing owner interruption, HTTP bridge replay, stale-anchor masking and model-source regressions pass.
-- [x] 3.4 Ruff, format, diff check and strict OpenSpec validation pass.
+- [x] 3.1 Rerun unit regressions on the corrected native-only HTTP 400 contract.
+- [x] 3.2 Rerun route-level no-dispatch, NULL-account logging and SDK boundary regressions.
+- [x] 3.3 Rerun existing owner interruption, HTTP bridge replay, stale-anchor masking and model-source regressions.
+- [x] 3.4 Rerun Ruff, format, targeted typing, diff check and strict OpenSpec validation.
+- [x] 3.5 Execute the actual-SDK MockTransport retry regression and committed-native-SSE test.
+- [ ] 3.6 Verify the actual PC2 Desktop failure lifecycle before any production qualification claim.
 
-### Qualification record
+### Corrected-tree qualification
 
-- Production-shape owner interruption route suite: 10 PASS.
-- HTTP bridge owner/replay/reattach focused suite: 45 PASS; full-resend owner/replay/reattach integration subset: 25 PASS.
-- API stale-anchor/error-shaping suite: 28 PASS; model-source WebSocket guard suite: 18 PASS.
+- Local-history/API unit contract: 40 PASS.
+- Production-shape owner interruption route suite: 15 PASS.
+- HTTP bridge owner/replay/reattach focused suite: 46 PASS; full-resend owner/replay/reattach integration subset: 25 PASS.
+- Model-source WebSocket guard suite: 18 PASS.
 - Changed proxy application files pass targeted `ty check`; Ruff, format and `git diff --check` pass.
 - Strict OpenSpec change validation passes; main spec tree: 66 PASS, 0 FAIL.
-- Repository-wide `ty check` and the proxy timing-seam guard already fail on the unchanged 8f41ee0ea baseline. The baseline has 71 type diagnostics and the same two raw-clock timing findings; this change does not widen either gate. Proxy architecture and cancellation-safety guards pass.
+- Proxy architecture and cancellation-safety guards pass.
+- The official Python SDK MockTransport regression proves the corrected 400 path issues one request, while the superseded 409 fixture retries.
+- Current public Codex source classifies HTTP 400 as terminal at the transport layer and `invalid_prompt` as a terminal `response.failed` category; unknown failed-event codes are retryable. The committed-SSE compatibility surrogate is intentionally limited to the native local refusal.
+- Actual PC2 Desktop behavior remains a production-path gate; these tests do not claim it has already been exercised.
 
 ## 4. Deployment
 
-- [ ] 4.1 Build a minimal Beta derivative only after all gates pass.
-- [ ] 4.2 Preserve rollback container and verify readiness; leave Stable untouched.
+- [x] 4.0 Build a non-promotable review image from the exact current production
+  Beta base and verify source/image hashes plus the JSON/SSE contracts in-image.
+- [ ] 4.1 After explicit commit/integration authorization, rebuild a
+  commit-addressable minimal Beta derivative from the corrected source.
+- [ ] 4.2 After explicit production-promotion authorization, preserve the rollback
+  container, wait for a safe cutover boundary, replace Beta, and verify readiness;
+  leave Stable untouched.
+
+The previously built image `sha256:a0a5b6769775f740d289bbac3a087fe403b92bb0fc8efa478357a64aa6439d5c`
+contains the reviewed 409 behavior, not these corrections. It is not the corrected
+deployment candidate. No commit, canonical merge, push or deployment was performed
+for the review edits.
+
+Review image (not approved for promotion):
+
+- image: `sha256:87b15bc98ad4db0b7407d0f4f00fc1a494124725d0adf261a02cd1d914feca6b`
+- exact production base: `sha256:8d606b5add93fd526a3e7a2af4c56ac2dd7c176f74a1e67c316e9069ce2c8c48`
+- source base: `ab78561f108cd60fffced3ecd170e4b02d50375d`
+- uncommitted application diff SHA-256:
+  `958ba54c7a01bfb85641ba280b3e043a36ed9686f994480784e6d84ae79e0152`
+- all three copied application-file SHA-256 values match between the worktree and image.
+- in-image smoke: pre-commit JSON is HTTP 400 + `continuity_recovery_required`
+  + `x-should-retry:false` with no Retry-After; committed native SSE is terminal
+  `invalid_prompt` with `availability_reason=continuity_recovery_required` and no
+  SSE retry directive.
+
+## 5. Review corrections
+
+- [x] 5.1 Replace retry-prone 409/server_error with distinct 400/invalid_request_error.
+- [x] 5.2 Generate no-retry headers only for the local refusal; remove conflicting JSON/SSE retry hints.
+- [x] 5.3 Restrict the branch to native identity plus native backend SSE contract.
+- [x] 5.4 Require local pre-dispatch provenance before NULL-account preflight logging.
+- [x] 5.5 Preserve the original thread and describe owner recovery as an alternative to local-history fork.
+- [x] 5.6 Add regressions for SDK retries, contract boundaries, provenance and committed SSE.
+- [x] 5.7 Make an already-committed native SSE refusal terminal to Codex by using
+  the `invalid_prompt` wire surrogate while retaining the real continuity marker.

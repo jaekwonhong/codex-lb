@@ -263,6 +263,7 @@ from app.modules.model_sources.selection import (
 from app.modules.proxy import affinity as proxy_affinity_module
 from app.modules.proxy import images_service as images_service_module
 from app.modules.proxy import service as proxy_service_module
+from app.modules.proxy._service.http_bridge.helpers import _is_local_history_recovery_required
 from app.modules.proxy._service.observability import record_http_bridge_routing
 from app.modules.proxy._service.support import (
     _bind_propagated_capacity_startup_ready,
@@ -8461,20 +8462,32 @@ async def _stream_response_error_events(
         )
         error = envelope.error
         retry_hint = ""
-        if exc.retry_after_seconds is not None and exc.retry_after_seconds > 0:
+        if (
+            not _is_local_history_recovery_required(exc)
+            and exc.retry_after_seconds is not None
+            and exc.retry_after_seconds > 0
+        ):
             # Preserve the HTTP Retry-After signal when a streaming response
             # has already started and the exception must be represented as an
             # SSE event.  The SSE retry field is milliseconds, while the
             # exception stores seconds.  Clients that do not implement the
             # directive safely ignore the extra comment line.
             retry_hint = f"retry: {max(1, math.ceil(exc.retry_after_seconds * 1000))}\n"
+        local_history_recovery = _is_local_history_recovery_required(exc)
         failed_event = response_failed_event(
-            error.code if error and error.code else "upstream_error",
+            "invalid_prompt" if local_history_recovery else error.code if error and error.code else "upstream_error",
             error.message if error and error.message else "Upstream error",
             error.type if error and error.type else "server_error",
             response_id=response_id,
             error_param=error.param_state if error else None,
         )
+        if local_history_recovery:
+            # Native Codex treats unknown response.failed codes as retryable.
+            # Once the HTTP response is committed we cannot return the preferred
+            # 400 JSON refusal, so use Codex's established terminal request-error
+            # wire category while retaining the actual recovery reason for raw
+            # event consumers and operator diagnostics.
+            failed_event["response"]["error"]["availability_reason"] = "continuity_recovery_required"
         if not local_refusal and error_code in {
             "stream_incomplete",
             "stream_idle_timeout",
@@ -8501,13 +8514,25 @@ def _stream_startup_error_response(
             default_status=error.status_code,
         )
         startup_headers = dict(headers)
-        retry_after_header = _safe_retry_after_header(
-            {"Retry-After": error.retry_after_header} if error.retry_after_header is not None else None
-        )
-        if retry_after_header is not None:
-            startup_headers.setdefault("Retry-After", retry_after_header)
-        elif error.retry_after_seconds is not None and error.retry_after_seconds > 0:
-            startup_headers.setdefault("Retry-After", str(error.retry_after_seconds))
+        if _is_local_history_recovery_required(error):
+            # 409 is retryable in standard SDKs. This 400 is a locally proven
+            # refusal of unchanged input, not a transient upstream failure.
+            # Clear contradictory hints case-insensitively and do not alter
+            # retry advice for unmarked/provider-originated failures.
+            startup_headers = {
+                key: value
+                for key, value in startup_headers.items()
+                if key.lower() not in {"retry-after", "retry-after-ms", "x-should-retry"}
+            }
+            startup_headers["x-should-retry"] = "false"
+        else:
+            retry_after_header = _safe_retry_after_header(
+                {"Retry-After": error.retry_after_header} if error.retry_after_header is not None else None
+            )
+            if retry_after_header is not None:
+                startup_headers.setdefault("Retry-After", retry_after_header)
+            elif error.retry_after_seconds is not None and error.retry_after_seconds > 0:
+                startup_headers.setdefault("Retry-After", str(error.retry_after_seconds))
         return _logged_error_json_response(
             request,
             status_code,

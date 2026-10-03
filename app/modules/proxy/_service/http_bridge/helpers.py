@@ -794,7 +794,7 @@ def _http_bridge_client_full_history_recovery_error() -> OpenAIErrorEnvelope:
 
 
 def _local_history_recovery_required_error() -> OpenAIErrorEnvelope:
-    """Return a non-retry contract when only local Codex history can recover.
+    """Describe a continuation that cannot be reassigned in its current form.
 
     This is deliberately distinct from ``previous_response_not_found``.  Native
     Codex HTTP clients are not assumed to rebuild a full conversation from that
@@ -804,11 +804,25 @@ def _local_history_recovery_required_error() -> OpenAIErrorEnvelope:
     return openai_error(
         "continuity_recovery_required",
         (
-            "Continuation owner is unavailable and this HTTP delta cannot be moved safely. "
-            "Retrying the same request cannot reconstruct the missing context; recover the "
-            "conversation from local Codex session history."
+            "This continuation cannot be safely reassigned with the context available to the proxy. "
+            "Repeating it unchanged cannot restore context. Preserve this thread; wait for the original "
+            "owner to become available or recover a new thread from local Codex session history."
         ),
-        error_type="server_error",
+        error_type="invalid_request_error",
+    )
+
+
+def _is_local_history_recovery_required(error: ProxyResponseError) -> bool:
+    """Recognize our own refusal, never a provider's similarly named error."""
+    detail = error.payload.get("error")
+    return (
+        error.status_code == 400
+        and error.local_pre_dispatch_refusal
+        and error.failure_phase == "pre_dispatch"
+        and error.failure_detail == "local_history_recovery_required"
+        and isinstance(detail, dict)
+        and detail.get("code") == "continuity_recovery_required"
+        and detail.get("type") == "invalid_request_error"
     )
 
 

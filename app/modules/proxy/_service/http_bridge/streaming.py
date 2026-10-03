@@ -23,6 +23,7 @@ from app.core.clients.proxy import (  # noqa: F401
     _client_metadata_uses_responses_lite,
     _inline_content_images,
     _inline_input_image_urls,
+    _is_native_codex_request,
     _ws_transport_payload_budget_bytes,
     filter_inbound_headers,
     is_confirmed_pre_dispatch_transport_error,
@@ -111,6 +112,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_should_attempt_soft_affinity_reroute,
     _http_bridge_should_rollover_after_context_overflow,
     _http_bridge_turn_state_anchor_for_owner_failure,
+    _is_local_history_recovery_required,
     _is_missing_durable_bridge_table_error,
     _local_history_recovery_required_error,
     _log_http_bridge_event,
@@ -309,7 +311,6 @@ ACCOUNT_NEUTRAL_REPLAY_REJECTIONS: frozenset[str] = frozenset(
 # get a request-log row; other pre-submit codes keep their existing behaviour.
 _HTTP_BRIDGE_CONTINUITY_OWNER_ERROR_CODES = frozenset(
     {
-        "continuity_recovery_required",
         "previous_response_owner_unavailable",
         "continuity_owner_conflict",
     }
@@ -1209,7 +1210,10 @@ class _HTTPBridgeStreamingMixin:
                     # an error row for a turn that then succeeded would corrupt
                     # the very error rate this row exists to show.
                     bridge_error_code, bridge_error_message = _proxy_error_code_message(exc)
-                    if bridge_error_code in _HTTP_BRIDGE_CONTINUITY_OWNER_ERROR_CODES:
+                    if (
+                        bridge_error_code in _HTTP_BRIDGE_CONTINUITY_OWNER_ERROR_CODES
+                        or _is_local_history_recovery_required(exc)
+                    ):
                         useragent, useragent_group, conversation_id = _request_log_client_fields(headers)
                         await self._write_stream_preflight_error(
                             account_id=None,
@@ -2558,6 +2562,8 @@ class _HTTPBridgeStreamingMixin:
                 if (
                     advice.alternate_id is not None
                     and not portable
+                    and not enforce_openai_sdk_contract
+                    and _is_native_codex_request(headers)
                     and payload.previous_response_id is None
                     and rewritten_file_account_id is None
                     and request_state.proxy_injected_previous_response_id
@@ -2589,7 +2595,7 @@ class _HTTPBridgeStreamingMixin:
                         owner_check_applied=True,
                     )
                     raise ProxyResponseError(
-                        409,
+                        400,
                         _local_history_recovery_required_error(),
                         failure_phase="pre_dispatch",
                         failure_detail="local_history_recovery_required",

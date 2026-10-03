@@ -16,10 +16,12 @@ source rules unchanged.
 ## What Changes
 
 - Replace the quota-owner fresh-reattach `previous_response_not_found` handshake
-  with a local pre-dispatch `409 continuity_recovery_required` error when a
+  with a native-only local pre-dispatch `400 continuity_recovery_required` error when a
   healthy alternate exists but the current delta is not proven portable.
 - State clearly that retrying the same HTTP request cannot reconstruct the
-  missing context and that local Codex session history must be used for recovery.
+  missing context. Preserve the original thread so it can resume if its owner
+  recovers, while also offering recovery of a new thread from local Codex
+  session history.
 - Write the new pre-submit failure to `request_logs` and emit one structured
   bridge event without exposing the raw previous-response id.
 - Remove the temporary API-layer exception that exposed a marked
@@ -28,6 +30,13 @@ source rules unchanged.
   behaviour.
 - Add unit and product-path regression coverage proving no upstream dispatch,
   stable error delivery, and request-log attribution.
+- Use `invalid_request_error` and an explicit `x-should-retry: false` response
+  header for this locally proven refusal. HTTP 409 is not a non-retry contract:
+  standard OpenAI SDK retry policies treat it as retryable.
+- Require both the native Codex identity and the native backend SSE contract;
+  preserve SDK and `/v1/responses` owner-unavailable behavior.
+- Attribute the new preflight log only from local pre-dispatch provenance, not
+  from a matching error-code string an upstream provider could also return.
 
 ## Capabilities
 

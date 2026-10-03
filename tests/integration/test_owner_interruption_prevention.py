@@ -12,11 +12,13 @@ from sqlalchemy import select, update
 
 import app.modules.proxy.service as proxy_module
 from app.core.balancer.recovery import OwnerRecoveryHint
+from app.core.clients.proxy import ProxyResponseError
 from app.core.utils.time import to_utc_naive, utcnow
 from app.db.models import Account, AccountStatus, HttpBridgeSessionState, RequestLog, UsageHistory
 from app.db.session import SessionLocal
 from app.dependencies import get_proxy_service_for_app
 from app.modules.proxy._service.http_bridge import streaming as bridge_streaming
+from app.modules.proxy._service.http_bridge.helpers import _local_history_recovery_required_error
 from app.modules.proxy.account_cache import get_account_selection_cache
 from app.modules.proxy.durable_bridge_coordinator import DurableBridgeLookup
 from app.modules.proxy.durable_bridge_runtime import http_bridge_owner_process_epoch
@@ -34,10 +36,26 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("identity_headers", "expected_status", "expected_code"),
+    [
+        ({"user-agent": "Codex Desktop/0.159.2 (Windows; x86_64)"}, 400, "continuity_recovery_required"),
+        ({"user-agent": "test-client", "originator": "codex_cli_rs"}, 400, "continuity_recovery_required"),
+        ({"user-agent": "openai-python/2.0"}, 502, "previous_response_owner_unavailable"),
+        (
+            {"user-agent": "Codex Desktop/0.159.2", "x-stainless-lang": "python"},
+            502,
+            "previous_response_owner_unavailable",
+        ),
+    ],
+)
 async def test_fresh_reattach_delta_route_requires_local_history_and_logs_preflight(
     async_client,
     app_instance,
     monkeypatch,
+    identity_headers,
+    expected_status,
+    expected_code,
 ):
     """Reproduce the PC2 HTTP-only failure at the public backend route.
 
@@ -100,16 +118,21 @@ async def test_fresh_reattach_delta_route_requires_local_history_and_logs_prefli
         headers={
             "session_id": "sid-local-history-recovery",
             "thread-id": thread_id,
-            "user-agent": "Codex Desktop/0.159.2 (Windows; x86_64)",
+            **identity_headers,
         },
     )
 
-    assert response.status_code == 409
+    assert response.status_code == expected_status
     error = response.json()["error"]
-    assert error["code"] == "continuity_recovery_required"
-    assert error["type"] == "server_error"
-    assert "local Codex session history" in error["message"]
-    assert "previous_response_id" not in error
+    assert error["code"] == expected_code
+    if expected_code == "continuity_recovery_required":
+        assert error["type"] == "invalid_request_error"
+        assert "local Codex session history" in error["message"]
+        assert "param" not in error
+        assert response.headers["x-should-retry"] == "false"
+        assert "retry-after" not in response.headers
+    else:
+        assert response.headers.get("x-should-retry") != "false"
     get_or_create.assert_not_awaited()
 
     async with SessionLocal() as session:
@@ -117,8 +140,7 @@ async def test_fresh_reattach_delta_route_requires_local_history_and_logs_prefli
             (
                 await session.execute(
                     select(RequestLog).where(
-                        RequestLog.conversation_id == thread_id,
-                        RequestLog.error_code == "continuity_recovery_required",
+                        RequestLog.error_code == expected_code,
                     )
                 )
             )
@@ -130,6 +152,52 @@ async def test_fresh_reattach_delta_route_requires_local_history_and_logs_prefli
     assert rows[0].status == "error"
     assert rows[0].account_id is None
     assert rows[0].model == "gpt-5.1"
+    assert rows[0].request_id
+    if identity_headers.get("user-agent", "").lower().startswith("codex"):
+        assert rows[0].conversation_id == thread_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("local_provenance", [True, False])
+async def test_recovery_preflight_logging_does_not_classify_provider_errors_by_code_alone(
+    async_client,
+    app_instance,
+    monkeypatch,
+    local_provenance,
+):
+    _install_bridge_settings(monkeypatch, enabled=True)
+    service = get_proxy_service_for_app(app_instance)
+    error = ProxyResponseError(
+        400,
+        _local_history_recovery_required_error(),
+        failure_phase="pre_dispatch" if local_provenance else "upstream",
+        failure_detail="local_history_recovery_required" if local_provenance else None,
+        local_pre_dispatch_refusal=local_provenance,
+    )
+
+    async def failed_bridge(*args, **kwargs):
+        raise error
+        yield ""  # pragma: no cover -- preserve async-generator shape
+
+    preflight = AsyncMock()
+    monkeypatch.setattr(service, "_stream_via_http_bridge", failed_bridge)
+    monkeypatch.setattr(service, "_write_stream_preflight_error", preflight)
+    response = await async_client.post(
+        "/backend-api/codex/responses",
+        json={"model": "gpt-5.1", "instructions": "test", "input": "test-only", "stream": True},
+        headers={"user-agent": "Codex Desktop/0.159.2"},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "continuity_recovery_required"
+    if local_provenance:
+        preflight.assert_awaited_once()
+        assert preflight.await_args is not None
+        assert preflight.await_args.kwargs["account_id"] is None
+        assert preflight.await_args.kwargs["error_code"] == "continuity_recovery_required"
+        assert response.headers["x-should-retry"] == "false"
+    else:
+        preflight.assert_not_awaited()
+        assert "x-should-retry" not in response.headers
 
 
 @pytest_asyncio.fixture
