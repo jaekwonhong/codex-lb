@@ -156,4 +156,6 @@ final Stage-1 product-path qualification.
   line on XZ remote branch `codex/fix-pc2-owner-recovery-handshake-20261003`;
   read-only promotion preflight reports ready with zero durable operations/leases.
 - [ ] 9.8 After a new explicit promotion approval, promote that derivative and
-  re-run the real PC2 conversation once more before closing Stage 1.
+  re-run the real PC2 conversation once more before closing Stage 1. Promotion
+  to `sha256:291a47e3...` is complete and post-promotion qualification passed;
+  only the real PC2 retest remains pending.

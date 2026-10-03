@@ -493,4 +493,40 @@ the approval gate: Beta container `db514103...` remained on `8a59f620...`, Stabl
 remained `0c717ce1...`, PostgreSQL remained `1e42fec6...` at Alembic head
 `20260913_000000_add_oidc_provider_flow`, and both nonterminal operations and
 unexpired session leases were zero. The script also pins candidate revision,
-base, bundle and scope labels. `execute` has not been run.
+base, bundle and scope labels.
+
+After explicit promotion authorization, the first `execute` attempt stopped
+before any production mutation because Docker Desktop rendered one equivalent
+macOS bind source as `/host_mnt/Users/...` on the predecessor and `/Users/...`
+on the created candidate. The transaction equivalence gate was narrowed only to
+canonicalize that Docker Desktop bind-source display prefix; mount target,
+read-only mode, volume, port, environment, security and restart semantics stayed
+strictly compared. The failed stopped candidate was removed and the transaction
+was rerun from a fresh read-only preflight.
+
+The successful promotion produced:
+
+- running Beta container:
+  `b114b792d8213b9b9434e3ec01b07af42c5471e4b35566329d2a3eda1be45c85`
+- running image:
+  `sha256:291a47e3050852faa16fe4332515edd64e3012df033207db9d3af8e883bf9827`
+- retained predecessor:
+  `db51410384999784431451aa457ce5dbda4d227c2a8847d0973d87918fe8780e`
+  as `codex-lb-beta-pre-native-explicit-owner-recovery-20261003T124556Z-78862`,
+  stopped with `restart=no`
+- Stable unchanged as container `0c717ce1...` on `sha256:11eb4370...`
+- PostgreSQL unchanged as `1e42fec6...`, system identifier
+  `7684501606386458669`, Alembic head
+  `20260913_000000_add_oidc_provider_flow`
+
+Post-promotion qualification passed: local and tailnet Beta/Stable readiness are
+HTTP 200, runtime configuration matches the predecessor apart from image/
+provenance/restart state, all three overlay SHA-256 values match the reviewed
+source/image evidence, nonterminal operations and unexpired leases are both zero,
+there are no actual startup/runtime error markers, and the recreation lock is
+absent.
+
+The remaining Stage-1 gate is one real PC2 Codex Desktop 0.160 request on
+conversation `01a10030-...` to prove that the formerly repeating explicit-anchor
+owner-unavailable turn now terminates as local HTTP 400
+`continuity_recovery_required` without upstream dispatch or a retry loop.
