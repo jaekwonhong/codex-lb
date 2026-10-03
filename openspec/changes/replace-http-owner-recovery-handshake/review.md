@@ -300,5 +300,31 @@ Source and image hashes match byte-for-byte for `continuity.py`, HTTP-bridge
 `helpers.py`, HTTP-bridge `streaming.py`, and raw streaming `retry.py`. In-image
 smoke reconfirmed HTTP 400 + `invalid_request_error` +
 `continuity_recovery_required`, `x-should-retry:false`, and no Retry-After or
-Retry-After-Ms. Production remains on `c3fdb1b9...` pending a new explicit
-promotion authorization.
+Retry-After-Ms.
+
+### Follow-up production promotion
+
+After explicit authorization, candidate `sha256:b57e00a8...` was promoted to
+Beta using the same rollback-safe transaction pattern as the first Stage-1
+deployment. The predecessor `sha256:c3fdb1b9...` was retained stopped with
+`restart=no` as container `2519dacb...` under
+`codex-lb-beta-pre-explicit-owner-recovery-20261003T105655Z-60236`.
+
+The new running Beta is container `40fce5b7...` on image
+`sha256:b57e00a806013619d0c122a20ef28116b1c81ea3e3123226af1ecd51f053ab2e`.
+Its runtime configuration projection matches the predecessor apart from the
+image/provenance/restart state, the four application hashes match the reviewed
+source, local and tailnet readiness are HTTP 200, Stable is unchanged, and
+PostgreSQL remains system identifier `7684501606386458669` at Alembic head
+`20260913_000000_add_oidc_provider_flow`. Nonterminal operations and unexpired
+leases are both zero.
+
+Startup-log qualification found no actual `ERROR`, `FATAL`, `PANIC`,
+`Traceback`, migration-failure, or schema-mismatch records. A preliminary
+case-insensitive grep counted four lines only because the Uvicorn logger is named
+`uvicorn.error`; those lines were ordinary INFO startup messages.
+
+The remaining Stage-1 gate is to re-run the real PC2 Codex Desktop 0.160
+conversation `01a10030-...` and confirm that the same explicit-owner-proof-loss
+path now terminates as HTTP 400 `continuity_recovery_required` without upstream
+dispatch or a retry loop.

@@ -113,4 +113,6 @@ final Stage-1 product-path qualification.
   commit-addressable Beta derivative: commit `677128a72`, image
   `sha256:b57e00a8...`, exact base `sha256:c3fdb1b9...`; source/image hashes and
   in-image 400/no-retry contract verified.
-- [ ] 8.7 After separate production-promotion authorization, promote the new candidate and re-run the same actual PC2 Desktop thread path.
+- [ ] 8.7 Promote the new candidate after separate authorization, then re-run
+  the same actual PC2 Desktop thread path. Promotion is complete on
+  `sha256:b57e00a8...`; the real PC2 re-test remains pending.
