@@ -86,6 +86,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _capture_http_bridge_denied_anchor_fence,
     _effective_http_bridge_idle_ttl_seconds,
     _http_bridge_abandonment_may_settle_circuit,
+    _http_bridge_client_full_history_recovery_error,
     _http_bridge_continuity_bound_without_safe_replay,
     _http_bridge_durable_lookup_allows_turn_state_takeover,
     _http_bridge_eventless_budget_seconds,
@@ -2553,6 +2554,42 @@ class _HTTPBridgeStreamingMixin:
                     ):
                         yield line
                     continue
+                if (
+                    advice.alternate_id is not None
+                    and not portable
+                    and payload.previous_response_id is None
+                    and rewritten_file_account_id is None
+                    and request_state.proxy_injected_previous_response_id
+                    and request_state.previous_response_id is not None
+                ):
+                    # The client did not name the exhausted owner's response;
+                    # the bridge injected that anchor while freshly reattaching
+                    # a durable session/thread delta. A healthy alternate
+                    # exists, but this delta alone is not portable across
+                    # accounts. Use the
+                    # Responses recovery contract instead of a 502 retry loop:
+                    # native Codex drops its retained anchor and resends its
+                    # complete local history, which the proof-gated path above
+                    # can then project and admit on the alternate account.
+                    #
+                    # This is intentionally narrower than clearing the anchor
+                    # and dispatching the current body: doing that would lose
+                    # context.  Client-supplied previous_response_id and
+                    # file/account-bound turns remain fail-closed below.
+                    _log_http_bridge_event(
+                        "owner_pressure_client_full_history_recovery",
+                        bridge_session_key,
+                        account_id=request_state.preferred_account_id,
+                        model=effective_payload.model,
+                        detail=f"reason={advice.hint.reason}, outcome=request_full_history_resend",
+                        cache_key_family=bridge_session_key.affinity_kind,
+                        model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
+                        owner_check_applied=True,
+                    )
+                    raise ProxyResponseError(
+                        400,
+                        _http_bridge_client_full_history_recovery_error(),
+                    )
                 # Cached sockets must not bypass fresh, confirmed admission
                 # failure. Preserve an explicit client's anchor, not its retry
                 # loop or a speculative send to an exhausted account.

@@ -29,6 +29,7 @@ from websockets.exceptions import ConnectionClosedError
 from websockets.frames import Close
 
 from app.core.auth.refresh import RefreshError
+from app.core.balancer.recovery import OwnerRecoveryHint
 from app.core.clients.proxy import (
     CODEX_RESPONSES_LITE_WEBSOCKET_METADATA_KEY,
     ProxyResponseError,
@@ -85,6 +86,7 @@ from app.modules.proxy.http_bridge_event_batcher import (
 )
 from app.modules.proxy.http_bridge_forwarding import OwnerForwardRelayFailure
 from app.modules.proxy.load_balancer import CONTINUITY_OWNER_UNAVAILABLE, CatalogOmissionQuotaAdmission
+from app.modules.proxy.owner_recovery import OwnerRecoveryAdvice
 from tests.simulation.virtual_time import VirtualClock, VirtualScheduler
 from tests.unit.hypothesis_strategies import json_values as hypothesis_json_values
 
@@ -28723,6 +28725,109 @@ async def test_stream_via_http_bridge_recovers_dead_owner_with_replayable_full_r
     replay_payload = json.loads(captured_text_data[0])
     assert "previous_response_id" not in replay_payload
     assert replay_payload["input"][-1]["content"] == [{"type": "input_text", "text": "next question"}]
+
+
+@pytest.mark.asyncio
+async def test_fresh_reattach_delta_requests_client_full_history_when_owner_quota_is_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A durable reattach delta must not spin forever on an exhausted owner.
+
+    This reproduces the PC2 production shape: the client sends no explicit
+    previous_response_id, the bridge injects the durable anchor, that owner is
+    quota-blocked, and another account is available.  The delta cannot safely
+    move by itself, so the bridge asks native Codex for its full local history
+    instead of returning the retry-preserving 502 indefinitely.
+    """
+
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    settings = _make_app_settings(http_responses_session_bridge_instance_id="bridge-instance")
+    payload = proxy_service.ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.4",
+            "instructions": "continue",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "delta-only continuation"}],
+                }
+            ],
+        }
+    )
+    durable_lookup = proxy_service.DurableBridgeLookup(
+        session_id="durable-owner-quota",
+        canonical_kind="session_header",
+        canonical_key="sid-owner-quota",
+        api_key_scope="__anonymous__",
+        account_id="acc-owner",
+        owner_instance_id="bridge-instance",
+        owner_process_epoch=http_bridge_owner_process_epoch(),
+        owner_epoch=3,
+        lease_expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+        state=HttpBridgeSessionState.ACTIVE,
+        latest_turn_state="sid-owner-quota",
+        latest_response_id="resp_owner_anchor",
+        model="gpt-5.4",
+    )
+    get_or_create = AsyncMock(side_effect=AssertionError("recovery handshake must happen before upstream creation"))
+
+    async def quota_owner_advice(*args: Any, **kwargs: Any) -> OwnerRecoveryAdvice:
+        del args, kwargs
+        return OwnerRecoveryAdvice(
+            owner_id="acc-owner",
+            hint=OwnerRecoveryHint("quota_exhausted", time.time() + 3600),
+            alternate_id="acc-alternate",
+        )
+
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: cast(
+            Any,
+            SimpleNamespace(
+                get=AsyncMock(
+                    return_value=SimpleNamespace(
+                        sticky_threads_enabled=False,
+                        openai_cache_affinity_max_age_seconds=1800,
+                        http_responses_session_bridge_prompt_cache_idle_ttl_seconds=3600,
+                        http_responses_session_bridge_gateway_safe_mode=False,
+                    )
+                )
+            ),
+        ),
+    )
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(http_bridge_streaming_module, "assess_owner_recovery", quota_owner_advice)
+    monkeypatch.setattr(service._durable_bridge, "lookup_request_targets", AsyncMock(return_value=durable_lookup))
+    monkeypatch.setattr(service, "_http_bridge_has_live_local_session", AsyncMock(return_value=False))
+    monkeypatch.setattr(service, "_http_bridge_can_forward_to_active_owner", AsyncMock(return_value=False))
+    monkeypatch.setattr(service, "_resolve_file_account_for_responses", AsyncMock(return_value=None))
+    monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value="acc-owner"))
+    monkeypatch.setattr(service, "_get_or_create_http_bridge_session", get_or_create)
+
+    stream = service._stream_via_http_bridge(
+        payload,
+        headers={"x-codex-session-id": "sid-owner-quota"},
+        codex_session_affinity=True,
+        propagate_http_errors=True,
+        openai_cache_affinity=True,
+        api_key=None,
+        api_key_reservation=None,
+        suppress_text_done_events=False,
+        idle_ttl_seconds=120.0,
+        codex_idle_ttl_seconds=1800.0,
+        max_sessions=8,
+        queue_limit=4,
+    )
+
+    with pytest.raises(ProxyResponseError) as exc_info:
+        _ = [chunk async for chunk in stream]
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.payload["error"]["type"] == "invalid_request_error"
+    assert exc_info.value.payload["error"]["code"] == "previous_response_not_found"
+    assert exc_info.value.payload["error"]["param"] == "previous_response_id"
+    get_or_create.assert_not_awaited()
 
 
 @pytest.mark.asyncio
