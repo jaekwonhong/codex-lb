@@ -217,6 +217,53 @@ committed recovery refusal delivery.
 No Production promotion was performed while creating or validating this
 candidate.
 
+## Production Beta promotion (2026-10-04)
+
+The user explicitly approved Production Beta promotion after the read-only
+prepromotion gate passed. The rollback-safe transaction then promoted the
+reviewed Stage-1 candidate and returned
+`PASS_BETA_DURABLE_OWNER_PROOF_LOSS_PROMOTION`.
+
+The new Production Beta is:
+
+- container:
+  `3576509338c9b6b5245db4b4780fffe7027a906b43916af4b8ccbd9fecc2a3f9`;
+- image:
+  `sha256:372f32388f90d94180081227840b9cc4d0a55e5570c527285a364bb3df65f399`;
+- restart policy: `unless-stopped`.
+
+The predecessor
+`e0e2872679beb6ed367c6edbbc0fb51575efefea2fc3b1226ccdd1285579a087`
+was retained stopped under
+`codex-lb-beta-pre-durable-owner-proof-loss-20261004T014711Z-58488`
+with `restart=no`.
+
+Immediate post-promotion verification showed:
+
+- Beta and Stable readiness endpoints: PASS;
+- Stable identity/image/start epoch: unchanged;
+- PostgreSQL identity/image/start epoch: unchanged and healthy;
+- Alembic head: `20260913_000000_add_oidc_provider_flow`;
+- nonterminal HTTP bridge operations: 0;
+- unexpired session leases: 0;
+- recreation lock: absent;
+- recent Beta error scan: no matching continuity/traceback errors.
+
+Stage 1 is **not closed yet**. The required real PC2 product-path check on
+`codex://threads/01a10030-6f50-7083-b086-f7d5ad4ac14b` could not be generated
+immediately after promotion because the PC2 host `jaekwonhong`
+(`100.120.143.35`) was offline on Tailscale and its SSH/WinRM/RDP/SMB paths
+were unreachable. A read-only request-log query confirms that no request from
+that thread arrived after the promotion boundary. The last actual requests from
+that thread before promotion still show the historical
+`previous_response_owner_unavailable` failures and therefore cannot qualify
+the new image.
+
+Do not claim Stage-1 closeout until a new request is sent from that exact PC2
+thread against the promoted image and the server evidence confirms the terminal
+recovery contract, no retry loop, no unintended upstream dispatch, and correct
+request-log attribution.
+
 The previous unrelated Windows mirror run had one real-clock one-second timeout
 in an eventless bridge-reader test; the exact test passed three consecutive
 isolated reruns. The authoritative Mac final core run above passed that test as
