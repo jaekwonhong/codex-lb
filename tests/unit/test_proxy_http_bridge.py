@@ -11706,6 +11706,16 @@ def _pre_dispatch_proxy_error(message: str = "sanitized proxy connect failure") 
     )
 
 
+def _token_revoked_connect_error() -> ProxyResponseError:
+    return ProxyResponseError(
+        502,
+        openai_error(
+            "token_revoked",
+            "Encountered invalidated oauth token for user, failing request",
+        ),
+    )
+
+
 def _bridge_selection_settings() -> SimpleNamespace:
     return SimpleNamespace(
         prefer_earlier_reset_accounts=False,
@@ -11803,6 +11813,237 @@ async def test_create_http_bridge_session_defers_confirmed_proxy_backoff_until_r
     assert settlement_order == ["settle", "backoff"]
     assert lease_a in released_leases
     assert lease_b not in released_leases
+
+
+@pytest.mark.asyncio
+async def test_create_http_bridge_session_token_revoked_refreshes_then_reallocates_sticky(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    account_a = cast(Any, SimpleNamespace(id="acc-revoked-a", status=AccountStatus.ACTIVE, plan_type="plus"))
+    account_b = cast(Any, SimpleNamespace(id="acc-revoked-b", status=AccountStatus.ACTIVE, plan_type="plus"))
+    lease_a = proxy_service.AccountLease("lease-revoked-a", account_a.id, "stream", time.monotonic())
+    lease_b = proxy_service.AccountLease("lease-revoked-b", account_b.id, "stream", time.monotonic())
+    upstream = cast(Any, SimpleNamespace(response_header=lambda _name: None, close=AsyncMock()))
+    selections: list[set[str]] = []
+    reallocate_flags: list[bool] = []
+    releases: list[proxy_service.AccountLease] = []
+
+    async def select_account(_deadline: float, **kwargs: object) -> proxy_service.AccountSelection:
+        excluded = set(cast(set[str], kwargs["exclude_account_ids"]))
+        selections.append(excluded)
+        affinity_policy = cast(proxy_service._AffinityPolicy, kwargs["affinity_policy"])
+        reallocate_flags.append(affinity_policy.reallocate_sticky)
+        if not excluded:
+            return proxy_service.AccountSelection(account=account_a, error_message=None, lease=lease_a)
+        return proxy_service.AccountSelection(account=account_b, error_message=None, lease=lease_b)
+
+    async def release_account_lease(lease: proxy_service.AccountLease | None) -> None:
+        if lease is not None:
+            releases.append(lease)
+
+    mark_permanent_failure = AsyncMock(return_value=True)
+    ensure_fresh = AsyncMock(side_effect=[account_a, account_a, account_b])
+    open_upstream = AsyncMock(side_effect=[_token_revoked_connect_error(), _token_revoked_connect_error(), upstream])
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=_bridge_selection_settings())),
+    )
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", select_account)
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", ensure_fresh)
+    monkeypatch.setattr(service, "_open_upstream_websocket_with_budget", open_upstream)
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", release_account_lease)
+    monkeypatch.setattr(service._load_balancer, "mark_permanent_failure", mark_permanent_failure)
+    monkeypatch.setattr(service, "_relay_http_bridge_upstream_messages", AsyncMock())
+
+    session = await service._create_http_bridge_session(
+        proxy_service._HTTPBridgeSessionKey("prompt_cache", "revoked-cache-key", None),
+        headers={},
+        affinity=proxy_service._AffinityPolicy(key="revoked-cache-key"),
+        api_key=None,
+        request_model="gpt-6-astra",
+        idle_ttl_seconds=120.0,
+    )
+
+    assert session.account is account_b
+    assert selections == [set(), {account_a.id}]
+    assert reallocate_flags == [False, True]
+    assert ensure_fresh.await_count == 3
+    assert ensure_fresh.await_args_list[1].kwargs["force"] is True
+    mark_permanent_failure.assert_awaited_once_with(account_a, "token_revoked")
+    assert lease_a in releases
+    assert lease_b not in releases
+
+
+@pytest.mark.asyncio
+async def test_create_http_bridge_session_token_revoked_recovers_same_account_after_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    account = cast(Any, SimpleNamespace(id="acc-revoked-refresh", status=AccountStatus.ACTIVE, plan_type="plus"))
+    lease = proxy_service.AccountLease("lease-revoked-refresh", account.id, "stream", time.monotonic())
+    upstream = cast(Any, SimpleNamespace(response_header=lambda _name: None, close=AsyncMock()))
+    select_account = AsyncMock(
+        return_value=proxy_service.AccountSelection(account=account, error_message=None, lease=lease)
+    )
+    ensure_fresh = AsyncMock(side_effect=[account, account])
+    mark_permanent_failure = AsyncMock(return_value=True)
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=_bridge_selection_settings())),
+    )
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", select_account)
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", ensure_fresh)
+    monkeypatch.setattr(
+        service,
+        "_open_upstream_websocket_with_budget",
+        AsyncMock(side_effect=[_token_revoked_connect_error(), upstream]),
+    )
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", AsyncMock())
+    monkeypatch.setattr(service._load_balancer, "mark_permanent_failure", mark_permanent_failure)
+    monkeypatch.setattr(service, "_relay_http_bridge_upstream_messages", AsyncMock())
+
+    session = await service._create_http_bridge_session(
+        proxy_service._HTTPBridgeSessionKey("prompt_cache", "revoked-refresh-key", None),
+        headers={},
+        affinity=proxy_service._AffinityPolicy(key="revoked-refresh-key"),
+        api_key=None,
+        request_model="gpt-6-astra",
+        idle_ttl_seconds=120.0,
+    )
+
+    assert session.account is account
+    select_account.assert_awaited_once()
+    assert ensure_fresh.await_count == 2
+    assert ensure_fresh.await_args_list[1].kwargs["force"] is True
+    mark_permanent_failure.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_http_bridge_session_token_revoked_permanent_refresh_failure_preserves_revoked_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    account_a = cast(Any, SimpleNamespace(id="acc-revoked-refresh-fail", status=AccountStatus.ACTIVE, plan_type="plus"))
+    account_b = cast(
+        Any,
+        SimpleNamespace(id="acc-revoked-refresh-fallback", status=AccountStatus.ACTIVE, plan_type="plus"),
+    )
+    lease_a = proxy_service.AccountLease("lease-revoked-refresh-fail", account_a.id, "stream", time.monotonic())
+    lease_b = proxy_service.AccountLease("lease-revoked-refresh-fallback", account_b.id, "stream", time.monotonic())
+    upstream = cast(Any, SimpleNamespace(response_header=lambda _name: None, close=AsyncMock()))
+    selections: list[set[str]] = []
+    reallocate_flags: list[bool] = []
+
+    async def select_account(_deadline: float, **kwargs: object) -> proxy_service.AccountSelection:
+        excluded = set(cast(set[str], kwargs["exclude_account_ids"]))
+        selections.append(excluded)
+        affinity_policy = cast(proxy_service._AffinityPolicy, kwargs["affinity_policy"])
+        reallocate_flags.append(affinity_policy.reallocate_sticky)
+        if not excluded:
+            return proxy_service.AccountSelection(account=account_a, error_message=None, lease=lease_a)
+        return proxy_service.AccountSelection(account=account_b, error_message=None, lease=lease_b)
+
+    ensure_fresh = AsyncMock(
+        side_effect=[
+            account_a,
+            RefreshError("invalid_grant", "refresh credential is also invalid", True),
+            account_b,
+        ]
+    )
+    mark_permanent_failure = AsyncMock(return_value=True)
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=_bridge_selection_settings())),
+    )
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", select_account)
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", ensure_fresh)
+    monkeypatch.setattr(
+        service,
+        "_open_upstream_websocket_with_budget",
+        AsyncMock(side_effect=[_token_revoked_connect_error(), upstream]),
+    )
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", AsyncMock())
+    monkeypatch.setattr(service._load_balancer, "mark_permanent_failure", mark_permanent_failure)
+    monkeypatch.setattr(service, "_relay_http_bridge_upstream_messages", AsyncMock())
+
+    session = await service._create_http_bridge_session(
+        proxy_service._HTTPBridgeSessionKey("prompt_cache", "revoked-refresh-fail-key", None),
+        headers={},
+        affinity=proxy_service._AffinityPolicy(key="revoked-refresh-fail-key"),
+        api_key=None,
+        request_model="gpt-6-astra",
+        idle_ttl_seconds=120.0,
+    )
+
+    assert session.account is account_b
+    assert selections == [set(), {account_a.id}]
+    assert reallocate_flags == [False, True]
+    assert ensure_fresh.await_count == 3
+    assert ensure_fresh.await_args_list[1].kwargs["force"] is True
+    # The connect failure is stronger evidence about the current access token
+    # than the refresh endpoint's separate invalid-grant diagnosis.
+    mark_permanent_failure.assert_awaited_once_with(account_a, "token_revoked")
+
+
+@pytest.mark.asyncio
+async def test_create_http_bridge_session_token_revoked_keeps_hard_owner_pinned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    account = cast(Any, SimpleNamespace(id="acc-revoked-owner", status=AccountStatus.ACTIVE, plan_type="plus"))
+    lease = proxy_service.AccountLease("lease-revoked-owner", account.id, "stream", time.monotonic())
+    select_account = AsyncMock(
+        return_value=proxy_service.AccountSelection(account=account, error_message=None, lease=lease)
+    )
+    ensure_fresh = AsyncMock(side_effect=[account, account])
+    mark_permanent_failure = AsyncMock(return_value=True)
+    first_error = _token_revoked_connect_error()
+    second_error = _token_revoked_connect_error()
+
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(
+        proxy_service,
+        "get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=_bridge_selection_settings())),
+    )
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", select_account)
+    monkeypatch.setattr(service, "_ensure_fresh_with_budget", ensure_fresh)
+    monkeypatch.setattr(
+        service,
+        "_open_upstream_websocket_with_budget",
+        AsyncMock(side_effect=[first_error, second_error]),
+    )
+    release_account_lease = AsyncMock()
+    monkeypatch.setattr(service._load_balancer, "release_account_lease", release_account_lease)
+    monkeypatch.setattr(service._load_balancer, "mark_permanent_failure", mark_permanent_failure)
+
+    with pytest.raises(ProxyResponseError) as exc_info:
+        await service._create_http_bridge_session(
+            proxy_service._HTTPBridgeSessionKey("turn_state_header", "revoked-owner", None, strength="hard"),
+            headers={"x-codex-turn-state": "revoked-owner"},
+            affinity=proxy_service._AffinityPolicy(key="revoked-owner"),
+            api_key=None,
+            request_model="gpt-6-astra",
+            idle_ttl_seconds=120.0,
+            preferred_account_id=account.id,
+            require_preferred_account=True,
+            fallback_on_preferred_account_unavailable=False,
+        )
+
+    assert exc_info.value is second_error
+    select_account.assert_awaited_once()
+    mark_permanent_failure.assert_awaited_once_with(account, "token_revoked")
+    release_account_lease.assert_awaited_once_with(lease)
 
 
 @pytest.mark.asyncio

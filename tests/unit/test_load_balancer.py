@@ -2372,6 +2372,36 @@ def test_handle_permanent_failure_sets_reauth_required_for_token_invalidated():
     assert state.deactivation_reason == "Authentication token invalidated - re-login required"
 
 
+def test_handle_permanent_failure_sets_reauth_required_for_token_revoked():
+    state = AccountState("a", AccountStatus.ACTIVE, used_percent=5.0)
+    handle_permanent_failure(state, "token_revoked")
+    assert state.status == AccountStatus.REAUTH_REQUIRED
+    assert state.deactivation_reason == "Authentication token revoked - re-login required"
+
+
+def test_select_account_excludes_revoked_access_token_but_preserves_warning_only_reauth():
+    now = 1_700_000_000.0
+    revoked = AccountState(
+        "revoked",
+        AccountStatus.REAUTH_REQUIRED,
+        used_percent=1.0,
+        deactivation_reason="Authentication token revoked - re-login required",
+        access_token_expires_at=now + 3600,
+    )
+    warning_only = AccountState(
+        "warning",
+        AccountStatus.REAUTH_REQUIRED,
+        used_percent=50.0,
+        deactivation_reason="Refresh token invalid - re-login required",
+        access_token_expires_at=now + 3600,
+    )
+
+    result = select_account([revoked, warning_only], now=now, routing_strategy="usage_weighted")
+
+    assert result.account is not None
+    assert result.account.account_id == "warning"
+
+
 def test_handle_permanent_failure_sets_reason_for_account_deactivated():
     state = AccountState("a", AccountStatus.ACTIVE, used_percent=5.0)
     handle_permanent_failure(state, "account_deactivated")

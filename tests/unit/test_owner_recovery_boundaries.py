@@ -125,6 +125,40 @@ def test_leased_work_is_not_misreported_as_confirmed_quota_exhaustion():
     assert hint.retry_at == 1031
 
 
+def test_owner_advice_treats_revoked_access_token_as_unavailable_but_keeps_warning_reauth_routable():
+    revoked = AccountState(
+        "owner",
+        AccountStatus.REAUTH_REQUIRED,
+        deactivation_reason="Authentication token revoked - re-login required",
+        access_token_expires_at=4600,
+    )
+    warning_only = AccountState(
+        "owner",
+        AccountStatus.REAUTH_REQUIRED,
+        deactivation_reason="Refresh token invalid - re-login required",
+        access_token_expires_at=4600,
+    )
+
+    revoked_hint = owner_pressure_hint(
+        revoked,
+        now=1000,
+        primary_threshold=95,
+        secondary_threshold=100,
+        fresh_usage=True,
+    )
+    warning_hint = owner_pressure_hint(
+        warning_only,
+        now=1000,
+        primary_threshold=95,
+        secondary_threshold=100,
+        fresh_usage=True,
+    )
+
+    assert revoked_hint is not None
+    assert revoked_hint.reason == "unavailable"
+    assert warning_hint is None
+
+
 def test_auth_error_is_not_rewritten_as_transient_owner_error():
     original = ProxyResponseError(401, openai_error("token_revoked", "Credentials require reauthentication"))
     assert _http_bridge_reconnect_connect_failure(original, "owner") is original

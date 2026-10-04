@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 from datetime import timezone
 from typing import TYPE_CHECKING, Literal, cast
 
-from app.core.balancer import AccountState, RoutingStrategy, select_account
+from app.core.balancer import AccountState, RoutingStrategy, reauth_access_token_unusable, select_account
 from app.core.balancer.recovery import OwnerRecoveryHint
 from app.core.config.dashboard_overrides import with_dashboard_overrides
 from app.core.config.settings import get_settings
@@ -70,7 +70,7 @@ def owner_pressure_hint(
     if state.status == AccountStatus.REAUTH_REQUIRED:
         # Warning-only credentials may still be routable; do not conflate the
         # need to refresh eventually with an unusable current access token.
-        if state.access_token_expires_at is not None and state.access_token_expires_at <= now:
+        if reauth_access_token_unusable(state, now):
             return OwnerRecoveryHint("unavailable")
     if not state.ignore_standard_quota and state.status in (AccountStatus.RATE_LIMITED, AccountStatus.QUOTA_EXCEEDED):
         if state.reset_at is None or state.reset_at > now:

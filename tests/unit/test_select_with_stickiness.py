@@ -747,6 +747,31 @@ async def test_reauth_required_pinned_account_preserves_owner():
     repo.upsert.assert_called_once_with("key1", "a", kind=StickySessionKind.PROMPT_CACHE)
 
 
+@pytest.mark.asyncio
+async def test_token_revoked_reauth_pinned_account_reallocates_owner_when_requested():
+    """The bridge's explicit auth-failover reallocation replaces the revoked sticky owner."""
+    now = time.time()
+    acc_a = AccountState(
+        "a",
+        AccountStatus.REAUTH_REQUIRED,
+        deactivation_reason="Authentication token revoked - re-login required",
+        access_token_expires_at=now + 3600,
+    )
+    acc_b = _active("b")
+    repo = _make_sticky_repo(existing_account_id="a")
+
+    result = await _invoke_stickiness(
+        [acc_a, acc_b],
+        "key1",
+        repo,
+        reallocate_sticky=True,
+    )
+
+    assert result.account is not None
+    assert result.account.account_id == "b"
+    repo.upsert.assert_called_once_with("key1", "b", kind=StickySessionKind.PROMPT_CACHE)
+
+
 # ---------------------------------------------------------------------------
 # PR review issue 2: grace period must not mutate original state
 # ---------------------------------------------------------------------------
