@@ -42,8 +42,9 @@ pytestmark = pytest.mark.integration
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bridge_enabled", [True, False])
 @pytest.mark.parametrize("sdk_marker", [False, True])
+@pytest.mark.parametrize("pool_size", [0, 1, 2])
 async def test_native_explicit_previous_response_lookup_miss_requires_local_history(
-    async_client, app_instance, monkeypatch, bridge_enabled, sdk_marker
+    async_client, app_instance, monkeypatch, bridge_enabled, sdk_marker, pool_size
 ):
     _install_bridge_settings(monkeypatch, enabled=bridge_enabled)
     service = get_proxy_service_for_app(app_instance)
@@ -59,8 +60,10 @@ async def test_native_explicit_previous_response_lookup_miss_requires_local_hist
         monkeypatch.setattr(
             service._load_balancer,
             "_load_selection_inputs",
-            AsyncMock(return_value=SimpleNamespace(accounts=[object(), object()])),
+            AsyncMock(return_value=SimpleNamespace(accounts=[object() for _ in range(pool_size)])),
         )
+    select_account = AsyncMock(side_effect=AssertionError("pool size is not previous-response owner proof"))
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", select_account)
 
     thread_id = f"thread-explicit-owner-miss-{int(bridge_enabled)}-{int(sdk_marker)}"
     headers = {
@@ -89,6 +92,7 @@ async def test_native_explicit_previous_response_lookup_miss_requires_local_hist
     assert response.headers["x-should-retry"] == "false"
     assert "retry-after" not in response.headers
     create_session.assert_not_awaited()
+    select_account.assert_not_awaited()
     resolver.assert_awaited()
 
     async with SessionLocal() as session:
@@ -531,7 +535,10 @@ async def test_local_recovery_log_acknowledgement_preserves_refusal_and_cleanup(
 
 
 @pytest.mark.asyncio
-async def test_committed_recovery_refusal_route_retains_terminal_wire_contract(async_client, app_instance, monkeypatch):
+@pytest.mark.parametrize("sdk_marker", [False, True])
+async def test_committed_recovery_refusal_route_retains_terminal_wire_contract(
+    async_client, app_instance, monkeypatch, sdk_marker
+):
     _install_bridge_settings(monkeypatch, enabled=True)
     service = get_proxy_service_for_app(app_instance)
     reservation = ApiKeyUsageReservationData("reservation-committed", "key-committed", "gpt-5.1")
@@ -553,10 +560,13 @@ async def test_committed_recovery_refusal_route_retains_terminal_wire_contract(a
     monkeypatch.setattr(service, "_stream_via_http_bridge", failed_bridge)
     monkeypatch.setattr(proxy_api, "_enforce_request_limits", AsyncMock(return_value=reservation))
     monkeypatch.setattr(proxy_api, "_release_reservation", release)
+    headers = {"originator": "codex_cli_rs", "thread-id": "thread-committed-recovery"}
+    if sdk_marker:
+        headers["x-stainless-lang"] = "rust"
     response = await async_client.post(
         "/backend-api/codex/responses",
         json={"model": "gpt-5.1", "instructions": "test", "input": "delta", "stream": True},
-        headers={"originator": "codex_cli_rs", "thread-id": "thread-committed-recovery"},
+        headers=headers,
     )
     assert response.status_code == 200
     events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: {")]
@@ -734,6 +744,58 @@ async def test_native_desktop_explicit_anchor_owner_pressure_requires_local_hist
     assert "retry-after" not in response.headers
     assert len(case.original.sent_text) == 1
     assert case.replacement.sent_text == []
+    assert all(runtime.inflight_response_creates == 0 for runtime in case.service._load_balancer._runtime.values())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("advice_mode", ["miss", "timeout"])
+async def test_native_explicit_owner_failure_after_advice_preserves_anchor_and_refuses(
+    pressured_continuation, monkeypatch, advice_mode
+):
+    case = pressured_continuation
+    case.body["previous_response_id"] = case.first["id"]
+    case.body["input"] = [case.body["input"][-1]]
+    advice = AsyncMock(return_value=None)
+    if advice_mode == "timeout":
+        advice.side_effect = TimeoutError("read-only advisory timeout")
+    monkeypatch.setattr(bridge_streaming, "assess_owner_recovery", advice)
+    owner_unavailable = ProxyResponseError(
+        502,
+        {
+            "error": {
+                "type": "server_error",
+                "code": "previous_response_owner_unavailable",
+                "message": "Owner unavailable",
+            }
+        },
+    )
+    get_or_create = AsyncMock(
+        side_effect=[
+            owner_unavailable,
+            AssertionError("late explicit-anchor failure must not retry after clearing owner state"),
+        ]
+    )
+    monkeypatch.setattr(case.service, "_get_or_create_http_bridge_session", get_or_create)
+    retire = AsyncMock(return_value=False)
+    monkeypatch.setattr(case.service._durable_bridge, "retire_continuity_owner_if_unavailable", retire)
+    response = await case.client.post(
+        "/backend-api/codex/responses",
+        json=case.body,
+        headers={
+            **case.headers,
+            "user-agent": "Codex Desktop/0.160.0 (Windows; x86_64)",
+            "thread-id": "thread-late-explicit-owner-failure",
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "continuity_recovery_required"
+    assert response.headers["x-should-retry"] == "false"
+    assert "retry-after" not in response.headers
+    advice.assert_awaited_once()
+    assert get_or_create.await_count == 1
+    assert len(case.original.sent_text) == 1
+    assert case.replacement.sent_text == []
+    retire.assert_not_awaited()
     assert all(runtime.inflight_response_creates == 0 for runtime in case.service._load_balancer._runtime.values())
 
 

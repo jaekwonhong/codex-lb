@@ -2849,11 +2849,23 @@ class _HTTPBridgeStreamingMixin:
                         ):
                             yield line
                         continue
+                if (
+                    _http_bridge_is_previous_response_owner_unavailable(exc)
+                    and native_explicit_anchor_requires_local_recovery()
+                ):
+                    # The client supplied the anchor and admission has now
+                    # confirmed that its proven owner cannot serve it. The
+                    # anchored delta cannot become portable by retrying the same
+                    # request or by clearing owner state, so terminate locally
+                    # even if the optional advisory lookup timed out or returned
+                    # no alternate.
+                    raise local_history_recovery_refusal("owner_unavailable_after_admission") from exc
                 if _http_bridge_is_previous_response_owner_unavailable(exc) and native_delta_requires_owner():
                     # Advisory timeout or pressure arriving after advice must
                     # not bypass the no-delta-transfer boundary through legacy
                     # owner retirement. Admission has confirmed the failure, but
-                    # alternate availability still needs positive evidence.
+                    # alternate availability still needs positive evidence for
+                    # a proxy-injected anchor.
                     owner_id = request_state.preferred_account_id
                     if owner_id is None:
                         raise
