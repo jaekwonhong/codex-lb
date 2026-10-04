@@ -201,5 +201,7 @@ final Stage-1 product-path qualification.
   sticky reallocation, and warning-only REAUTH preservation.
 - [x] 11.6 Run focused and broad owner/bridge/model-source regressions plus Ruff,
   format, typing, architecture/cancellation and strict OpenSpec validation.
-- [ ] 11.7 Only after those gates pass, reconcile this hotfix onto the durable
-  owner-proof candidate; do not promote or mutate Stable/PostgreSQL in this task.
+- [x] 11.7 Reconcile the qualified hotfix directly on top of the durable
+  owner-proof candidate and commit it as `4d05b1e6` on
+  `fix/beta-token-revoked-failover-20261004`; no Beta promotion or
+  Stable/PostgreSQL mutation was performed in this task.

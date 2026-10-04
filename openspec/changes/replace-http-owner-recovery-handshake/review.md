@@ -660,3 +660,10 @@ Final qualification evidence on the refactored tree:
 No Stable/PostgreSQL lifecycle operation, product-schema migration, live DB
 mutation, ProviderSwitcher installation, or Beta promotion was performed during
 this qualification.
+
+The qualified implementation was committed as `4d05b1e6` on branch
+`fix/beta-token-revoked-failover-20261004`, whose parent is the reviewed durable
+owner-proof checkpoint `e33844937`. This preserves the scope-loss repair and adds
+the revoked-access-token failover without introducing a parallel base. The branch
+is the source checkpoint for any later Mac-side candidate image; promotion still
+requires exact-base/image qualification against the then-running Beta.
