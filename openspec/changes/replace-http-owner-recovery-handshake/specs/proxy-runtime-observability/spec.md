@@ -34,7 +34,7 @@ NULL-account preflight request-log row.
 #### Scenario: Fresh reattach cannot move safely
 
 - **GIVEN** a fresh durable HTTP delta is blocked on its unavailable owner
-- **AND** an alternate exists but the delta is not portable
+- **AND** the delta is not portable, regardless of whether an alternate is currently selectable
 - **WHEN** the proxy returns `continuity_recovery_required`
 - **THEN** one request-log row records that code with no execution account
 - **AND** one structured recovery-required bridge event records why the proxy

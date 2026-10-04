@@ -667,3 +667,30 @@ owner-proof checkpoint `e33844937`. This preserves the scope-loss repair and add
 the revoked-access-token failover without introducing a parallel base. The branch
 is the source checkpoint for any later Mac-side candidate image; promotion still
 requires exact-base/image qualification against the then-running Beta.
+
+### 2026-10-04 PC2 Beta-return evidence: no-alternate owner pressure
+
+After ProviderSwitcher credential recovery, PC2 successfully switched Stable ->
+Beta and completed visible GPT-6 Astra Fast turns with the new Beta recovery API
+key. Request-log correlation confirmed the new credential path, but two existing
+Codex conversations exposed a remaining continuity edge. A proxy-injected durable
+anchor encountered `previous_response_not_found`, recovered locally, and later
+hit an owner whose availability reason was `usage_limit_reached`. The advisory
+path then returned `502 previous_response_owner_unavailable` when no healthy
+alternate was selectable at that instant.
+
+This was not a credential failure. The code already converted the same native
+delta into `400 continuity_recovery_required` when a healthy alternate existed,
+because retrying an anchored delta cannot make it portable. The missing condition
+was the no-alternate case: the safety property does not depend on an alternate
+being immediately selectable. A non-short unavailable owner plus a native
+proxy-injected delta must terminate with the same local-history recovery contract
+rather than advertising another retry-looking 502.
+
+The isolated follow-up therefore removes the `alternate_id is not None` gate
+from that native-delta refusal while leaving verified full resend, client-supplied
+anchors, file/account-bound work, non-native clients, and post-dispatch ambiguity
+unchanged. The regression test now covers both `alternate_id=None` and a healthy
+alternate. Focused qualification: 4 PASS; owner/HTTP bridge unit+integration:
+1,149 PASS; owner/continuity HTTP Responses integration subset: 66 PASS; Ruff,
+`ty`, `git diff --check`, and strict OpenSpec validation: PASS.

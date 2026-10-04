@@ -5,8 +5,8 @@
 When a native Codex HTTP/SSE fresh durable reattach arrives without a client-
 supplied `previous_response_id`, the proxy injects the durable completed-response
 anchor, the required continuity owner is unavailable for a non-short recovery
-reason, a healthy alternate account exists, and the incoming request is not a
-verified account-neutral full resend, the proxy MUST NOT return
+reason, and the incoming request is not a verified account-neutral full resend,
+the proxy MUST NOT return
 `previous_response_not_found` for the purpose of asking the client to reconstruct
 and resend its local history.
 
@@ -69,8 +69,19 @@ MUST work without requiring a particular User-Agent spelling.
 - **AND** the initial owner advice times out or does not detect pressure
 - **WHEN** session creation subsequently rejects that owner before upstream dispatch
 - **THEN** the proxy MUST NOT retire the owner or clear the anchor to send the delta on another account
-- **AND** a bounded read-only reassessment that confirms a healthy alternate produces the same recovery-required refusal
-- **AND** absent alternate evidence preserves the ordinary owner-unavailable failure without retirement or a second dispatch
+- **AND** a bounded read-only reassessment that confirms owner unavailability produces the same recovery-required refusal whether or not a healthy alternate is currently selectable
+- **AND** absent alternate evidence MUST NOT downgrade that native delta to the ordinary retry-looking owner-unavailable failure
+- **AND** the proxy neither retires the owner nor dispatches the delta to a second account
+
+#### Scenario: Quota-blocked fresh reattach has no currently selectable alternate
+
+- **GIVEN** a native durable HTTP delta depends on a proxy-injected response anchor
+- **AND** its proven owner cannot recover inside the bounded short-hold window
+- **AND** no healthy alternate is currently selectable
+- **WHEN** owner recovery is evaluated before upstream submission
+- **THEN** the proxy returns HTTP 400 with `continuity_recovery_required`
+- **AND** the response remains locally non-retryable rather than returning `previous_response_owner_unavailable`
+- **AND** no account receives the delta
 
 #### Scenario: Explicit client anchor loses owner proof after API-key scope changes
 

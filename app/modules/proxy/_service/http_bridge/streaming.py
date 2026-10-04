@@ -2655,17 +2655,18 @@ class _HTTPBridgeStreamingMixin:
                     # anchor/owner proof and terminate locally instead of
                     # advertising an open-ended 502 retry loop.
                     raise local_history_recovery_refusal(advice.hint.reason)
-                if advice.alternate_id is not None and native_delta_requires_owner():
+                if native_delta_requires_owner():
                     # The client did not name the exhausted owner's response;
                     # the bridge injected that anchor while freshly reattaching
-                    # a durable session/thread delta. A healthy alternate exists,
-                    # but this delta alone is not portable across accounts. PC2
-                    # production proved that native Codex over the Beta HTTP-only
-                    # path does not rebuild full history from a synthetic
-                    # previous_response_not_found response; it surfaces the error
-                    # and repeats another delta. Do not depend on that unverified
-                    # client behaviour. Refuse before dispatch with an explicit
-                    # local-history recovery contract instead.
+                    # a durable session/thread delta. This delta alone is not
+                    # portable across accounts. Whether an alternate is currently
+                    # selectable is irrelevant to that safety boundary: retrying
+                    # the same anchored delta cannot make it portable and must not
+                    # fall through to a retry-looking 502 when the owner cannot
+                    # recover inside the bounded wait. PC2 production proved that
+                    # native Codex over the Beta HTTP-only path does not rebuild
+                    # full history from such an error. Refuse before dispatch with
+                    # an explicit local-history recovery contract instead.
                     #
                     # This is intentionally narrower than clearing the anchor
                     # and dispatching the current body: doing that would lose

@@ -28970,18 +28970,22 @@ async def test_stream_via_http_bridge_recovers_dead_owner_with_replayable_full_r
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sdk_contract", [False, True])
+@pytest.mark.parametrize("alternate_id", [None, "acc-alternate"])
 async def test_fresh_reattach_delta_requires_local_history_recovery_when_owner_quota_is_exhausted(
     monkeypatch: pytest.MonkeyPatch,
     sdk_contract: bool,
+    alternate_id: str | None,
 ) -> None:
     """A durable reattach delta must fail explicitly instead of soliciting history.
 
     This reproduces the PC2 production shape: the client sends no explicit
-    previous_response_id, the bridge injects the durable anchor, that owner is
-    quota-blocked, and another account is available.  The delta cannot safely
-    move by itself, and native Codex HTTP did not reconstruct full history from
-    a previous_response_not_found response in production.  The bridge therefore
-    stops before upstream dispatch and requires local-history recovery.
+    previous_response_id, the bridge injects the durable anchor, and that owner
+    is quota-blocked. The delta cannot safely move by itself, regardless of
+    whether a healthy alternate is currently selectable, and native Codex HTTP
+    did not reconstruct full history from a previous_response_not_found response
+    in production. The bridge therefore stops before upstream dispatch and
+    requires local-history recovery instead of advertising a retryable-looking
+    previous_response_owner_unavailable error.
     """
 
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
@@ -29020,7 +29024,7 @@ async def test_fresh_reattach_delta_requires_local_history_recovery_when_owner_q
         return OwnerRecoveryAdvice(
             owner_id="acc-owner",
             hint=OwnerRecoveryHint("quota_exhausted", time.time() + 3600),
-            alternate_id="acc-alternate",
+            alternate_id=alternate_id,
         )
 
     monkeypatch.setattr(
