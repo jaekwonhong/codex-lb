@@ -1807,7 +1807,8 @@ class _HTTPBridgeMixin(
                 ):
                     selected_account_lease = None
                     continue
-                if exc.status_code != 401 or self._remaining_budget_seconds(deadline) <= 0:
+                remaining_budget = self._remaining_budget_seconds(deadline)
+                if not proxy_connect_failover.auth_refresh_allowed(exc) or remaining_budget <= 0:
                     await self._load_balancer.release_account_lease(selected_account_lease)
                     selected_account_lease = None
                     raise
@@ -1843,11 +1844,11 @@ class _HTTPBridgeMixin(
                     ):
                         selected_account_lease = None
                         continue
-                    if retry_exc.status_code != 401:
+                    if not proxy_connect_failover.auth_refresh_allowed(retry_exc):
                         await self._load_balancer.release_account_lease(selected_account_lease)
                         selected_account_lease = None
                         raise
-                    await self._handle_proxy_error(account, retry_exc)
+                    await proxy_connect_failover.record_auth_failure(self, account, retry_exc)
                     if require_preferred_account and selected_is_preferred:
                         await self._load_balancer.release_account_lease(selected_account_lease)
                         selected_account_lease = None
@@ -1859,7 +1860,7 @@ class _HTTPBridgeMixin(
                     continue
                 except RefreshError as refresh_exc:
                     if refresh_exc.is_permanent:
-                        await self._load_balancer.mark_permanent_failure(account, refresh_exc.code)
+                        await proxy_connect_failover.record_refresh_failure(self, account, refresh_exc, exc)
                     if require_preferred_account and selected_is_preferred:
                         await self._load_balancer.release_account_lease(selected_account_lease)
                         selected_account_lease = None

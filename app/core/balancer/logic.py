@@ -20,6 +20,7 @@ PERMANENT_FAILURE_CODES = {
     "refresh_token_invalidated": "Refresh token was revoked - re-login required",
     "invalid_grant": "Refresh token grant invalid - re-login required",
     "token_invalidated": "Authentication token invalidated - re-login required",
+    "token_revoked": "Authentication token revoked - re-login required",
     # ``token_expired`` from the OAuth refresh endpoint means the refresh
     # request itself failed because the refresh token (or the session it
     # belonged to) is no longer usable -- access-token-only expiry would have
@@ -45,6 +46,7 @@ REAUTH_REQUIRED_FAILURE_CODES = frozenset(
         "refresh_token_invalidated",
         "invalid_grant",
         "token_invalidated",
+        "token_revoked",
         "token_expired",
         "app_session_terminated",
         "account_session_expired",
@@ -463,6 +465,24 @@ def _known_expired_reauth(state: AccountState, current: float) -> bool:
     )
 
 
+def reauth_access_token_unusable(state: AccountState, current: float) -> bool:
+    """Return whether REAUTH_REQUIRED also proves the current access token unusable.
+
+    Most REAUTH_REQUIRED states diagnose the refresh credential only and remain
+    request-routable until the stored access token expires. ``token_revoked`` is
+    different: the upstream connection itself proved that the current access
+    token is invalid, so preserving the warning-only routing exception would
+    immediately select the same dead credential again.
+    """
+
+    if _known_expired_reauth(state, current):
+        return True
+    return (
+        state.status == AccountStatus.REAUTH_REQUIRED
+        and state.deactivation_reason == PERMANENT_FAILURE_CODES["token_revoked"]
+    )
+
+
 def select_account(
     states: Iterable[AccountState],
     now: float | None = None,
@@ -573,7 +593,7 @@ def select_account(
             continue
         if state.status == AccountStatus.PAUSED:
             continue
-        if _known_expired_reauth(state, current):
+        if reauth_access_token_unusable(state, current):
             continue
         if state.status == AccountStatus.RATE_LIMITED:
             if state.reset_at and current >= state.reset_at:
@@ -629,7 +649,7 @@ def select_account(
                     AccountStatus.RATE_LIMITED,
                     AccountStatus.QUOTA_EXCEEDED,
                 )
-                or _known_expired_reauth(state, current)
+                or reauth_access_token_unusable(state, current)
             )
             and state.account_id not in in_error_backoff_ids
             for state in all_states
@@ -656,24 +676,24 @@ def select_account(
                 )
                 if usage_exhaustion is not None:
                     return usage_exhaustion
-            expired_reauth = [state for state in all_states if _known_expired_reauth(state, current)]
+            blocked_reauth = [state for state in all_states if reauth_access_token_unusable(state, current)]
             deactivated = [s for s in all_states if s.status == AccountStatus.DEACTIVATED]
             paused = [s for s in all_states if s.status == AccountStatus.PAUSED]
             rate_limited = [s for s in all_states if s.status == AccountStatus.RATE_LIMITED]
             quota_exceeded = [s for s in all_states if s.status == AccountStatus.QUOTA_EXCEEDED]
 
             if not rate_limited and not quota_exceeded:
-                if paused and expired_reauth and deactivated:
+                if paused and blocked_reauth and deactivated:
                     return SelectionResult(None, "All accounts are paused, deactivated, or require re-authentication")
-                if paused and expired_reauth:
+                if paused and blocked_reauth:
                     return SelectionResult(None, "All accounts are paused or require re-authentication")
                 if paused and deactivated:
                     return SelectionResult(None, "All accounts are paused or deactivated")
-                if expired_reauth and deactivated:
+                if blocked_reauth and deactivated:
                     return SelectionResult(None, "All accounts are deactivated or require re-authentication")
                 if paused:
                     return SelectionResult(None, "All accounts are paused")
-                if expired_reauth:
+                if blocked_reauth:
                     return SelectionResult(None, "All accounts require re-authentication")
                 if deactivated:
                     return SelectionResult(None, "All accounts are deactivated")

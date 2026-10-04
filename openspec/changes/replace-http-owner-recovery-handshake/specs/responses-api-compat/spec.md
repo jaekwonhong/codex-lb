@@ -139,3 +139,56 @@ MUST work without requiring a particular User-Agent spelling.
   `availability_reason="continuity_recovery_required"`
 - **AND** its lifecycle is not converted into an empty transport termination
 - **AND** it does not solicit a full-history resend by emitting `previous_response_not_found`
+
+### Requirement: A proven revoked access token is not reused for HTTP-bridge admission
+
+When HTTP-bridge session creation receives an upstream authentication failure
+whose structured error code is `token_revoked`, the proxy MUST treat that error
+as proof that the currently stored access token cannot serve the request. The
+proxy MUST perform at most one forced credential refresh for that selected
+account before deciding whether the same account is still usable.
+
+If forced refresh yields a usable credential and reconnect succeeds, the request
+MAY continue on the same account and the account MUST NOT be downgraded merely
+because the previous access token was revoked. If forced refresh fails
+permanently, or reconnect with the refreshed credential again returns
+`token_revoked`, the account MUST be persisted as `REAUTH_REQUIRED` with a
+revoked-access-token reason that makes that account ineligible for ordinary
+routing until reauthentication repairs it. A refresh-token-only
+`REAUTH_REQUIRED` account whose current access token remains usable MUST retain
+the existing request-routable behavior.
+
+For a request that is not hard-bound to the failed account, the failed account
+MUST be excluded from the current selection loop and sticky affinity MUST be
+reallocated before choosing an alternate. For a hard continuity/file owner, the
+proxy MUST preserve the owner constraint and surface the authentication failure
+instead of silently crossing accounts.
+
+#### Scenario: Revoked prompt-cache owner transparently fails over before dispatch
+
+- **GIVEN** an HTTP-bridge prompt-cache request selects account A
+- **AND** opening A's upstream WebSocket returns structured `token_revoked`
+- **AND** one forced refresh does not restore a usable connection
+- **AND** healthy account B is eligible and the request is not hard-bound to A
+- **WHEN** bridge admission retries selection before upstream request dispatch
+- **THEN** account A is persisted as reauthentication-required with revoked-access-token evidence
+- **AND** A is excluded from the request-local selection set
+- **AND** sticky selection is explicitly reallocated away from A
+- **AND** account B may serve the request without exposing the repeated `token_revoked` loop
+
+#### Scenario: Warning-only reauthentication state remains request-routable
+
+- **GIVEN** an account is `REAUTH_REQUIRED` only because its refresh credential needs repair
+- **AND** its current access token has not expired and has not been proven revoked
+- **WHEN** ordinary selection evaluates that account
+- **THEN** the account retains the existing request-routable behavior
+- **AND** this change does not globally convert `REAUTH_REQUIRED` into a hard routing exclusion
+
+#### Scenario: Hard owner is not crossed after token revocation
+
+- **GIVEN** a bridge request is hard-bound to account A by continuity or file ownership
+- **AND** A returns `token_revoked` and the forced refresh/reconnect path cannot restore it
+- **WHEN** bridge admission handles the permanent authentication failure
+- **THEN** A is marked with the revoked-access-token reauthentication state
+- **AND** the proxy does not select account B for that request
+- **AND** the original authentication/owner-unavailable contract is surfaced without cross-account dispatch

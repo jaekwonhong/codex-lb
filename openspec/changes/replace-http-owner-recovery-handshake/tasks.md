@@ -183,3 +183,25 @@ final Stage-1 product-path qualification.
   in-image scope-loss code smoke verified.
 - [ ] 10.8 After separate promotion authorization, promote that derivative and
   re-run the real PC2 thread before Stage-1 closeout.
+
+## 11. Revoked access-token failover follow-up
+
+- [x] 11.1 Capture the production Beta loop in which repeated native HTTP-bridge
+  admissions select the same account and each connection fails with structured
+  `token_revoked` before request dispatch.
+- [x] 11.2 Define the narrow contract: one forced refresh is allowed; a second
+  revoked result or permanent refresh failure proves the current credential
+  unusable, while refresh-token-only `REAUTH_REQUIRED` remains request-routable.
+- [x] 11.3 Persist revoked-access-token evidence and exclude only that proven
+  unusable `REAUTH_REQUIRED` state from ordinary selection/owner recovery.
+- [x] 11.4 Make HTTP-bridge pre-dispatch auth recovery reallocate sticky affinity
+  and fail over to an alternate only when the request is not hard-owner-bound.
+- [x] 11.5 Add regression coverage for same-account forced-refresh success,
+  revoked-after-refresh failover, hard-owner fail-closed, selector persistence,
+  sticky reallocation, and warning-only REAUTH preservation.
+- [x] 11.6 Run focused and broad owner/bridge/model-source regressions plus Ruff,
+  format, typing, architecture/cancellation and strict OpenSpec validation.
+- [x] 11.7 Reconcile the qualified hotfix directly on top of the durable
+  owner-proof candidate and commit it as `4d05b1e6` on
+  `fix/beta-token-revoked-failover-20261004`; no Beta promotion or
+  Stable/PostgreSQL mutation was performed in this task.

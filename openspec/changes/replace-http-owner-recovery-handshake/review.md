@@ -594,3 +594,76 @@ scope-loss gate, the hashed `continuity_owner_proof_missing` refusal reason, the
 local recovery raise, and absence of any cross-API-key lookup implementation in
 the patched bridge method. The running production Beta remains
 `sha256:291a47e3...`; candidate `sha256:de38a145...` is not promoted.
+
+### Production follow-up: revoked access token is repeatedly reselected
+
+Before promoting the durable owner-proof candidate, a separate real Beta canary
+exposed an independent pre-dispatch authentication loop. Multiple consecutive
+native requests selected the same prompt-cache account and failed opening the
+upstream connection with structured error code `token_revoked`. Because the
+error arrived as an upstream `ProxyResponseError` rather than the ordinary 401
+branch, HTTP-bridge session creation surfaced it immediately and the account
+remained eligible for the next request.
+
+This failure is intentionally separated from the durable owner-proof repair. A
+`REAUTH_REQUIRED` row is not by itself evidence that the currently stored access
+token is unusable: refresh-token-only failures may leave a valid access token
+that should keep serving traffic until expiry. The new boundary therefore uses
+`token_revoked` as positive evidence about the current access token, permits one
+forced refresh, and only then persists a revoked-access-token reauthentication
+reason if the refreshed path still cannot authenticate. That reason is the
+selector/owner-recovery proof used to keep the account out of subsequent
+ordinary routing; other `REAUTH_REQUIRED` reasons retain their existing
+warning-only behavior.
+
+For soft prompt-cache/session affinity, a proven revoked account is excluded and
+the current retry explicitly requests sticky reallocation. Hard continuity/file
+ownership remains fail-closed and never becomes an implicit cross-account
+continuation. This follow-up is being implemented and qualified in an isolated
+branch; no production promotion is authorized by this section.
+
+Implementation and qualification of this follow-up completed on an isolated
+PC2 worktree based exactly on `e3384493761dca6552fd428d45ea9639f47422fd`.
+The final implementation keeps `REAUTH_REQUIRED` warning-only semantics for a
+usable access token, but adds `token_revoked` to the permanent reauthentication
+codes and treats the corresponding persisted reason as proof that the current
+access token is unusable. The same predicate is shared by ordinary selection and
+owner-recovery advice. HTTP-bridge connection admission allows one forced
+refresh; if the refreshed connection is still revoked, or that forced refresh
+fails permanently, it persists the stronger revoked-access-token evidence. A
+soft request excludes the account and explicitly reallocates sticky affinity;
+a hard owner remains pinned and surfaces the authentication failure.
+
+The initial implementation made `http_bridge/mixin.py` exceed its architecture
+line budget. Auth retry classification and credential-failure recording were
+therefore moved into the existing `proxy_failover.py` responsibility. The final
+`mixin.py` is exactly 2,436 lines, equal to the architecture limit, and the proxy
+architecture guard passes.
+
+Final qualification evidence on the refactored tree:
+
+- targeted revoked-token behavior: 7 PASS, plus the permanent-refresh-failure
+  edge suite 4 PASS;
+- selector/sticky/owner-recovery suites: 395 PASS;
+- HTTP-bridge session-creation subset: 79 PASS;
+- broad native/SDK/bridge/ownership/source matrix: 1,654 PASS, 0 FAIL;
+- model-source plus HTTP Responses cross-route matrix: 683 PASS, 0 FAIL;
+- Ruff and format: PASS; targeted `ty==0.0.78` on every changed application
+  file: PASS;
+- full `ty==0.0.78 app` still reports the same 9 diagnostics on both this tree
+  and a clean `e33844937` comparison worktree, so the hotfix introduces no new
+  whole-tree typing diagnostic;
+- proxy architecture, cancellation-safety, and `git diff --check`: PASS;
+- strict `replace-http-owner-recovery-handshake` validation and complete
+  OpenSpec validation: 156 PASS, 0 FAIL.
+
+No Stable/PostgreSQL lifecycle operation, product-schema migration, live DB
+mutation, ProviderSwitcher installation, or Beta promotion was performed during
+this qualification.
+
+The qualified implementation was committed as `4d05b1e6` on branch
+`fix/beta-token-revoked-failover-20261004`, whose parent is the reviewed durable
+owner-proof checkpoint `e33844937`. This preserves the scope-loss repair and adds
+the revoked-access-token failover without introducing a parallel base. The branch
+is the source checkpoint for any later Mac-side candidate image; promotion still
+requires exact-base/image qualification against the then-running Beta.
