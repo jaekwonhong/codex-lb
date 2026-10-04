@@ -158,6 +158,65 @@ owner-file write fault also verifies that a lock directory newly created by
   candidate-start + candidate-inspect failure that previously stranded the old
   Beta stopped.
 
+## Integration candidate evidence (2026-10-04)
+
+The reviewed audit delta was committed as
+`b0629e4ffb07f1a0d4fcdc59b125f572d4c0a784` and the canonical local
+`codex/main-d1fd-patch-packet-20260917` branch was advanced to that commit by
+fast-forward only. No remote push was performed.
+
+Because Production Beta had already moved after the original audit closeout, the
+new Stage-1 candidate was derived from the actual live predecessor
+`sha256:15e9982c05d4f974629d53fb04fffc95a06990e9b484c08139093e0087af3cbf`
+rather than the older 291a image. The target-file parent bytes at
+`e3384493761dca6552fd428d45ea9639f47422fd` exactly match the live 15e base
+for both audit files, proving that overlaying the audit commit does not overwrite
+later changes in those files.
+
+The resulting unpromoted candidate is:
+
+- image:
+  `sha256:372f32388f90d94180081227840b9cc4d0a55e5570c527285a364bb3df65f399`;
+- revision label:
+  `b0629e4ffb07f1a0d4fcdc59b125f572d4c0a784`;
+- exact base label:
+  `sha256:15e9982c05d4f974629d53fb04fffc95a06990e9b484c08139093e0087af3cbf`;
+- patch scope: `pc2-owner-continuity-stage1-final-audit`;
+- bundle SHA-256:
+  `0bb99f78c531ba9020d0d2b4ec9421fc2fd19bb78aa01e37b338f421e1deb11d`.
+
+Candidate/base byte comparison across all 752 tracked `app/**/*.py` files
+shows exactly two changed paths and no others:
+
+- `app/modules/proxy/_service/http_bridge/streaming.py`;
+- `app/modules/proxy/_service/streaming/retry.py`.
+
+Candidate/canonical-source comparison has five expected inherited differences,
+all belonging to the separately promoted preferred-owner-token product commit
+`4d05b1e6a483abe0394663b16262d76adb803c3a`:
+
+- `app/core/balancer/__init__.py`;
+- `app/core/balancer/logic.py`;
+- `app/modules/proxy/_service/http_bridge/mixin.py`;
+- `app/modules/proxy/_service/http_bridge/proxy_failover.py`;
+- `app/modules/proxy/owner_recovery.py`.
+
+Those five candidate bytes exactly match the 4d05 source worktree, while the
+other 747 tracked application Python files exactly match the canonical b062
+source. This closes the composite source-to-image byte provenance without
+pretending the later preferred-owner-token commit is part of the b062 branch.
+
+The candidate image preserves `Env`, entrypoint, command, user, working
+directory, healthcheck, exposed ports, stop signal and image volume metadata
+from the 15e base. The only image-config label differences are the four explicit
+provenance labels above. Candidate-internal native recovery contract smoke is
+PASS, and the relevant route regression subset is 16 PASS / 31 deselected,
+including raw owner-lookup loss, late explicit-anchor admission failure, and
+committed recovery refusal delivery.
+
+No Production promotion was performed while creating or validating this
+candidate.
+
 The previous unrelated Windows mirror run had one real-clock one-second timeout
 in an eventless bridge-reader test; the exact test passed three consecutive
 isolated reruns. The authoritative Mac final core run above passed that test as
