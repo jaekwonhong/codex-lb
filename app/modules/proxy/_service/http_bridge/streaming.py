@@ -4143,6 +4143,14 @@ class _HTTPBridgeStreamingMixin:
             verified_stale_anchor_operation_fenced = _http_bridge_verified_stale_anchor_replay_is_operation_fenced(
                 session, request_state
             )
+            owner_unavailable_verified_full_resend = bool(
+                _http_bridge_is_previous_response_owner_unavailable(exc)
+                and verified_stale_anchor_operation_fenced
+                and request_state.response_event_count == 0
+                and request_state.replay_count == 0
+                and not request_state.downstream_visible
+                and durable_full_resend_allows_account_neutral_replay()
+            )
             is_context_overflow = _http_bridge_is_context_overflow_error(exc)
             should_rollover_after_context_overflow = _http_bridge_should_rollover_after_context_overflow(
                 exc,
@@ -4182,6 +4190,7 @@ class _HTTPBridgeStreamingMixin:
                 not should_attempt_previous_response_recovery
                 and not should_rollover_after_context_overflow
                 and not should_attempt_context_overflow_fresh_turn_recovery
+                and not owner_unavailable_verified_full_resend
             ):
                 if is_context_overflow:
                     _log_http_bridge_event(
@@ -4204,7 +4213,25 @@ class _HTTPBridgeStreamingMixin:
                         "HTTP response recovery operation fence is unavailable; retry the request.",
                     ),
                 ) from exc
-            if should_attempt_context_overflow_fresh_turn_recovery:
+            if owner_unavailable_verified_full_resend:
+                await reset_previous_response_recovery_operation_spool(session, request_state)
+                await self._reset_http_bridge_session_after_local_terminal_error(
+                    session,
+                    error_code="stream_incomplete",
+                    error_message=_HTTP_BRIDGE_LOCAL_RESET_MESSAGE,
+                )
+                switch_to_account_neutral_replay(
+                    event="owner_unavailable_recover_fresh_resend",
+                    detail="outcome=verified_full_resend_after_owner_unavailable",
+                    preserve_operation=True,
+                )
+                recovery_path = "owner_unavailable_verified_full_resend"
+                retry_payload = effective_payload
+                retry_previous_response_id = None
+                retry_request_stage = "owner_unavailable_recover"
+                retry_preferred_account_id = None
+                allow_previous_response_recovery_rebind = False
+            elif should_attempt_context_overflow_fresh_turn_recovery:
                 if PROMETHEUS_AVAILABLE and bridge_durable_recover_total is not None:
                     bridge_durable_recover_total.labels(path="context_overflow_fresh_turn").inc()
                 _log_http_bridge_event(
@@ -4511,6 +4538,7 @@ class _HTTPBridgeStreamingMixin:
                     "local_previous_response_error",
                     "local_previous_response_fresh_replay",
                     "local_previous_response_same_owner_fresh_replay",
+                    "owner_unavailable_verified_full_resend",
                 }
                 # A recovery request is the one bounded server-side replay;
                 # prevent a second cooldown bypass if this fresh socket also

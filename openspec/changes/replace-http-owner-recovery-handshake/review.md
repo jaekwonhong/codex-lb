@@ -694,3 +694,39 @@ unchanged. The regression test now covers both `alternate_id=None` and a healthy
 alternate. Focused qualification: 4 PASS; owner/HTTP bridge unit+integration:
 1,149 PASS; owner/continuity HTTP Responses integration subset: 66 PASS; Ruff,
 `ty`, `git diff --check`, and strict OpenSpec validation: PASS.
+
+### 2026-10-04 multi-session follow-up: preserve a verified full resend through owner quota failure
+
+After the no-alternate refusal was promoted, PC2 reported the same
+`continuity_recovery_required` message from additional existing conversations.
+The affected threads were distinct but shared the same quota-exhausted owner.
+Production evidence showed that this was not uniformly a delta-only condition.
+For one thread the durable session stored 175 input items, and immediately before
+the owner quota terminal the bridge logged a request whose local body had 179
+items before folding it to four suffix items behind the owner's response anchor.
+The operation transcript confirmed that the folded anchored request then failed
+before a successful downstream response.
+
+The proxy already contains a sealed full-resend proof: stored input count and
+fingerprint must match, the replay projection must retain prior assistant output
+or the exact pending tool-call boundary, and the projected body must be
+account-neutral. It also already uses the durable operation identity as the
+single-settlement fence for stale-anchor recovery. The missing behavior was
+specific to an owner quota terminal after the full resend had been folded: the
+verified original body was discarded instead of being reused by those existing
+proof/fence mechanisms.
+
+The isolated correction adds one narrow recovery path. A
+`previous_response_owner_unavailable` terminal may become an account-neutral
+full resend only when the durable operation fence exists, no response event or
+downstream-visible output has occurred, no prior replay has run, and the existing
+full-resend verifier proves the body portable. The failed owner is excluded, the
+operation spool is reset under its fence, and the same operation identity follows
+the one bounded replay. Delta-only, file/account-bound, ambiguous/post-visible,
+or otherwise unverified requests continue to return the existing
+`continuity_recovery_required` refusal.
+
+Qualification of this tree: focused production-shape and delta-safety cases
+5 PASS; owner/HTTP bridge unit+integration 1,150 PASS; owner/continuity HTTP
+Responses integration subset 66 PASS; Ruff, `ty`, `git diff --check`, and
+strict `replace-http-owner-recovery-handshake` validation: PASS.

@@ -63,6 +63,25 @@ MUST work without requiring a particular User-Agent spelling.
 - **THEN** the existing proof-gated cross-account replay path is used
 - **AND** `continuity_recovery_required` is not returned
 
+#### Scenario: Owner quota terminal arrives after a verified full resend was folded behind its anchor
+
+- **GIVEN** native Codex supplied a verified account-neutral full resend whose
+  stored durable prefix fingerprint matches the current owner
+- **AND** the proxy folded that full resend behind the owner's
+  `previous_response_id` before dispatch
+- **AND** a durable operation fence proves the request identity
+- **WHEN** the owner returns `previous_response_owner_unavailable` because of
+  quota or usage exhaustion before `response.created`, before any downstream
+  output, and before a server-owned replay has occurred
+- **THEN** the proxy resets the fenced operation spool and replays the preserved
+  verified full resend without the owner anchor on an account-neutral session
+- **AND** the failed owner is excluded from replacement selection
+- **AND** the operation identity is preserved across the one bounded replay
+- **AND** a successful eligible alternate may complete the same client turn
+  without `continuity_recovery_required`
+- **AND** a delta-only, file/account-bound, downstream-visible, replayed, or
+  otherwise unverified request keeps the existing fail-closed recovery contract
+
 #### Scenario: The owner fails admission after advice was unavailable or stale
 
 - **GIVEN** a native delta depends on a proxy-injected durable response anchor
