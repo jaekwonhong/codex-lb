@@ -361,7 +361,7 @@ async def test_v1_responses_model_source_preserves_plain_reasoning_items(async_c
         "encrypted_content": None,
     }
     payload = {
-        "model": "qwen3.8-flash-next",
+        "model": "glm5.3-flash",
         "input": [
             reasoning_item,
             {"role": "user", "content": [{"type": "input_text", "text": "continue"}]},

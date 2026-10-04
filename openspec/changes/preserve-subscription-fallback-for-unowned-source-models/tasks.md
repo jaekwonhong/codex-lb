@@ -13,14 +13,15 @@
 
 - [x] 3.1 A registry-missing Astra-like subscription slug not declared by the assigned source reaches subscription routing on both Responses HTTP surfaces.
 - [x] 3.2 A model actually declared by the assigned source remains fail-closed when no valid Responses source route exists.
-- [x] 3.3 The runtime-enabled disabled DGX source still routes its assigned model and does not broaden to unrelated subscription models.
+- [x] 3.3 The runtime-enabled disabled edge source still routes its assigned model and does not broaden to unrelated subscription models.
 - [x] 3.4 Source-scoped file-pin and continuity-suppressed recorded-subscription-owner requests retain their existing subscription routing.
+- [x] 3.5 `glm5.3-flash` encrypted-reasoning replay adaptation remains active after the edge model-source row id changes.
 
 ## 4. Validation
 
 - [x] 4.1 Run focused and full model-source routing regressions plus relevant dispatch/model/WebSocket source-guard suites.
 - [x] 4.2 Run Ruff, formatting, type checks, and strict OpenSpec validation.
-- [x] 4.3 Build an immutable Beta image from the committed tree and verify Astra HTTP success, DGX scoped selection, readiness, PostgreSQL health, rotation OFF, and no member/OAuth effects in production.
+- [x] 4.3 Build an immutable Beta image from the committed tree and verify Astra HTTP success, edge-scoped selection, readiness, PostgreSQL health, rotation OFF, and no member/OAuth effects in production.
 
 
 ## 5. Patch-packet recurrence prevention
@@ -30,3 +31,4 @@
 - [x] 5.3 Add focused verifier tests and record the historical defect lineage plus corrected packet provenance in change context.
 - [x] 5.4 Prove the known-bad pre-hotfix integrated tree fails the semantic verifier while the corrected production tree passes.
 - [x] 5.5 Make `scripts/qualify_beta_patch_packet.sh` the canonical packet qualification entrypoint and invoke it automatically from the existing Q2 qualification wrapper.
+- [x] 5.6 Reject Beta packets that couple the `glm5.3-flash` replay scrub to a deployment-specific `source.id`.

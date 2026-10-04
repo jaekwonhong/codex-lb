@@ -3,7 +3,7 @@
 
 This is intentionally stdlib-only so it can run on a freshly rebased candidate
 before project dependencies are installed. It validates semantics that were
-historically split across the DGX donor packet and the later Responses
+historically split across the edge-serving donor packet and the later Responses
 integration: registry absence alone is never source ownership, while real
 assigned-source ownership and dangling source scope remain fail-closed.
 """
@@ -30,6 +30,7 @@ class VerificationResult:
     contract: str = CONTRACT
     responses_guard_call_count: int = 0
     websocket_source_guard_call_count: int = 0
+    # Retain the historical JSON field name for qualification-tool compatibility.
     dgx_responses_payload_call_count: int = 0
 
     def as_dict(self) -> dict[str, object]:
@@ -217,38 +218,47 @@ def verify(root: Path) -> VerificationResult:
         if not isinstance(websocket_parents.get(call), ast.Await):
             raise VerificationError("WebSocket source-owned provider guard must await source resolution")
 
-    dgx_payload_helper = _find_top_level_function(forwarding, "_dgx_responses_payload")
-    if dgx_payload_helper is None:
-        raise VerificationError("DGX Responses encrypted-reasoning scrub helper is missing")
+    edge_payload_helper = _find_top_level_function(forwarding, "_edge_responses_payload")
+    if edge_payload_helper is None:
+        raise VerificationError("edge Responses encrypted-reasoning scrub helper is missing")
     helper_literals = {
         child.value
-        for child in ast.walk(dgx_payload_helper)
+        for child in ast.walk(edge_payload_helper)
         if isinstance(child, ast.Constant) and isinstance(child.value, str)
     }
     for required_literal in (
-        "src_69bc4887d69740979f6a0beaca37eefb",
-        "qwen3.8-flash-next",
+        "glm5.3-flash",
         "encrypted_content",
     ):
         if required_literal not in helper_literals:
             raise VerificationError(
-                f"DGX Responses payload scrub lost required qualified marker: {required_literal}"
+                f"edge Responses payload scrub lost required qualified marker: {required_literal}"
             )
-    dgx_call_count = 0
+    if any(
+        isinstance(child, ast.Attribute)
+        and child.attr == "id"
+        and isinstance(child.value, ast.Name)
+        and child.value.id == "source"
+        for child in ast.walk(edge_payload_helper)
+    ):
+        raise VerificationError(
+            "edge Responses payload scrub must not depend on deployment-specific source.id"
+        )
+    edge_call_count = 0
     for function_name in ("forward_responses", "stream_responses"):
         forwarder = _find_top_level_function(forwarding, function_name)
         if not isinstance(forwarder, ast.AsyncFunctionDef):
-            raise VerificationError(f"DGX Responses qualification requires async {function_name}()")
-        calls = _calls(forwarder, "_dgx_responses_payload")
+            raise VerificationError(f"edge Responses qualification requires async {function_name}()")
+        calls = _calls(forwarder, "_edge_responses_payload")
         if not calls:
-            raise VerificationError(f"{function_name}() does not apply the qualified DGX Responses payload scrub")
-        dgx_call_count += len(calls)
+            raise VerificationError(f"{function_name}() does not apply the qualified edge Responses payload scrub")
+        edge_call_count += len(calls)
 
     return VerificationResult(
         root=str(root),
         responses_guard_call_count=len(guard_calls),
         websocket_source_guard_call_count=len(websocket_guard_calls),
-        dgx_responses_payload_call_count=dgx_call_count,
+        dgx_responses_payload_call_count=edge_call_count,
     )
 
 

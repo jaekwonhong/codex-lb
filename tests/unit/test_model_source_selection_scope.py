@@ -55,7 +55,7 @@ async def test_registry_miss_does_not_make_unrelated_assigned_source_own_subscri
     monkeypatch.setattr(source_selection, "get_model_registry", lambda: _Registry(set()))
     seen = _install_source_ownership(
         monkeypatch,
-        owned={"src_dgx": {"qwen3.8-flash-next"}},
+        owned={"src_dgx": {"glm5.3-flash"}},
     )
 
     requires_source = await source_selection.source_scoped_model_requires_source(
@@ -74,11 +74,11 @@ async def test_assigned_source_declaring_registry_miss_still_fails_closed(
     monkeypatch.setattr(source_selection, "get_model_registry", lambda: _Registry(set()))
     _install_source_ownership(
         monkeypatch,
-        owned={"src_dgx": {"qwen3.8-flash-next"}},
+        owned={"src_dgx": {"glm5.3-flash"}},
     )
 
     requires_source = await source_selection.source_scoped_model_requires_source(
-        "qwen3.8-flash-next",
+        "glm5.3-flash",
         _key(assigned=["src_dgx"]),
     )
 

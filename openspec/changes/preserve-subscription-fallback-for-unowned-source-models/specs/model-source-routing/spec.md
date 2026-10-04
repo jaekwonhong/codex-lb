@@ -29,7 +29,7 @@ A structural Responses source-route exclusion MUST remain authoritative: file-pi
 - **THEN** the proxy returns `model_source_unavailable`
 - **AND** it does not dispatch the model to a subscription account
 
-#### Scenario: Runtime-enabled DGX model remains source routed
+#### Scenario: Runtime-enabled edge model remains source routed
 
 - **GIVEN** a source-scoped API key assigned to a DB-disabled source whose id is process-locally runtime enabled
 - **AND** that source declares the requested Responses model
@@ -64,7 +64,7 @@ A structural Responses source-route exclusion MUST remain authoritative: file-pi
 
 ### Requirement: Integrated Beta patch packets qualify the source-scope provider boundary semantically
 
-A Beta candidate that carries the local DGX/source-scoping patch packet MUST be
+A Beta candidate that carries the local edge/source-scoping patch packet MUST be
 qualified after Responses integration with a semantic contract that is
 independent of historical commit IDs. Qualification MUST reject a candidate if
 source-only classification uses subscription-registry absence without positive
@@ -73,7 +73,10 @@ perform the ownership lookup asynchronously, if a Responses HTTP caller does
 not await that classifier, or if the final guard can override a structural
 source-route exclusion or an already continuity-suppressed subscription owner.
 The qualification MUST also preserve the dangling empty-assignment fail-closed
-boundary.
+boundary. The `glm5.3-flash` encrypted-reasoning replay adaptation MUST be
+qualified by model capability rather than a deployment-specific model-source
+row id so recreating or moving the single DGX Spark + MSI edgeXpert cluster source does not
+silently disable the adaptation.
 
 #### Scenario: Historical registry-only integration is rejected
 
@@ -89,3 +92,12 @@ boundary.
 - **AND** both Responses HTTP guards await the classifier while preserving source-route exclusions and continuity suppression
 - **WHEN** Beta patch-packet qualification runs
 - **THEN** the source-scope semantic contract passes regardless of the candidate's rebased commit IDs
+
+#### Scenario: Recreated edge source keeps Responses replay adaptation
+
+- **GIVEN** `glm5.3-flash` is served by one model-source endpoint backed by DGX Spark rank 0 and MSI edgeXpert rank 1
+- **AND** that model-source row is recreated with a different source id
+- **AND** the Responses history contains provider-encrypted reasoning content
+- **WHEN** the request is forwarded to the edge-served model
+- **THEN** the unsupported encrypted reasoning field is removed before forwarding
+- **AND** qualification does not require any historical source id

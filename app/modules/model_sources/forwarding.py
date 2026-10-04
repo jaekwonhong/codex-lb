@@ -381,16 +381,18 @@ async def stream_chat_completion(
     )
 
 
-def _dgx_responses_payload(source: ModelSource, payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
-    """Adapt opaque reasoning replay only for the qualified DGX deployment.
+def _edge_responses_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Adapt opaque reasoning replay for the qualified edge-served model.
 
     Codex can replay reasoning encrypted by a previous provider when switching
     models. vLLM cannot decrypt it and rejects even otherwise valid history.
     Preserve plaintext reasoning, summaries, messages, tools, and compaction;
     remove only the unsupported field without mutating the caller's history.
-    Other model sources may support encrypted reasoning and must retain it.
+    Scope by model rather than deployment-specific source id so recreating the
+    DGX Spark + MSI edgeXpert source cannot silently disable the adaptation.
+    Other models may support encrypted reasoning and must retain it.
     """
-    if source.id != "src_69bc4887d69740979f6a0beaca37eefb" or payload.get("model") != "qwen3.8-flash-next":
+    if payload.get("model") != "glm5.3-flash":
         return payload
     items = payload.get("input")
     if not isinstance(items, list):
@@ -413,7 +415,7 @@ async def forward_responses(
     encryptor: TokenEncryptor | None = None,
     recode_credential_failures: bool = True,
 ) -> SourceResponsesCompletion:
-    payload = _dgx_responses_payload(source, payload)
+    payload = _edge_responses_payload(payload)
     try:
         async with lease_model_source_session() as session:
             # Non-stream generations legitimately spend minutes before the
@@ -534,7 +536,7 @@ async def stream_responses(
     scheduler: Scheduler = REAL_SCHEDULER,
     clock: Clock = REAL_CLOCK,
 ) -> SourceResponsesStream:
-    payload = _dgx_responses_payload(source, payload)
+    payload = _edge_responses_payload(payload)
     usage_holder = SourceUsageHolder()
     usage_parser = SourceStreamUsageParser(usage_holder, response_shape="responses")
     stack, response, first_chunk = await _open_source_stream(

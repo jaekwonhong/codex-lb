@@ -536,13 +536,12 @@ async def _collect(body: AsyncIterator[bytes]) -> list[bytes]:
     return [chunk async for chunk in body]
 
 
-_DGX_SOURCE_ID = "src_69bc4887d69740979f6a0beaca37eefb"
-_DGX_MODEL = "qwen3.8-flash-next"
+_EDGE_MODEL = "glm5.3-flash"
 
 
-def _dgx_replay_payload() -> dict[str, JsonValue]:
+def _edge_replay_payload() -> dict[str, JsonValue]:
     return {
-        "model": _DGX_MODEL,
+        "model": _EDGE_MODEL,
         "input": [
             {
                 "type": "reasoning",
@@ -556,14 +555,11 @@ def _dgx_replay_payload() -> dict[str, JsonValue]:
     }
 
 
-def test_dgx_responses_payload_strips_only_reasoning_encrypted_content_without_mutating_input() -> None:
-    payload = _dgx_replay_payload()
+def test_edge_responses_payload_strips_only_reasoning_encrypted_content_without_mutating_input() -> None:
+    payload = _edge_replay_payload()
     original = json.loads(json.dumps(payload))
 
-    adapted = forwarding_module._dgx_responses_payload(
-        _responses_source(source_id=_DGX_SOURCE_ID),
-        payload,
-    )
+    adapted = forwarding_module._edge_responses_payload(payload)
 
     assert adapted is not payload
     assert payload == original
@@ -577,18 +573,11 @@ def test_dgx_responses_payload_strips_only_reasoning_encrypted_content_without_m
     assert items[2] == original["input"][2]
 
 
-@pytest.mark.parametrize(
-    ("source_id", "model"),
-    [
-        ("src_other", _DGX_MODEL),
-        (_DGX_SOURCE_ID, "other-model"),
-    ],
-)
-def test_dgx_responses_payload_is_exact_noop_outside_qualified_source_model(source_id: str, model: str) -> None:
-    payload = _dgx_replay_payload()
-    payload["model"] = model
+def test_edge_responses_payload_is_exact_noop_for_other_models() -> None:
+    payload = _edge_replay_payload()
+    payload["model"] = "other-model"
 
-    adapted = forwarding_module._dgx_responses_payload(_responses_source(source_id=source_id), payload)
+    adapted = forwarding_module._edge_responses_payload(payload)
 
     assert adapted is payload
     reasoning = cast(list[dict[str, object]], payload["input"])[0]
@@ -596,13 +585,13 @@ def test_dgx_responses_payload_is_exact_noop_outside_qualified_source_model(sour
 
 
 @pytest.mark.asyncio
-async def test_forward_responses_posts_dgx_adapted_payload(monkeypatch: pytest.MonkeyPatch) -> None:
-    payload = _dgx_replay_payload()
-    response_body = {"id": "resp_dgx", "output": [], "usage": {"input_tokens": 1, "output_tokens": 1}}
+async def test_forward_responses_posts_edge_adapted_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = _edge_replay_payload()
+    response_body = {"id": "resp_edge", "output": [], "usage": {"input_tokens": 1, "output_tokens": 1}}
     session, _context, lease = _install_session(monkeypatch, _FakeResponse(json_body=response_body))
 
     result = await forwarding_module.forward_responses(
-        _responses_source(source_id=_DGX_SOURCE_ID),
+        _responses_source(source_id="src_edge_cluster_current"),
         payload,
     )
 
@@ -615,13 +604,13 @@ async def test_forward_responses_posts_dgx_adapted_payload(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
-async def test_stream_responses_posts_dgx_adapted_payload(monkeypatch: pytest.MonkeyPatch) -> None:
-    payload = _dgx_replay_payload()
-    first = _sse({"type": "response.created", "response": {"id": "resp_dgx_stream"}})
+async def test_stream_responses_posts_edge_adapted_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    payload = _edge_replay_payload()
+    first = _sse({"type": "response.created", "response": {"id": "resp_edge_stream"}})
     session, _context, lease = _install_session(monkeypatch, _FakeResponse(content=_FakeContent(first, [])))
 
     stream = await forwarding_module.stream_responses(
-        _responses_source(source_id=_DGX_SOURCE_ID),
+        _responses_source(source_id="src_edge_cluster_recreated"),
         payload,
     )
     posted = cast(dict[str, JsonValue], session.calls[0]["json"])

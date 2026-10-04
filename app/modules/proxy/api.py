@@ -2368,7 +2368,7 @@ def _clear_provider_switcher_service_tier_for_model_source(
     if api_key is not None and api_key.enforced_service_tier is not None:
         return
     # ProviderSwitcher speed is a subscription-lane control. Model sources
-    # (for example DGX Qwen) do not inherit it merely because they share the
+    # (for example the private edge-served GLM deployment) do not inherit it merely because they share the
     # Beta provider endpoint.
     payload.service_tier = None
 

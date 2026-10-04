@@ -81,17 +81,17 @@ async def _connect_proxy_websocket():
 
 def _good_forwarding() -> str:
     return """
-def _dgx_responses_payload(source, payload):
-    if source.id != "src_69bc4887d69740979f6a0beaca37eefb" or payload.get("model") != "qwen3.8-flash-next":
+def _edge_responses_payload(payload):
+    if payload.get("model") != "glm5.3-flash":
         return payload
     return {key: value for key, value in payload.items() if key != "encrypted_content"}
 
 async def forward_responses(source, payload):
-    payload = _dgx_responses_payload(source, payload)
+    payload = _edge_responses_payload(payload)
     return payload
 
 async def stream_responses(source, payload):
-    payload = _dgx_responses_payload(source, payload)
+    payload = _edge_responses_payload(payload)
     return payload
 """
 
@@ -220,7 +220,7 @@ async def _connect_proxy_websocket():
         verify(tmp_path)
 
 
-def test_verify_rejects_missing_dgx_responses_payload_scrub(tmp_path: Path) -> None:
+def test_verify_rejects_missing_edge_responses_payload_scrub(tmp_path: Path) -> None:
     _write_tree(
         tmp_path,
         repository=_good_repository(),
@@ -236,4 +236,30 @@ async def stream_responses(source, payload):
     )
 
     with pytest.raises(VerificationError, match="encrypted-reasoning scrub helper is missing"):
+        verify(tmp_path)
+
+
+def test_verify_rejects_edge_payload_scrub_bound_to_source_id(tmp_path: Path) -> None:
+    _write_tree(
+        tmp_path,
+        repository=_good_repository(),
+        selection=_good_selection(),
+        proxy_api=_good_proxy_api(),
+        forwarding="""
+def _edge_responses_payload(source, payload):
+    if source.id != "src_old_edge_source" or payload.get("model") != "glm5.3-flash":
+        return payload
+    return {key: value for key, value in payload.items() if key != "encrypted_content"}
+
+async def forward_responses(source, payload):
+    payload = _edge_responses_payload(source, payload)
+    return payload
+
+async def stream_responses(source, payload):
+    payload = _edge_responses_payload(source, payload)
+    return payload
+""",
+    )
+
+    with pytest.raises(VerificationError, match=r"must not depend on deployment-specific source\.id"):
         verify(tmp_path)
