@@ -84,6 +84,12 @@ def _good_forwarding() -> str:
 def _edge_responses_payload(payload):
     if payload.get("model") != "glm5.3-flash":
         return payload
+    include = payload.get("include")
+    if isinstance(include, list):
+        payload = {
+            **payload,
+            "include": [entry for entry in include if entry != "reasoning.encrypted_content"],
+        }
     return {key: value for key, value in payload.items() if key != "encrypted_content"}
 
 async def forward_responses(source, payload):
@@ -249,6 +255,12 @@ def test_verify_rejects_edge_payload_scrub_bound_to_source_id(tmp_path: Path) ->
 def _edge_responses_payload(source, payload):
     if source.id != "src_old_edge_source" or payload.get("model") != "glm5.3-flash":
         return payload
+    include = payload.get("include")
+    if isinstance(include, list):
+        payload = {
+            **payload,
+            "include": [entry for entry in include if entry != "reasoning.encrypted_content"],
+        }
     return {key: value for key, value in payload.items() if key != "encrypted_content"}
 
 async def forward_responses(source, payload):

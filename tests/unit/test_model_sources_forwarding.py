@@ -542,6 +542,7 @@ _EDGE_MODEL = "glm5.3-flash"
 def _edge_replay_payload() -> dict[str, JsonValue]:
     return {
         "model": _EDGE_MODEL,
+        "include": ["reasoning.encrypted_content", "message.output_text.logprobs"],
         "input": [
             {
                 "type": "reasoning",
@@ -571,6 +572,24 @@ def test_edge_responses_payload_strips_only_reasoning_encrypted_content_without_
     }
     assert items[1] == original["input"][1]
     assert items[2] == original["input"][2]
+    assert adapted["include"] == ["message.output_text.logprobs"]
+    assert payload["include"] == original["include"]
+
+
+def test_edge_responses_payload_strips_reasoning_include_without_list_input() -> None:
+    payload: dict[str, JsonValue] = {
+        "model": _EDGE_MODEL,
+        "input": "hello",
+        "include": ["reasoning.encrypted_content"],
+    }
+    original = json.loads(json.dumps(payload))
+
+    adapted = forwarding_module._edge_responses_payload(payload)
+
+    assert adapted is not payload
+    assert "include" not in adapted
+    assert adapted["input"] == "hello"
+    assert payload == original
 
 
 def test_edge_responses_payload_is_exact_noop_for_other_models() -> None:
@@ -582,6 +601,7 @@ def test_edge_responses_payload_is_exact_noop_for_other_models() -> None:
     assert adapted is payload
     reasoning = cast(list[dict[str, object]], payload["input"])[0]
     assert reasoning["encrypted_content"] == "opaque-provider-state"
+    assert payload["include"] == ["reasoning.encrypted_content", "message.output_text.logprobs"]
 
 
 @pytest.mark.asyncio
@@ -598,6 +618,7 @@ async def test_forward_responses_posts_edge_adapted_payload(monkeypatch: pytest.
     posted = cast(dict[str, JsonValue], session.calls[0]["json"])
     posted_items = cast(list[dict[str, object]], posted["input"])
     assert "encrypted_content" not in posted_items[0]
+    assert posted["include"] == ["message.output_text.logprobs"]
     assert cast(list[dict[str, object]], payload["input"])[0]["encrypted_content"] == "opaque-provider-state"
     assert result.payload == response_body
     assert lease.released == 1
@@ -616,6 +637,7 @@ async def test_stream_responses_posts_edge_adapted_payload(monkeypatch: pytest.M
     posted = cast(dict[str, JsonValue], session.calls[0]["json"])
     posted_items = cast(list[dict[str, object]], posted["input"])
     assert "encrypted_content" not in posted_items[0]
+    assert posted["include"] == ["message.output_text.logprobs"]
     assert cast(list[dict[str, object]], payload["input"])[0]["encrypted_content"] == "opaque-provider-state"
 
     await stream.aclose()

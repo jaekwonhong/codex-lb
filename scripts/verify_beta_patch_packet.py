@@ -229,6 +229,7 @@ def verify(root: Path) -> VerificationResult:
     for required_literal in (
         "glm5.3-flash",
         "encrypted_content",
+        "reasoning.encrypted_content",
     ):
         if required_literal not in helper_literals:
             raise VerificationError(

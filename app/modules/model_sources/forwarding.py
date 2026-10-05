@@ -386,26 +386,47 @@ def _edge_responses_payload(payload: dict[str, JsonValue]) -> dict[str, JsonValu
 
     Codex can replay reasoning encrypted by a previous provider when switching
     models. vLLM cannot decrypt it and rejects even otherwise valid history.
-    Preserve plaintext reasoning, summaries, messages, tools, and compaction;
-    remove only the unsupported field without mutating the caller's history.
+    It can also ask the Responses API to return ``reasoning.encrypted_content``;
+    the qualified edge backend returns plaintext reasoning items instead and
+    rejects that include selector. Preserve plaintext reasoning, summaries,
+    messages, tools, compaction, and all other include selectors; remove only
+    the unsupported encrypted-reasoning state without mutating the caller.
     Scope by model rather than deployment-specific source id so recreating the
     DGX Spark + MSI edgeXpert source cannot silently disable the adaptation.
     Other models may support encrypted reasoning and must retain it.
     """
     if payload.get("model") != "glm5.3-flash":
         return payload
-    items = payload.get("input")
-    if not isinstance(items, list):
-        return payload
-    adapted: list[JsonValue] = []
+
+    adapted_payload = payload
     changed = False
-    for item in items:
-        if isinstance(item, dict) and item.get("type") == "reasoning" and "encrypted_content" in item:
-            adapted.append({key: value for key, value in item.items() if key != "encrypted_content"})
+    items = payload.get("input")
+    if isinstance(items, list):
+        adapted: list[JsonValue] = []
+        input_changed = False
+        for item in items:
+            if isinstance(item, dict) and item.get("type") == "reasoning" and "encrypted_content" in item:
+                adapted.append({key: value for key, value in item.items() if key != "encrypted_content"})
+                input_changed = True
+            else:
+                adapted.append(item)
+        if input_changed:
+            adapted_payload = {**adapted_payload, "input": adapted}
             changed = True
-        else:
-            adapted.append(item)
-    return {**payload, "input": adapted} if changed else payload
+
+    include = payload.get("include")
+    if isinstance(include, list):
+        adapted_include = [entry for entry in include if entry != "reasoning.encrypted_content"]
+        if len(adapted_include) != len(include):
+            if not changed:
+                adapted_payload = dict(payload)
+            if adapted_include:
+                adapted_payload["include"] = adapted_include
+            else:
+                adapted_payload.pop("include", None)
+            changed = True
+
+    return adapted_payload if changed else payload
 
 
 async def forward_responses(
