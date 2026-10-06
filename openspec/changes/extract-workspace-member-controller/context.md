@@ -40,6 +40,10 @@ The detailed single-writer boundary is frozen in `ownership-contract.md`. In sho
 - Account-pool rotation and workspace-member rotation are distinct authorities. The Controller may consume or command OpenCodex through a defined adapter, but never becomes a second writer of account routing/quota/credential state.
 - Existing `member_auth_handoff` account/routing mutations and `rotation_worker` account/usage/reset orchestration are extraction seams, not capabilities that move unchanged.
 
+## Frozen account identity/state contract
+
+The cross-service identity and freshness boundary is frozen in `account-identity-state-contract.md`. The durable foreign identity is the exact OpenCodex `account_id`; selectors, aliases, log labels and emails are never sufficient join keys. Credential/main identity generations and an opaque state revision fence decisions and commands but do not form durable workspace-member identity. Required account evidence is exact-account, freshness-bounded and fail-closed.
+
 ## Extraction strategy
 
 The current member-management implementation is not treated as a cleanly separable package. It still imports Codex-LB database models, account repositories, OAuth/auth-handoff services, proxy account cache, usage observations, reset-credit facilities, and scheduler/runtime support. Those dependencies will be inventoried before an extraction boundary is finalized.

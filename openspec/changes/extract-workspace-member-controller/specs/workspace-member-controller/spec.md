@@ -94,3 +94,61 @@ The final Workspace Member Controller SHALL NOT persist ChatGPT/Codex inference 
 - **WHEN** that workflow is moved behind the Controller boundary
 - **THEN** those account-runtime writes are replaced by OpenCodex-owned operations or removed
 - **AND** no ChatGPT/Codex inference token is copied into Controller persistence
+
+### Requirement: Workspace members bind to exact OpenCodex account identities
+
+The Controller SHALL use the exact OpenCodex `account_id` as the durable foreign account key for a workspace-member binding. `workspace_account_id`, `preset_id`, member `user_id`, normalized member email, OpenCodex selector, alias and log label SHALL remain distinct identity namespaces. Email, selector, alias, display name or log label alone SHALL NOT establish or repair a member-to-account binding. Credential generation SHALL fence account evidence but SHALL NOT be the durable member identity.
+
+#### Scenario: Selector is remapped
+
+- **GIVEN** a workspace member is durably bound to one OpenCodex account id
+- **WHEN** an account selector is removed or remapped to another account
+- **THEN** the durable binding remains keyed by the original exact account id
+- **AND** a selector-targeted command fails closed unless OpenCodex resolves the selector back to that bound account id
+
+#### Scenario: Email matches but exact identity is unproven
+
+- **GIVEN** a workspace member email matches an OpenCodex account label or projected email
+- **WHEN** exact account/member identity has not been established by the qualified binding flow
+- **THEN** the Controller does not create or repair the account binding from email alone
+
+### Requirement: Account-state decisions are freshness and generation fenced
+
+The OpenCodex adapter SHALL return an exact-account state projection with capture time, normalized selection/quota/health state, an opaque state revision, and the live credential generation for pool credential-scoped evidence or native-main identity generation for main-account evidence. Membership decisions requiring live account state SHALL reject projections older than the configured Controller `account_state_max_age`. Quota-dependent decisions SHALL also reject unknown or insufficiently fresh quota evidence. A generation or relevant state-revision change SHALL require re-read and re-evaluation rather than reuse of stale decision evidence.
+
+#### Scenario: Credential refresh advances generation before mutation
+
+- **GIVEN** a membership replacement was evaluated against account generation N
+- **WHEN** OpenCodex advances that account to generation N+1 before the account-sensitive command or membership effect
+- **THEN** the Controller does not use generation N evidence to authorize the action
+- **AND** it obtains a fresh exact-account projection and re-evaluates the affected preconditions
+- **AND** the durable member-to-account binding is not remapped merely because the credential generation changed
+
+#### Scenario: Quota state is unknown
+
+- **GIVEN** replacement policy requires current quota evidence
+- **WHEN** OpenCodex reports `quota_state=unknown` or the required quota observation is missing/stale
+- **THEN** the Controller blocks that quota-dependent replacement
+- **AND** it does not derive an authoritative replacement verdict by independently recalculating OpenCodex routing eligibility from raw quota percentages
+
+### Requirement: OpenCodex account evidence retained by the Controller is immutable operation evidence
+
+When a membership decision consumes OpenCodex account state, the Controller SHALL bind the exact account id, applicable credential/main identity generation, state revision, observation time, normalized selection/quota state and only the quota-window evidence relevant to that decision into the membership-operation journal. The retained record SHALL be immutable historical evidence and SHALL NOT be refreshed in place or used as current account routing truth.
+
+#### Scenario: Later routing state differs from retained membership evidence
+
+- **GIVEN** a completed membership operation retains the account evidence that authorized it
+- **WHEN** OpenCodex later changes quota, cooldown, health, credential generation or account selection
+- **THEN** the operation journal keeps its original evidence unchanged for audit/recovery
+- **AND** all new membership decisions read current state from OpenCodex rather than the historical snapshot
+
+### Requirement: Account-management commands target an exact fenced account
+
+Any Controller-initiated OpenCodex account-management command SHALL identify the exact account and SHALL include the applicable identity/generation fence and an idempotency command id; it MAY also include the expected projected state revision. OpenCodex SHALL execute against that exact account or fail closed and SHALL NOT redirect the command to another pool account. An unknown command outcome SHALL be reconciled by an exact state read before any retry.
+
+#### Scenario: Account command outcome is unknown
+
+- **GIVEN** the Controller sent an exact-account management command with a command id and generation fence
+- **WHEN** delivery may have crossed the effect boundary but the reply is unavailable
+- **THEN** the Controller does not issue a blind replacement command
+- **AND** it reads the exact OpenCodex account state and reconciles the command outcome before any retry
