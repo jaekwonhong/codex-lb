@@ -62,6 +62,18 @@ The projection includes exact account id, pool credential generation or main ide
 
 The Controller-side adapter uses `Authorization: Bearer <OpenCodex admin token>`, verifies the returned account id exactly, validates the projection schema/generation namespace, maps 404/auth/unavailable failures into explicit fail-closed errors, and exposes freshness helpers without independently recalculating OpenCodex selection eligibility. Rotation/mutation code is not wired to this adapter in this slice.
 
+## Durable membership mutation command boundary
+
+Slice 7 extracts add/remove/switch commands into the standalone Controller core without exposing a mutation HTTP route yet. `WorkspaceMembershipMutationAdmission` revalidates the exact catalog fingerprint, workspace id/account id, configured incoming identity, and a complete owner-verified non-ambiguous membership observation immediately before a new effect claim. The observation must be no more than 30 seconds old by default; outgoing removal/switch identity must be present exactly in that observation and the workspace owner cannot be used as an incoming membership target.
+
+`WorkspaceMembershipMutationService` writes a Controller-owned typed operation into the existing durable member-switch CAS journal through `MembershipMutationJournal`. The legacy table remains the single mutable authority during migration: `LegacyMembershipMutationJournal` stores rows as `controller_membership_mutation` and reuses the existing command-receipt uniqueness/CAS semantics. A command claim containing operation id, command id, action and canonical SHA-256 request fingerprint is committed before `MembershipMutationEffectPort.execute` may run. The claimed state is then durably marked `effect_pending` before the external effect call.
+
+A lost/ambiguous effect response leaves the command pending indefinitely. Re-submitting the same command id/fingerprint returns the existing unknown state and never calls `execute` again. Recovery calls only `MembershipMutationEffectPort.reconcile` with the original operation id, command id and request fingerprint; a missing receipt remains `outcome_unknown`. A receipt must echo the exact operation, command, fingerprint, action and workspace identity. Completed receipts require action-appropriate confirmed add/remove effect evidence plus final membership confirmation; authoritative non-effect receipts may terminate safely only when they contain no confirmed/unknown effect evidence.
+
+The legacy `member_switch` admission path recognizes this new journal kind so an active/pending Controller mutation blocks competing work, while a valid terminal `completed` or `failed` Controller record with released scope is inert history rather than a permanent `unknown_control_record` blocker. Core mutation modules remain free of Codex-LB ORM, proxy, account, handoff, rotation-operator, dashboard and dependency-container imports; only the migration adapter imports the legacy journal.
+
+No production membership effect adapter or mutation network endpoint is activated in this slice. Those remain behind standalone service authentication/packaging and the separately authorized mutation canary.
+
 ## Extraction strategy
 
 The current member-management implementation is not treated as a cleanly separable package. It still imports Codex-LB database models, account repositories, OAuth/auth-handoff services, proxy account cache, usage observations, reset-credit facilities, and scheduler/runtime support. Those dependencies will be inventoried before an extraction boundary is finalized.

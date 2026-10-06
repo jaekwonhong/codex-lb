@@ -20,6 +20,7 @@ from app.modules.member_switch.schemas import (
     RotationControllerState,
     RunState,
 )
+from app.modules.workspace_member_controller.mutation_models import MembershipMutationState
 
 
 def _is_own_enrollment_child(
@@ -184,6 +185,20 @@ async def local_admission(
             else:
                 if record.id != SCHEDULE_BINDING_ID or record.active_scope is not None or record.pending_action:
                     code = "stored_rotation_schedule_review_required"
+        elif record.kind == "controller_membership_mutation":
+            try:
+                state = MembershipMutationState.model_validate_json(record.payload)
+            except ValidationError:
+                code = "stored_controller_mutation_review_required"
+            else:
+                if state.operation_id != record.id:
+                    code = "stored_controller_mutation_review_required"
+                elif (
+                    record.active_scope is not None
+                    or record.pending_action
+                    or state.phase not in {"completed", "failed"}
+                ):
+                    code = "controller_mutation_retained"
         else:
             code = "unknown_control_record"
         if code:

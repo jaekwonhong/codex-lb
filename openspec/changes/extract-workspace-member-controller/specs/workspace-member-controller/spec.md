@@ -249,3 +249,85 @@ The Controller's OpenCodex account-state adapter SHALL send the exact durable `o
 - **WHEN** its `observedAt` or required `quotaObservedAt` exceeds the Controller policy freshness bound
 - **THEN** the projection helper reports it stale
 - **AND** downstream membership policy must obtain a new OpenCodex projection before using that evidence
+
+### Requirement: Membership add/remove/switch commands are exact and freshly admitted before effect ownership
+
+The Workspace Member Controller SHALL model `add`, `remove`, and `switch` as explicit membership mutation commands. A new command SHALL bind an immutable operation id, command id, expected journal revision, exact workspace id, exact workspace account id, catalog fingerprint, and action-appropriate incoming/outgoing member identities. Before the command can own an external effect, the Controller SHALL re-read the workspace catalog and membership observation, SHALL require the exact catalog/workspace identities to match, SHALL require the observation to be complete, available, owner-verified, non-ambiguous and fresh, and SHALL reject an outgoing identity that is not currently observed. The default extracted admission freshness bound is 30 seconds. The workspace owner SHALL NOT be accepted as an incoming add/switch target.
+
+#### Scenario: Switch target changed since the command was built
+
+- **GIVEN** a switch command names one catalog fingerprint and exact incoming/outgoing identities
+- **WHEN** the current catalog fingerprint differs or the outgoing identity is no longer present in the authoritative membership observation
+- **THEN** the Controller refuses admission before claiming the external effect
+- **AND** no membership mutation is sent
+
+#### Scenario: Membership observation is stale
+
+- **GIVEN** the exact workspace catalog still matches
+- **WHEN** the authoritative membership observation is older than the configured mutation-admission freshness bound
+- **THEN** the Controller refuses the command as stale
+- **AND** it does not treat the old member list as current effect authorization
+
+### Requirement: Membership effects use a durable claim-before-effect no-replay journal
+
+Before an add/remove/switch external effect may execute, the Controller SHALL durably claim the operation using the command id, action, expected revision and a canonical request fingerprint. The claim and command receipt SHALL commit before the effect port is invoked. The Controller SHALL durably mark the claimed operation as effect-pending before the external effect call. A command id already recorded with the same fingerprint SHALL be idempotent and SHALL NOT execute the effect again. Reuse of the same command identity with different request identity SHALL fail closed.
+
+#### Scenario: Process stops after durable claim but before a usable effect response
+
+- **GIVEN** the command receipt and pending effect ownership were committed
+- **WHEN** the external mutation may have been sent but its reply is lost or the Controller restarts
+- **THEN** the operation remains durably pending with no TTL-based replay
+- **AND** submitting the same command again does not call the external execute method a second time
+
+#### Scenario: Duplicate command is received after successful settlement
+
+- **GIVEN** a command id/fingerprint already produced a terminal membership receipt
+- **WHEN** the exact command is submitted again
+- **THEN** the Controller returns the retained terminal operation state
+- **AND** no add/remove/switch effect is repeated
+
+### Requirement: Unknown membership effects reconcile from the original command receipt identity only
+
+Recovery of a pending membership effect SHALL call an observational reconciliation boundary using the original operation id, command id and request fingerprint. Recovery SHALL NOT call the execute boundary as a substitute for a missing receipt. A reconciled receipt SHALL match the original operation id, command id, fingerprint, action, workspace id and workspace account id before it can settle the journal. If no authoritative receipt/evidence is available, the operation SHALL remain pending/outcome-unknown.
+
+A completed receipt SHALL carry action-appropriate confirmed effect evidence and final membership confirmation. An authoritative non-effect receipt MAY close the operation as failed/retryable history only when it proves no confirmed or unknown membership effect remains. A partial or ambiguous effect SHALL NOT be converted into authoritative non-effect merely to release the journal.
+
+#### Scenario: Reconciliation returns no receipt
+
+- **GIVEN** an add/remove/switch command is durably pending after an ambiguous delivery
+- **WHEN** the effect adapter cannot find authoritative evidence for the original command identity
+- **THEN** the Controller leaves the operation outcome unknown
+- **AND** it does not blindly resend the mutation
+
+#### Scenario: Reconciliation returns a receipt for another workspace
+
+- **GIVEN** a pending command belongs to workspace account A
+- **WHEN** reconciliation returns an otherwise well-formed receipt naming workspace account B
+- **THEN** the Controller rejects the receipt as an identity mismatch
+- **AND** the pending effect ownership is retained for further/manual reconciliation
+
+### Requirement: Legacy migration journal remains a single authority during mutation extraction
+
+During migration, Controller membership mutations MAY reuse the existing durable member-switch control/command-receipt tables through a compatibility adapter, but SHALL NOT create a second mutable journal for the same operation. Controller mutation rows SHALL use a distinct kind understood by both the Controller adapter and legacy member-switch admission. An active or pending Controller mutation SHALL block competing legacy membership work. A structurally valid terminal Controller mutation with released active scope and no pending action SHALL be treated as inert history and SHALL NOT permanently block future work.
+
+#### Scenario: Legacy process sees a pending Controller mutation
+
+- **WHEN** legacy member-switch admission scans the shared journal
+- **THEN** it reports the Controller mutation as retained/blocking work
+- **AND** it does not start a competing membership effect
+
+#### Scenario: Legacy process sees settled Controller history
+
+- **GIVEN** the Controller mutation is terminal, has no pending action and has released the shared active scope
+- **WHEN** legacy admission scans the journal
+- **THEN** that row does not block creation of later membership work
+
+### Requirement: Mutation extraction does not prematurely expose an unauthenticated mutation API
+
+The internal add/remove/switch command service and effect/journal ports MAY exist before standalone packaging, but the Controller HTTP router SHALL remain read-only until service authentication and mutation qualification are completed. Mutation extraction SHALL NOT by itself activate a production membership-effect adapter or expose POST/PUT/PATCH/DELETE membership routes.
+
+#### Scenario: Slice-7 Controller router is inspected
+
+- **WHEN** the extracted Controller HTTP router is enumerated after mutation command extraction
+- **THEN** it still exposes only the previously qualified GET/HEAD read surface
+- **AND** mutation commands are reachable only as internal service contracts, not network operations

@@ -145,3 +145,33 @@ def test_controller_persistence_and_read_core_avoid_db_proxy_and_dashboard_impor
             elif isinstance(node, ast.Import):
                 imports.extend(alias.name for alias in node.names)
         assert not any(module.startswith(prefix) for module in imports for prefix in forbidden), (name, imports)
+
+
+def test_controller_mutation_core_avoids_legacy_member_switch_db_proxy_and_dashboard_imports():
+    root = Path(__file__).parents[2] / "app" / "modules" / "workspace_member_controller"
+    forbidden = (
+        "app.db",
+        "app.modules.member_switch",
+        "app.modules.member_auth_handoff",
+        "app.modules.member_rotation_operator",
+        "app.modules.proxy",
+        "app.modules.accounts",
+        "app.modules.shared",
+        "app.dependencies",
+    )
+    for name in (
+        "mutation_models.py",
+        "mutation_ports.py",
+        "mutation_admission.py",
+        "mutation_service.py",
+        "persistence.py",
+    ):
+        path = root / name
+        tree = ast.parse(path.read_text())
+        imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imports.append(node.module)
+            elif isinstance(node, ast.Import):
+                imports.extend(alias.name for alias in node.names)
+        assert not any(module.startswith(prefix) for module in imports for prefix in forbidden), (name, imports)
