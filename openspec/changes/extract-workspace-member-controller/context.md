@@ -31,6 +31,15 @@ OpenCodex should own request-facing ChatGPT/Codex account state: selectable acco
 
 The Controller must consume the minimum account-state projection needed for membership decisions. It must not become a second source of truth for account quota or request routing.
 
+## Frozen ownership boundary
+
+The detailed single-writer boundary is frozen in `ownership-contract.md`. In short:
+
+- OpenCodex owns ChatGPT/Codex inference credentials, pool eligibility/selection, live quota/cooldown/health, exact account selection, retry/failover and thread affinity.
+- Workspace Member Controller owns workspace catalog/observation/intent, membership effects, membership-specific mutation limits, durable effect/no-replay recovery and membership decision evidence.
+- Account-pool rotation and workspace-member rotation are distinct authorities. The Controller may consume or command OpenCodex through a defined adapter, but never becomes a second writer of account routing/quota/credential state.
+- Existing `member_auth_handoff` account/routing mutations and `rotation_worker` account/usage/reset orchestration are extraction seams, not capabilities that move unchanged.
+
 ## Extraction strategy
 
 The current member-management implementation is not treated as a cleanly separable package. It still imports Codex-LB database models, account repositories, OAuth/auth-handoff services, proxy account cache, usage observations, reset-credit facilities, and scheduler/runtime support. Those dependencies will be inventoried before an extraction boundary is finalized.

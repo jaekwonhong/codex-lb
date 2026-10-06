@@ -9,7 +9,7 @@ Codex-LB already contains distinct workspace-member capabilities (`member_switch
 ## What Changes
 
 - Introduce a standalone Workspace Member Controller boundary for workspace catalog, owner/member observation, workspace intent, membership mutation, and durable membership-operation recovery.
-- Move ChatGPT/Codex account-pool selection, quota interpretation, thread/account affinity, retry, and failover ownership to OpenCodex rather than reimplementing those behaviors in the Controller.
+- Move ChatGPT/Codex credential lifecycle, account-pool selection, quota/cooldown interpretation, exact account selection, thread/account affinity, retry, and failover ownership to OpenCodex rather than reimplementing those behaviors in the Controller.
 - Define an explicit identity/state contract between OpenCodex account records and workspace/member identities so the Controller can consume account state without owning request routing or account credentials.
 - Extract the existing member-management behavior incrementally behind ports/adapters before any production ownership changes.
 - Qualify the extracted service read-only first, then a single-workspace mutation canary, before retiring the Codex-LB data plane.

@@ -10,8 +10,8 @@
 
 ## 2. Boundary definition
 
-- [ ] 2.1 Define the minimum Workspace Member Controller responsibility set and explicit non-responsibilities.
-- [ ] 2.2 Record which account-pool, quota, affinity, failover, and exact-account-selection behaviors are owned by OpenCodex.
+- [x] 2.1 Define the minimum Workspace Member Controller responsibility set and explicit non-responsibilities.
+- [x] 2.2 Record which account-pool, quota, affinity, failover, and exact-account-selection behaviors are owned by OpenCodex.
 - [ ] 2.3 Define the OpenCodex account identity/state projection consumed by the Controller and the workspace/member mapping contract.
 
 ## 3. Incremental extraction
