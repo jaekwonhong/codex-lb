@@ -3469,7 +3469,14 @@ def _http_bridge_reconnect_connect_failure(
     required_preferred_account_id: str | None,
 ) -> ProxyResponseError:
     if required_preferred_account_id is not None:
-        return _http_bridge_previous_response_owner_unavailable_error()
+        definitive_usage_exhaustion = False
+        if isinstance(exc, ProxyResponseError):
+            detail = exc.payload.get("error", {})
+            code = detail.get("code") if isinstance(detail, dict) else None
+            definitive_usage_exhaustion = (
+                _http_bridge_owner_unavailable_has_definitive_usage_exhaustion(exc) or code == "usage_limit_reached"
+            )
+        return _http_bridge_previous_response_owner_unavailable_error(definitive_usage_exhaustion)
     if isinstance(exc, ProxyResponseError):
         return exc
     raise exc
