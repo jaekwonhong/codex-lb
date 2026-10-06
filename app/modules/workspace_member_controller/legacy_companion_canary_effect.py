@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
+from typing import Literal
+from uuid import UUID
 
 from app.modules.member_switch.companion import CompanionPort
 from app.modules.member_switch.policy import membership_confirmed, pre_membership_failure_confirmed
@@ -22,7 +24,21 @@ from app.modules.workspace_member_controller.mutation_models import (
 from app.modules.workspace_member_controller.mutation_ports import MembershipMutationEffectPort
 
 _CANARY_EFFECT_CAPABILITY = "member_rotation_canary_effect_gate_v1"
+_CANARY_ROLLBACK_CAPABILITY = "member_rotation_canary_rollback_binding_v1"
 _REMOVE_TELEMETRY_CAPABILITY = "member_rotation_managed_remove_telemetry_v1"
+CANARY_REQUIRED_CAPABILITIES = frozenset(
+    {
+        EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY,
+        OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY,
+        OWNER_MEMBERSHIP_MUTATION_CAPABILITY,
+        RECIPIENT_MEMBERSHIP_LIFECYCLE_CAPABILITY,
+        _CANARY_EFFECT_CAPABILITY,
+        _CANARY_ROLLBACK_CAPABILITY,
+        _REMOVE_TELEMETRY_CAPABILITY,
+        "durable_client_flow",
+        "durable_participant_commands_v1",
+    }
+)
 _UNSAFE_CAPTURE_STATES = frozenset(
     {
         "json_parse_failure",
@@ -50,12 +66,27 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
         sleep: Callable[[float], Awaitable[None]] | None = None,
         settle_timeout_seconds: float = 190.0,
         poll_interval_seconds: float = 2.0,
+        canary_purpose: Literal["forward", "rollback"] = "forward",
+        canary_parent_client_flow_id: str | None = None,
     ) -> None:
+        if canary_purpose not in {"forward", "rollback"}:
+            raise ValueError("canary_purpose_invalid")
+        if canary_purpose == "forward" and canary_parent_client_flow_id is not None:
+            raise ValueError("canary_forward_parent_forbidden")
+        if canary_purpose == "rollback" and not canary_parent_client_flow_id:
+            raise ValueError("canary_rollback_parent_required")
+        if canary_parent_client_flow_id is not None:
+            try:
+                UUID(canary_parent_client_flow_id)
+            except ValueError as exc:
+                raise ValueError("canary_parent_client_flow_invalid") from exc
         self._companion = companion
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._sleep = sleep or asyncio.sleep
         self._settle_timeout_seconds = settle_timeout_seconds
         self._poll_interval_seconds = poll_interval_seconds
+        self._canary_purpose = canary_purpose
+        self._canary_parent_client_flow_id = canary_parent_client_flow_id
 
     async def execute(self, command: MembershipMutationCommand) -> MembershipMutationReceipt:
         mutation = command.mutation
@@ -71,20 +102,10 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
             )
 
         catalog = await self._companion.catalog()
-        required = {
-            EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY,
-            OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY,
-            OWNER_MEMBERSHIP_MUTATION_CAPABILITY,
-            RECIPIENT_MEMBERSHIP_LIFECYCLE_CAPABILITY,
-            _CANARY_EFFECT_CAPABILITY,
-            _REMOVE_TELEMETRY_CAPABILITY,
-            "durable_client_flow",
-            "durable_participant_commands_v1",
-        }
         if (
             not catalog.enabled
             or catalog.catalog_fingerprint != mutation.catalog_fingerprint
-            or not required.issubset(catalog.capabilities)
+            or not CANARY_REQUIRED_CAPABILITIES.issubset(catalog.capabilities)
         ):
             return self._receipt(
                 operation_id=str(command.operation_id),
@@ -147,6 +168,8 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                 preview_token=preview.preview_token,
                 client_flow_id=str(command.operation_id),
                 canary=True,
+                canary_purpose=self._canary_purpose,
+                canary_parent_client_flow_id=self._canary_parent_client_flow_id,
             )
         )
         if not receipt.accepted:

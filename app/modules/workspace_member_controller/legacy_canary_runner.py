@@ -20,6 +20,7 @@ from app.modules.workspace_member_controller.binding_repository import (
     FileWorkspaceMemberAccountBindingRepository,
 )
 from app.modules.workspace_member_controller.legacy_companion_canary_effect import (
+    CANARY_REQUIRED_CAPABILITIES,
     LegacyCompanionCanarySwitchEffect,
 )
 from app.modules.workspace_member_controller.legacy_mutation_journal import LegacyMembershipMutationJournal
@@ -162,6 +163,8 @@ async def _preflight(
     if not external.can_start:
         raise RuntimeError(f"canary_companion_not_idle:{external.code}")
     catalog, workspace, original = await _current_identity(companion, workspace_id)
+    if not catalog.enabled or not CANARY_REQUIRED_CAPABILITIES.issubset(catalog.capabilities):
+        raise RuntimeError("canary_catalog_not_qualified")
     targets = [member for member in workspace.members if member.preset_id == target_preset_id]
     if len(targets) != 1:
         raise RuntimeError("canary_target_identity_mismatch")
@@ -250,8 +253,6 @@ async def run_phase(
     )
     journal = LegacyMembershipMutationJournal(controls)
     admission = WorkspaceMembershipMutationAdmission(companion)
-    effects = LegacyCompanionCanarySwitchEffect(companion)
-    service = WorkspaceMembershipMutationService(journal, admission, effects)
     try:
         if phase in {"preflight", "forward"}:
             catalog, workspace, original, target, original_account_id, target_account_id = await _preflight(
@@ -274,6 +275,8 @@ async def run_phase(
                 }
             if state_path.exists():
                 raise RuntimeError("canary_state_already_exists")
+            effects = LegacyCompanionCanarySwitchEffect(companion, canary_purpose="forward")
+            service = WorkspaceMembershipMutationService(journal, admission, effects)
             command = _command(catalog=catalog, workspace=workspace, incoming=target, outgoing=original)
             result = await service.submit(command)
             if result.phase != "completed":
@@ -347,6 +350,12 @@ async def run_phase(
             or target_account_id != state.target_opencodex_account_id
         ):
             raise RuntimeError("canary_rollback_account_binding_changed")
+        effects = LegacyCompanionCanarySwitchEffect(
+            companion,
+            canary_purpose="rollback",
+            canary_parent_client_flow_id=state.forward_operation_id,
+        )
+        service = WorkspaceMembershipMutationService(journal, admission, effects)
         command = _command(catalog=catalog, workspace=workspace, incoming=state.original, outgoing=current)
         result = await service.submit(command)
         if result.phase != "completed":

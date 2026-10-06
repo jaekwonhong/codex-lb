@@ -89,6 +89,8 @@ class StartRequest(DashboardModel):
     preview_token: str
     client_flow_id: str
     canary: bool = False
+    canary_purpose: Literal["forward", "rollback"] | None = None
+    canary_parent_client_flow_id: str | None = None
 
 
 class StartReceipt(DashboardModel):

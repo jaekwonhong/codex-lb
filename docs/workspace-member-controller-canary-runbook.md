@@ -17,6 +17,7 @@ The canary requires:
 - explicit exact OpenCodex bindings for both current and target subjects;
 - both exact OpenCodex accounts to have usable credentials and remain administratively paused so the membership canary cannot place either account into inference routing;
 - the qualified Companion mutation/observation/recipient/canary/telemetry/durable-flow capability set;
+- `member_rotation_canary_rollback_binding_v1`, proving the purpose-bound rollback contract and active qualified epoch are present;
 - a private absolute handoff state path with owner-only permissions.
 
 The canary effect adapter uses only the dedicated Companion canary endpoint. It never retries a start request and never falls back to the ordinary operation path.
@@ -55,6 +56,8 @@ Rollback is a separate authorization. It reads the retained handoff state and re
 
 Rollback uses a second dedicated canary operation target→original. Success requires the same evidence gates as the forward phase plus final observation that the original subject is restored, active scope is released, and Companion admission is idle again.
 
+The rollback start is not a generic second canary. It carries `canaryPurpose=rollback` plus the retained forward Controller operation UUID as `canaryParentClientFlowId`. Companion resolves that UUID to the durable forward receipt and admits rollback only when the forward receipt is completed, released, fully claimed/confirmed, and the rollback preview is the exact reverse identity transition. The same parent cannot authorize a second rollback.
+
 ## Routing isolation
 
 The canary deliberately requires both bound OpenCodex pool accounts to remain paused. Membership mutation is executed by the qualified Companion canary path, not by OpenCodex inference routing, so unpausing would add risk without adding evidence. A missing credential or reauthentication-required state still blocks the canary.
@@ -68,3 +71,5 @@ This budget has no expiry or refund. Completion, failure, finalization/release, 
 The earlier `cdp-2-thinklet09` canary bound the single durable canary receipt and ended before a membership effect was authorized (`RemoveClaimed=false`, `RemovalConfirmed=false`, `InviteClaimed=false`). That is nevertheless sufficient to consume the workflow budget because the receipt is persisted before membership work is scheduled. The later qualified target therefore fails closed at start with `canary_workflow_budget_spent`; retrying it against the current Companion cannot succeed and must not be attempted.
 
 If another live canary is required, do not delete or rewrite `member-switch.operations.json` and do not route through the ordinary `/operations` endpoint. A new, separately qualified Companion contract/release must explicitly define a new canary qualification epoch (or equivalent operator-authorized budget generation) while retaining prior canary evidence and no-replay guarantees. Only after that candidate is tested, provenance-qualified, deployed, and re-preflighted may another forward canary be authorized.
+
+The qualified `2.11.48-canary.3` candidate uses epoch `wmc-20261007-q1` for one forward plus one purpose-bound rollback tied to that forward. It does not replenish the earlier legacy canary budget and does not grant a free second forward operation.
