@@ -225,6 +225,10 @@ class AccountSelection:
     # own ``exclude_account_ids``: the wait a transient owner outage earns
     # cannot clear this one (``_hard_affinity_owner_excluded_by_caller``).
     hard_affinity_owner_excluded: bool = False
+    # Internal positive quota evidence for a resolved hard owner.  Unlike the
+    # public hard-affinity error code this is safe to use as definitive
+    # pre-dispatch relocation evidence.
+    hard_affinity_owner_usage_exhausted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -620,6 +624,7 @@ class LoadBalancer:
         excluded_ids = set(exclude_account_ids or ())
         scoped_account_ids = None if account_ids is None else set(account_ids)
         hard_affinity_owner_excluded = False
+        hard_affinity_owner_usage_exhausted = False
         owner_restricted_selection = required_account_is_ownership_constraint or required_continuity_owner
         sticky_selection_may_resolve_owner = sticky_key is not None and sticky_kind == StickySessionKind.CODEX_SESSION
         # C2-3 resilience toggles: resolved from the caller's dashboard snapshot
@@ -991,6 +996,7 @@ class LoadBalancer:
             selection_error_code = sticky_outcome.error_code
             selection_resets_at = sticky_outcome.resets_at
             hard_affinity_owner_excluded = sticky_outcome.hard_affinity_owner_excluded
+            hard_affinity_owner_usage_exhausted = sticky_outcome.hard_affinity_owner_usage_exhausted
             if sticky_outcome.disposition == "direct_error":
                 return AccountSelection(
                     account=None,
@@ -1043,6 +1049,7 @@ class LoadBalancer:
                 error_code=selection_error_code,
                 resets_at=selection_resets_at,
                 hard_affinity_owner_excluded=hard_affinity_owner_excluded,
+                hard_affinity_owner_usage_exhausted=hard_affinity_owner_usage_exhausted,
             )
         if not circuit_breaker_open:
             set_normal()

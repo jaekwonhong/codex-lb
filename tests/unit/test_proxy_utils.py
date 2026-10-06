@@ -32529,9 +32529,17 @@ async def test_process_upstream_websocket_text_maps_previous_response_usage_limi
     finalize_request_state = AsyncMock()
     handle_stream_error = AsyncMock()
     account = _make_account("acc_ws_prev_quota_owner")
+    real_decide_relocation = websocket_helpers_module.decide_relocation
+    relocation_results: list[Any] = []
+
+    def capture_relocation_verdict(inputs: Any) -> Any:
+        verdict = real_decide_relocation(inputs)
+        relocation_results.append(verdict)
+        return verdict
 
     monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize_request_state)
     monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+    monkeypatch.setattr(websocket_helpers_module, "decide_relocation", capture_relocation_verdict)
 
     request_payload = {
         "type": "response.create",
@@ -32597,6 +32605,9 @@ async def test_process_upstream_websocket_text_maps_previous_response_usage_limi
     assert upstream_control.replay_request_state is None
     assert pending_request.replay_count == 0
     assert list(pending_requests) == []
+    assert len(relocation_results) == 1
+    assert relocation_results[0].movable is False
+    assert relocation_results[0].decline_reason == "absent_transcript"
 
 
 @pytest.mark.asyncio
@@ -32607,8 +32618,17 @@ async def test_process_upstream_websocket_text_replays_proxy_verified_anchor_aft
     finalize_request_state = AsyncMock()
     handle_stream_error = AsyncMock()
     account = _make_account("acc_ws_proxy_anchor_quota")
+    real_decide_relocation = websocket_helpers_module.decide_relocation
+    relocation_results: list[Any] = []
+
+    def capture_relocation_verdict(inputs: Any) -> Any:
+        verdict = real_decide_relocation(inputs)
+        relocation_results.append(verdict)
+        return verdict
+
     monkeypatch.setattr(service, "_finalize_websocket_request_state", finalize_request_state)
     monkeypatch.setattr(service, "_handle_stream_error", handle_stream_error)
+    monkeypatch.setattr(websocket_helpers_module, "decide_relocation", capture_relocation_verdict)
 
     anchored_payload = {
         "type": "response.create",
@@ -32669,6 +32689,9 @@ async def test_process_upstream_websocket_text_replays_proxy_verified_anchor_aft
     assert pending_request.previous_response_id is None
     assert pending_request.preferred_account_id is None
     assert list(pending_requests) == []
+    assert len(relocation_results) == 1
+    assert relocation_results[0].movable is True
+    assert relocation_results[0].source == "client_input"
 
 
 @pytest.mark.asyncio
@@ -41353,7 +41376,7 @@ async def test_stream_previous_response_owner_usage_limit_fails_closed(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_stream_verified_fresh_replay_moves_off_owner_after_previsible_quota(monkeypatch):
+async def test_stream_verified_fresh_replay_moves_off_owner_after_pre_dispatch_quota(monkeypatch):
     settings = _make_proxy_settings()
     request_logs = _RequestLogsRecorder()
     service = proxy_service.ProxyService(_repo_factory(request_logs))
@@ -41374,6 +41397,13 @@ async def test_stream_verified_fresh_replay_moves_off_owner_after_previsible_quo
     )
     selection_calls: list[dict[str, object]] = []
     streamed_payloads: list[ResponsesRequest] = []
+    real_decide_relocation = streaming_retry_module.decide_relocation
+    relocation_results: list[Any] = []
+
+    def capture_relocation_verdict(inputs: Any) -> Any:
+        verdict = real_decide_relocation(inputs)
+        relocation_results.append(verdict)
+        return verdict
 
     async def fake_select_account(**kwargs):
         selection_calls.append(dict(kwargs))
@@ -41388,13 +41418,11 @@ async def test_stream_verified_fresh_replay_moves_off_owner_after_previsible_quo
         del headers, access_token, base_url, raise_for_status, kwargs
         streamed_payloads.append(payload)
         if account_id == owner_account.chatgpt_account_id:
-            yield (
-                'data: {"type":"response.failed","response":{"id":"resp_owner_quota",'
-                '"status":"failed","error":{"code":"usage_limit_reached",'
-                '"message":"usage limit reached"},"usage":{"input_tokens":0,'
-                '"output_tokens":0,"total_tokens":0}}}\n\n'
+            raise proxy_module.ProxyResponseError(
+                429,
+                openai_error("usage_limit_reached", "usage limit reached"),
+                failure_phase="status",
             )
-            return
         assert account_id == replacement_account.chatgpt_account_id
         yield (
             'data: {"type":"response.completed","response":{"id":"resp_replay_ok",'
@@ -41410,6 +41438,7 @@ async def test_stream_verified_fresh_replay_moves_off_owner_after_previsible_quo
     monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=lambda account, **kwargs: account))
     monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(return_value=True))
     monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(streaming_retry_module, "decide_relocation", capture_relocation_verdict)
 
     payload = ResponsesRequest.model_validate(
         {
@@ -41424,14 +41453,15 @@ async def test_stream_verified_fresh_replay_moves_off_owner_after_previsible_quo
     chunks = [chunk async for chunk in service.stream_responses(payload, {"session_id": session_id})]
 
     assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.completed"
-    assert len(selection_calls) >= 2
     assert [streamed.previous_response_id for streamed in streamed_payloads] == [previous_response_id, None]
     assert streamed_payloads[1].input == full_input
+    assert relocation_results
+    assert any(verdict.movable and verdict.source == "client_input" for verdict in relocation_results)
 
 
 @pytest.mark.asyncio
-async def test_stream_account_neutral_image_usage_limit_retires_legacy_owner_before_keyed_health_flush(monkeypatch):
-    """A pre-visible owner usage-limit may retire only the raw session owner.
+async def test_stream_account_neutral_image_quota_response_event_does_not_retire_legacy_owner(monkeypatch):
+    """A quota response event proves upstream execution and keeps the raw owner bound.
 
     This mirrors the PC1 Astra failure shape: an inline image forces the HTTP
     bridge bypass, the selected hard session owner returns
@@ -41455,6 +41485,13 @@ async def test_stream_account_neutral_image_usage_limit_retires_legacy_owner_bef
     selection_calls: list[dict[str, object]] = []
     streamed_account_ids: list[str | None] = []
     order: list[str] = []
+    real_decide_relocation = streaming_retry_module.decide_relocation
+    relocation_results: list[Any] = []
+
+    def capture_relocation_verdict(inputs: Any) -> Any:
+        verdict = real_decide_relocation(inputs)
+        relocation_results.append(verdict)
+        return verdict
 
     async def fake_select_account(**kwargs):
         selection_calls.append(dict(kwargs))
@@ -41466,11 +41503,13 @@ async def test_stream_account_neutral_image_usage_limit_retires_legacy_owner_bef
             assert lease is not None
             return AccountSelection(account=owner_account, error_message=None, lease=lease)
         assert kwargs.get("exclude_account_ids") == {owner_account.id}
-        assert kwargs.get("abandon_unavailable_legacy_owner") is True
-        assert kwargs.get("proven_unavailable_legacy_owner_account_id") == owner_account.id
-        lease = await service._load_balancer.acquire_account_lease(replacement_account.id, kind="stream")
-        assert lease is not None
-        return AccountSelection(account=replacement_account, error_message=None, lease=lease)
+        assert kwargs.get("abandon_unavailable_legacy_owner") is False
+        assert kwargs.get("proven_unavailable_legacy_owner_account_id") is None
+        return AccountSelection(
+            account=None,
+            error_message="Required owner remains bound",
+            error_code="hard_affinity_saturated",
+        )
 
     async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **kwargs):
         del payload, headers, access_token, base_url, raise_for_status, kwargs
@@ -41508,6 +41547,7 @@ async def test_stream_account_neutral_image_usage_limit_retires_legacy_owner_bef
     monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=lambda account, **kwargs: account))
     monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(side_effect=settle_usage))
     monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(streaming_retry_module, "decide_relocation", capture_relocation_verdict)
 
     payload = ResponsesRequest.model_validate(
         {
@@ -41537,28 +41577,27 @@ async def test_stream_account_neutral_image_usage_limit_retires_legacy_owner_bef
         )
     ]
 
-    assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.completed"
-    assert all('"type":"response.failed"' not in chunk for chunk in chunks)
-    assert streamed_account_ids == [
-        owner_account.chatgpt_account_id,
-        replacement_account.chatgpt_account_id,
-    ]
+    assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.failed"
+    assert streamed_account_ids == [owner_account.chatgpt_account_id]
     assert len(selection_calls) >= 2
     assert order == ["settle", f"health:{owner_account.id}:usage_limit_reached"]
+    assert relocation_results
+    assert all(verdict.movable is False for verdict in relocation_results)
+    assert all(verdict.decline_reason == "upstream_execution_observed" for verdict in relocation_results)
 
 
 @pytest.mark.parametrize(
-    ("owner_error_code", "expect_recovery"),
+    ("owner_error_code", "expected_relocation_reason"),
     [
-        pytest.param("usage_limit_reached", True, id="owner-usage-limit-recovers"),
-        pytest.param("rate_limit_exceeded", False, id="generic-rate-limit-stays-pinned"),
+        pytest.param("usage_limit_reached", "turn_state_owned", id="owner-usage-limit-stays-pinned"),
+        pytest.param("rate_limit_exceeded", None, id="generic-rate-limit-stays-pinned"),
     ],
 )
 @pytest.mark.asyncio
-async def test_stream_verified_turn_state_full_resend_image_moves_only_after_owner_usage_limit(
+async def test_stream_verified_turn_state_full_resend_image_stays_owner_bound(
     monkeypatch,
     owner_error_code: str,
-    expect_recovery: bool,
+    expected_relocation_reason: str | None,
 ):
     """A registered turn-state may move only when the live bridge proves full safe history.
 
@@ -41580,9 +41619,7 @@ async def test_stream_verified_turn_state_full_resend_image_moves_only_after_own
     turn_state = "http_turn_0123456789abcdef0123456789abcdef"
     process_session = "process-turn-state-image-quota"
     thread_id = "thread-turn-state-image-quota"
-    stored_prefix: list[JsonValue] = [
-        {"role": "user", "content": [{"type": "input_text", "text": "earlier question"}]}
-    ]
+    stored_prefix: list[JsonValue] = [{"role": "user", "content": [{"type": "input_text", "text": "earlier question"}]}]
     full_input: list[JsonValue] = [
         *stored_prefix,
         {
@@ -41628,6 +41665,13 @@ async def test_stream_verified_turn_state_full_resend_image_moves_only_after_own
     streamed_headers: list[dict[str, str]] = []
     streamed_payloads: list[ResponsesRequest] = []
     order: list[str] = []
+    real_decide_relocation = streaming_retry_module.decide_relocation
+    relocation_results: list[Any] = []
+
+    def capture_relocation_verdict(inputs: Any) -> Any:
+        verdict = real_decide_relocation(inputs)
+        relocation_results.append(verdict)
+        return verdict
 
     async def fake_select(*_args, **kwargs):
         selection_calls.append(dict(kwargs))
@@ -41637,11 +41681,6 @@ async def test_stream_verified_turn_state_full_resend_image_moves_only_after_own
             assert policy.codex_session_source == "turn_state"
             return AccountSelection(account=owner_account, error_message=None)
         assert kwargs.get("exclude_account_ids") == {owner_account.id}
-        if expect_recovery:
-            assert kwargs.get("preferred_account_id") is None
-            assert policy.codex_session_source == "thread_header"
-            assert policy.reallocate_sticky is True
-            return AccountSelection(account=replacement_account, error_message=None)
         assert kwargs.get("preferred_account_id") == owner_account.id
         assert policy.codex_session_source == "turn_state"
         return AccountSelection(
@@ -41691,6 +41730,7 @@ async def test_stream_verified_turn_state_full_resend_image_moves_only_after_own
     monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=lambda account, **kwargs: account))
     monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(side_effect=settle_usage))
     monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(streaming_retry_module, "decide_relocation", capture_relocation_verdict)
 
     payload = ResponsesRequest.model_validate(
         {
@@ -41716,21 +41756,18 @@ async def test_stream_verified_turn_state_full_resend_image_moves_only_after_own
         )
     ]
 
+    assert chunks
     assert any(key.lower() == "x-codex-turn-state" for key in streamed_headers[0])
-    if expect_recovery:
-        assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.completed"
-        assert streamed_account_ids == [
-            owner_account.chatgpt_account_id,
-            replacement_account.chatgpt_account_id,
-        ]
-        assert all(key.lower() != "x-codex-turn-state" for key in streamed_headers[1])
-        assert streamed_payloads[1].input == full_input
-        assert order == ["settle", f"health:{owner_account.id}:usage_limit_reached"]
+    assert streamed_account_ids == [owner_account.chatgpt_account_id]
+    assert len(streamed_headers) == 1
+    assert len(selection_calls) >= 2
+    assert order == ["settle", f"health:{owner_account.id}:{owner_error_code}"]
+    if expected_relocation_reason is None:
+        assert relocation_results == []
     else:
-        assert streamed_account_ids == [owner_account.chatgpt_account_id]
-        assert len(streamed_headers) == 1
-        assert len(selection_calls) >= 2
-        assert order == ["settle", f"health:{owner_account.id}:rate_limit_exceeded"]
+        assert relocation_results
+        assert all(verdict.movable is False for verdict in relocation_results)
+        assert all(verdict.decline_reason == expected_relocation_reason for verdict in relocation_results)
 
 
 @pytest.mark.asyncio
@@ -41738,9 +41775,7 @@ async def test_verified_turn_state_replay_rejects_incomplete_or_account_scoped_h
     service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
     owner_account = _make_account("acc_turn_state_replay_guard_owner")
     turn_state = "http_turn_fedcba9876543210fedcba9876543210"
-    stored_prefix: list[JsonValue] = [
-        {"role": "user", "content": [{"type": "input_text", "text": "earlier question"}]}
-    ]
+    stored_prefix: list[JsonValue] = [{"role": "user", "content": [{"type": "input_text", "text": "earlier question"}]}]
     bridge_key = proxy_service._HTTPBridgeSessionKey("prompt_cache", "turn-state-guard-bridge", None)
     bridge_session = proxy_service._HTTPBridgeSession(
         key=bridge_key,

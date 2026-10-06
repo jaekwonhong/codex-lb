@@ -4,13 +4,7 @@
 
 ### Requirement: Relocation eligibility has a single decision point
 
-The decision whether an anchored request may be dispatched to a different account, and which request body that dispatch carries, MUST be produced by one shared, transport-independent evaluation. Every transport — direct HTTP streaming, downstream WebSocket, and the HTTP session bridge — MUST obtain its verdict from that evaluation rather than computing its own eligibility. Given equal inputs, all transports MUST reach the same verdict.
-
-The evaluation MUST be pure with respect to the request: loading the durable transcript is the only I/O, it MUST happen in one place, and a failure to load it MUST be treated as "no transcript" rather than as an error that fails the request.
-
-Every verdict MUST record a closed-vocabulary decline reason, and a declined relocation MUST leave the request on exactly the behaviour it has today.
-
-The verdict MUST decline, before consulting any evidence, when downstream-visible output has already been emitted, or when the request is bound to its account by the `single_account` routing strategy, an input-file pin, turn-state ownership, or a session-identity binding. These are ownership facts that no request body can neutralize.
+The proxy MUST use one pure, transport-independent relocation verdict for direct HTTP streaming, downstream WebSocket, and the HTTP session bridge. Equal inputs MUST produce the same movable decision, body, and closed-vocabulary decline reason. Transcript-load failure MUST be treated as an absent transcript, and a declined verdict MUST preserve today's owner-bound behaviour.
 
 #### Scenario: Transports agree
 
@@ -34,31 +28,7 @@ The verdict MUST decline, before consulting any evidence, when downstream-visibl
 
 ### Requirement: Anchored turns relocate on a rebuilt durable transcript
 
-When an anchored continuation cannot be served by its owner account and the evidence is definitive — an upstream quota or usage-limit rejection, or a confirmed pre-dispatch transport failure, in both cases with no response event emitted and no downstream-visible output — the proxy MUST attempt to rebuild the turn's full conversation from the durable operation spool and dispatch it to another account without the anchor.
-
-The rebuild MUST walk the `parent_response_id` chain from the anchor and assemble the turns oldest first, matching the order the durable repository returns them in, and for each turn MUST combine the stored request body with the stored terminal response output. A rebuild that assembles the chain in any other order MUST be rejected: a chronologically reversed conversation satisfies every structural predicate and fails silently. It MUST be bounded by a maximum turn count, by a maximum byte size measured across the whole transcript rather than per turn, and by a maximum **item** count. Turns and bytes do not bound items — the smallest legal item repeated until the byte budget is spent yields six figures of them — and the item count is what every per-item cost in the rebuild scales with.
-
-A turn counts as settled, and so as material for the rebuild, only when its spool carries a terminal event that reports an answer. A terminal event that reports a failure MUST NOT make a failed turn read as an answered one in the rebuilt conversation. The rebuilt input MUST then be joined to the client's current turn. The join MUST NOT delete, reorder or alter any item the client sent. A rebuild that drops a client item because its content coincides with an item already in the chain is a worse failure than refusing to rebuild at all: the user's message is gone, the result still satisfies every structural predicate, and nothing downstream can detect it.
-
-**The client's items are inviolable; the chain's are not.** That asymmetry decides the join, and it is the only thing that needs to.
-
-The chain is the proxy's own reconstruction of turns the client is not currently sending. The client's input is what the client is sending right now. When the two overlap, the client's copy is authoritative — so the proxy MUST drop the overlapping portion **from the chain** and MUST keep every item the client sent. Dropping a chain turn the client has just re-supplied loses nothing; dropping a client item loses something no downstream check can detect.
-
-The join is therefore: walk the chain oldest first; where the client's input matches the **tail** of what the walk has accumulated, discard that tail; append the client's input verbatim and last. The overlap MUST be anchored at the accumulated tail — a match anywhere else is a coincidence, not a restatement, and MUST NOT shorten anything.
-
-**The comparison MUST be made on the projected form of both sides, and the dispatched items MUST be the client's verbatim ones.** The key the comparison uses MUST be built from a **positive enumeration of the fields that identify an item** — a message's role and content, a tool call's identity and arguments, a tool output's call and result — and MUST NOT be built by subtracting a list of fields that do not identify one. A subtractive list is open-ended: every field the wire may carry and the recording may drop has to be remembered, and the two rounds that tried it were each defeated by a field nobody had listed yet. A positive list is bounded by what a turn *is*, and a field nobody thought of is ignored by default instead of doubling the conversation.
-
-**The enumeration MUST go all the way down.** It applies to every nested structure the key reaches — a content part, a tool declaration, a tool call's arguments — and not only to an item's top level. Serializing a nested value whole makes every field inside it identity-bearing, which is the subtractive failure again one level lower: a client that rewords a tool's description between turns then reads as a different turn and has its conversation dispatched twice. A structure the enumeration does not reach MUST make the item unidentifiable rather than compared on its raw form, so the rebuild fails closed instead of guessing.
-
-The enumeration MUST also be checked against the set of item kinds the strict predicate admits, so a kind added later is identified rather than silently compared by accident. The chain's items have been through the account-neutral projection and the client's have not, so comparing them as they stand makes the overlap depend on fields the projection normalizes away: one legal difference — an assistant message that omits `status`, which the wire allows — collapses the overlap to zero and doubles the whole conversation. Normalize for the comparison only. Never let normalization reach the body that is dispatched.
-
-**The overlap computation MUST be linear in the number of items.** The transcript caps bound turns and bytes, not items, so a chain that is legal under both can still carry six figures of them; a nested scan over that is minutes of blocking work on a single-worker event loop, inside a failover path whose whole purpose is to be faster than losing the conversation. Apply the same rule to each chain turn's stored request as the walk accumulates it, so a parent turn that restated the conversation replaces what it restates instead of repeating it.
-
-The proxy MUST NOT attempt to classify the client's intent. Whether the input is a full resend, a continuation delta, a rolling window of recent turns, or a coincidence is not knowable from the request: a client that re-sends its last exchange plus a new turn is byte-identical to one whose conversation genuinely began at that exchange. Any rule that decides between them — from `previous_response_id`, from the presence of model-authored items, from structural self-containment — will be wrong for one of them. The tail-overlap rule needs no such decision, because both readings produce the same correct conversation.
-
-**A request that names a prior response is owed material.** When it names one and the chain is absent, incomplete or unusable, the proxy MUST fail closed; it MUST NOT dispatch the client's own input as though it were the whole conversation, because the original dispatch would have carried prior state the relocated one would not. A request naming no prior response is owed nothing, and its own body is the conversation. This is the one place the anchor is read, and it decides whether material is owed — never what the input contains.
-
-`responses_input_items_are_self_contained_fresh_replay` MUST NOT be read as "this input carries the whole conversation". It answers a different question — whether the input references state the proxy does not hold — and using it as a completeness test inverts the outcome for the shapes Codex actually sends.
+With definitive pre-dispatch owner failure and no visible response event, an anchored turn MAY relocate only from a complete durable parent chain. The rebuild MUST be oldest-first, bounded by turns, whole-transcript bytes, and items, preserve every client-sent item, drop only a matching reconstructed tail, and pass the strict account-neutral replay predicate. Missing, incomplete, unsafe, or unportable material MUST fail closed.
 
 #### Scenario: A delta continuation survives its exhausted owner
 
@@ -89,6 +59,13 @@ The proxy MUST NOT attempt to classify the client's intent. Whether the input is
 - **WHEN** the join computes the overlap
 - **THEN** the restated turns are recognised and the chain's copies are discarded
 - **AND** the dispatched body carries the client's items as the client sent them
+
+#### Scenario: Overlap comparison stays bounded and semantic
+
+- **GIVEN** a large legal transcript whose recorded and live items differ only in projection-normalized fields
+- **WHEN** the proxy searches for the tail overlap
+- **THEN** it compares projected identity fields with a positive recursive enumeration in linear item time
+- **AND** it dispatches the client's verbatim items rather than the projected comparison form
 
 #### Scenario: A coincidental content match never costs the client a message
 
@@ -165,16 +142,7 @@ The proxy MUST NOT attempt to classify the client's intent. Whether the input is
 
 ### Requirement: Ambiguous eventless dispatches relocate once behind the durable fence
 
-When a dispatch left for upstream and the transport then failed ambiguously — `stream_incomplete`, `stream_idle_timeout`, or `upstream_request_timeout` — the proxy MAY relocate the turn to another account exactly once, and MUST do so only through the atomic one-shot claim defined by "Fenced one-shot recovery dispatch".
-
-Beyond that claim, the proxy MUST require all of the following before relocating, and MUST fail closed when any is absent:
-
-- no downstream-visible output, no recorded response id, and zero spooled events for the operation — a single spooled event is proof that upstream executed the turn, which makes the outcome known rather than ambiguous;
-- the elapsed time since dispatch is within a bounded ambiguity window, so a turn that may be mid-execution and about to write its first event is not duplicated;
-- the relocated dispatch carries the origin operation's side-effect replay-dedupe identity, so a tool call the original dispatch may already have produced is suppressed on the new account rather than executed a second time. A transport that does not implement that dedupe contract MUST NOT take the fenced lane at all: without it the duplicate this lane knowingly risks is unbounded in kind, not just in tokens. Today only the HTTP session bridge implements it;
-- the rebuilt body satisfies the same strict account-neutral predicate required by "Anchored turns relocate on a rebuilt durable transcript".
-
-The one-shot budget MUST be at most one dispatch per operation for the whole of that operation's retention, across every replica and every reconnect. When the claim is refused, the request MUST terminate through the fail-closed outcome its transport already produces today and MUST NOT invent a second dispatch: on the HTTP session bridge that is the `upstream_operation_status_unknown` rejection with its cooldown retry hint; on the direct streaming and WebSocket paths it is the terminal transport failure the client receives today. A refused claim MUST NOT be reported as a pool-exhaustion or usage-limit outcome.
+An ambiguous eventless transport failure MAY relocate at most once and only through the atomic durable recovery claim. Relocation requires no visible output, no response id, zero spooled events, age within the ambiguity window, a transport-provided side-effect replay-dedupe identity, and a strictly account-neutral rebuilt body. Missing any condition MUST fail closed without inventing another dispatch.
 
 #### Scenario: One ambiguous failure buys one relocation
 

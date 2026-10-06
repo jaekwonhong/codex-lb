@@ -358,6 +358,7 @@ from app.modules.proxy.http_bridge_forwarding import (
 from app.modules.proxy.http_bridge_forwarding import (
     OwnerForwardRelayFailure as OwnerForwardRelayFailure,
 )
+from app.modules.proxy.replay_relocation import RelocationInputs, RelocationVerdict, decide_relocation
 from app.modules.proxy.replay_safety import responses_payload_is_account_neutral_fresh_replay
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED
 
@@ -1237,6 +1238,44 @@ def _websocket_owner_pinned_quota_error_code(
             return None
         return "server_is_overloaded"
     return _websocket_transparent_replay_error_code(error_code, error_message)
+
+
+def _websocket_definitive_relocation_verdict(
+    request_state: _WebSocketRequestState,
+    *,
+    routing_strategy: str | None,
+) -> RelocationVerdict:
+    """Apply the shared relocation contract to a pre-created owner failure.
+
+    WebSocket does not persist a durable parent-operation transcript. An
+    anchored request therefore reaches the shared verdict with
+    ``durable_transcript=None`` and declines as ``absent_transcript``. An
+    unanchored account-neutral request may still be admitted as client input.
+    """
+
+    return decide_relocation(
+        RelocationInputs(
+            transport="websocket",
+            payload={},
+            current_request_text=(
+                request_state.fresh_upstream_request_text
+                if request_state.fresh_upstream_request_is_retry_safe
+                else request_state.request_text
+            ),
+            evidence="definitive",
+            downstream_output_visible=request_state.downstream_visible,
+            routing_strategy=routing_strategy,
+            input_file_pinned=request_state.file_required_preferred_account,
+            turn_state_owned=(
+                request_state.affinity_policy.codex_session_source == "turn_state"
+                and request_state.preferred_account_id is not None
+            ),
+            session_identity_bound=request_state.payload_conversation_bound,
+            durable_transcript=None,
+            response_id=request_state.response_id,
+            spooled_event_count=request_state.response_event_count,
+        )
+    )
 
 
 def _websocket_transparent_replay_error_code(error_code: str, error_message: str | None) -> str | None:

@@ -1390,6 +1390,138 @@ async def test_operation_ledger_is_fenced_and_idempotent(
 
 
 @pytest.mark.asyncio
+async def test_parentless_root_operation_concurrent_registration_is_idempotent(
+    async_session_factory: Callable[[], AsyncSession],
+) -> None:
+    owner_session = async_session_factory()
+    writer_a = async_session_factory()
+    writer_b = async_session_factory()
+    try:
+        owner_repository = DurableBridgeRepository(owner_session)
+        claim = await _claim(
+            owner_repository,
+            instance_id="inst-root-race",
+            session_key_value="sid-root-race",
+        )
+        fingerprint = durable_bridge_hash("session:durable-root-race\nroot-body")
+        operation_id = durable_bridge_operation_id(claim.id, fingerprint)
+        kwargs: dict[str, Any] = {
+            "operation_id": operation_id,
+            "session_id": claim.id,
+            "instance_id": "inst-root-race",
+            "owner_epoch": claim.owner_epoch,
+            "request_fingerprint": fingerprint,
+            "account_id": "account-root-race",
+            "model": "gpt-5.6",
+            "parent_response_id": None,
+            "request_text": '{"model":"gpt-5.6","input":"root"}',
+        }
+
+        first, second = await asyncio.gather(
+            DurableBridgeRepository(writer_a).record_operation(**kwargs),
+            DurableBridgeRepository(writer_b).record_operation(**kwargs),
+        )
+
+        assert first is not None
+        assert second is not None
+        assert {first.created, second.created} == {True, False}
+        assert first.operation_id == operation_id
+        assert second.operation_id == operation_id
+        row_count = await owner_session.scalar(
+            select(func.count())
+            .select_from(HttpBridgeOperationRecord)
+            .where(HttpBridgeOperationRecord.operation_id == operation_id)
+        )
+        assert row_count == 1
+    finally:
+        await writer_b.close()
+        await writer_a.close()
+        await owner_session.close()
+
+
+@pytest.mark.asyncio
+async def test_replayable_transcript_walks_anchored_turn_back_to_parentless_root(
+    async_session_factory: Callable[[], AsyncSession],
+) -> None:
+    session = async_session_factory()
+    try:
+        repository = DurableBridgeRepository(session)
+        claim = await _claim(repository, instance_id="inst-root-chain", session_key_value="sid-root-chain")
+
+        root_fingerprint = durable_bridge_hash("root-chain:root")
+        root_operation_id = durable_bridge_operation_id(claim.id, root_fingerprint)
+        root = await repository.record_operation(
+            operation_id=root_operation_id,
+            session_id=claim.id,
+            instance_id="inst-root-chain",
+            owner_epoch=claim.owner_epoch,
+            request_fingerprint=root_fingerprint,
+            account_id="account-root-chain",
+            model="gpt-5.6",
+            parent_response_id=None,
+            request_text='{"model":"gpt-5.6","input":[{"role":"user","content":"root"}]}',
+        )
+        assert root is not None
+        assert await repository.append_terminal_operation_event(
+            operation_id=root_operation_id,
+            session_id=claim.id,
+            instance_id="inst-root-chain",
+            owner_epoch=claim.owner_epoch,
+            event_text=(
+                'data: {"type":"response.completed","response":{"id":"resp-root-chain",'
+                '"output":[{"type":"message","role":"assistant","content":'
+                '[{"type":"output_text","text":"root reply"}]}]}}\n\n'
+            ),
+            max_bytes=4096,
+            state="completed",
+            response_id="resp-root-chain",
+            complete_spool=True,
+        )
+
+        child_fingerprint = durable_bridge_hash("root-chain:child")
+        child_operation_id = durable_bridge_operation_id(claim.id, child_fingerprint)
+        child = await repository.record_operation(
+            operation_id=child_operation_id,
+            session_id=claim.id,
+            instance_id="inst-root-chain",
+            owner_epoch=claim.owner_epoch,
+            request_fingerprint=child_fingerprint,
+            account_id="account-root-chain",
+            model="gpt-5.6",
+            parent_response_id="resp-root-chain",
+            request_text=(
+                '{"model":"gpt-5.6","previous_response_id":"resp-root-chain",'
+                '"input":[{"role":"user","content":"child"}]}'
+            ),
+        )
+        assert child is not None
+        assert await repository.append_terminal_operation_event(
+            operation_id=child_operation_id,
+            session_id=claim.id,
+            instance_id="inst-root-chain",
+            owner_epoch=claim.owner_epoch,
+            event_text=(
+                'data: {"type":"response.completed","response":{"id":"resp-child-chain",'
+                '"output":[{"type":"message","role":"assistant","content":'
+                '[{"type":"output_text","text":"child reply"}]}]}}\n\n'
+            ),
+            max_bytes=4096,
+            state="completed",
+            response_id="resp-child-chain",
+            complete_spool=True,
+        )
+
+        transcript = await repository.get_replayable_transcript(response_id="resp-child-chain")
+
+        assert transcript is not None
+        assert [turn.operation.response_id for turn in transcript] == ["resp-root-chain", "resp-child-chain"]
+        assert transcript[0].operation.parent_response_id is None
+        assert transcript[1].operation.parent_response_id == "resp-root-chain"
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
 async def test_chunk_operation_replays_exact_events(
     async_session_factory: Callable[[], AsyncSession],
 ) -> None:

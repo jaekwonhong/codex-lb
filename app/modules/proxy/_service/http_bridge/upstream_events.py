@@ -220,7 +220,9 @@ from app.modules.proxy.continuity import is_http_bridge_account_neutral_replay
 from app.modules.proxy.helpers import (
     _normalize_error_code,
     is_upstream_model_capacity_error,
+    is_upstream_usage_limit_rejection,
 )
+from app.modules.proxy.replay_relocation import RelocationInputs, decide_relocation
 from app.modules.proxy.tool_call_dedupe import (
     mark_duplicate_tool_call_downstream_event,
     rewrite_parallel_tool_call_text,
@@ -3405,6 +3407,15 @@ class _HTTPBridgeUpstreamEventsMixin:
             payload=payload,
         )
         retry_error_message = _websocket_event_error_message(event_type, payload)
+        definitive_owner_quota_error = (
+            owner_pinned_quota_error
+            if owner_pinned_quota_error is not None
+            and is_upstream_usage_limit_rejection(
+                error_code=owner_pinned_quota_error,
+                message=retry_error_message,
+            )
+            else None
+        )
         # An accepted anchored request waits only when the pre-created retry
         # can actually re-send it (proxy-injected anchor); a client-supplied
         # anchor falls through to the transparent-code branch, which forwards
@@ -3412,6 +3423,7 @@ class _HTTPBridgeUpstreamEventsMixin:
         wait_for_model_capacity_retry = bool(
             retry_error_code is not None
             and retry_error_code != _ACCOUNT_MODEL_UNSUPPORTED_ERROR_CODE
+            and definitive_owner_quota_error is None
             and not is_previous_response_not_found_event
             and status_request_state is not None
             and is_upstream_model_capacity_error(retry_error_message)
@@ -3541,19 +3553,51 @@ class _HTTPBridgeUpstreamEventsMixin:
                     _relinquish_http_bridge_capacity_wait_ownership(
                         session, status_request_state, claimed_terminal_request_states
                     )
-        elif owner_pinned_quota_error is not None and not is_previous_response_not_found_event:
+        elif definitive_owner_quota_error is not None and not is_previous_response_not_found_event:
             await self._handle_or_defer_precreated_stream_health(
                 status_request_state,
                 session.account,
                 {"message": retry_error_message or "Upstream error"},
-                owner_pinned_quota_error,
+                definitive_owner_quota_error,
             )
             if (
                 status_request_state is not None
                 and status_request_state.previous_response_id is not None
                 and status_request_state.preferred_account_id is not None
             ):
-                safe_request_text = _prepare_websocket_request_state_for_account_switch(status_request_state)
+                candidate_request_text = status_request_state.request_text
+                if (
+                    status_request_state.proxy_injected_previous_response_id
+                    and status_request_state.fresh_upstream_request_is_retry_safe
+                    and status_request_state.fresh_upstream_request_text
+                ):
+                    candidate_request_text = status_request_state.fresh_upstream_request_text
+                relocation_verdict = decide_relocation(
+                    RelocationInputs(
+                        transport="http_bridge",
+                        payload={},
+                        current_request_text=candidate_request_text,
+                        evidence="definitive",
+                        downstream_output_visible=status_request_state.downstream_visible,
+                        routing_strategy=status_request_state.routing_strategy,
+                        input_file_pinned=status_request_state.file_required_preferred_account,
+                        turn_state_owned=bool(
+                            status_request_state.affinity_policy.codex_session_source == "turn_state"
+                            and status_request_state.preferred_account_id is not None
+                        ),
+                        session_identity_bound=status_request_state.payload_conversation_bound,
+                        durable_transcript=None,
+                        response_id=status_request_state.response_id,
+                        spooled_event_count=status_request_state.response_event_count,
+                    )
+                )
+                safe_request_text = (
+                    _prepare_websocket_request_state_for_account_switch(status_request_state)
+                    if relocation_verdict.movable
+                    and relocation_verdict.body is not None
+                    and not relocation_verdict.requires_recovery_fence
+                    else None
+                )
                 if safe_request_text is not None:
                     previous_upstream_turn_state = session.upstream_turn_state
                     previous_downstream_turn_state = session.downstream_turn_state

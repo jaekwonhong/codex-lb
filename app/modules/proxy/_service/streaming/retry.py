@@ -111,6 +111,11 @@ from app.modules.proxy.helpers import (
 )
 from app.modules.proxy.http_continuation import http_continuation_signal
 from app.modules.proxy.load_balancer import AccountLease, AccountSelection
+from app.modules.proxy.replay_relocation import (
+    RelocationEvidence,
+    RelocationInputs,
+    decide_relocation,
+)
 from app.modules.proxy.replay_safety import (
     project_responses_input_for_account_neutral_fresh_replay,
     responses_input_suffix_matches_pending_tool_calls,
@@ -1033,17 +1038,48 @@ class _StreamingRetryMixin:
                 payload.to_replay_safety_payload()
             )
 
-        def _move_verified_fresh_replay_from_owner(*, account_id: str, outcome: str) -> bool:
+        def _shared_definitive_relocation_verdict(
+            *,
+            evidence: RelocationEvidence,
+        ) -> Any:
+            candidate_payload = verified_fresh_replay_payload or payload
+            return decide_relocation(
+                RelocationInputs(
+                    transport="http_stream",
+                    payload=candidate_payload.to_replay_safety_payload(),
+                    evidence=evidence,
+                    downstream_output_visible=settlement.downstream_visible,
+                    routing_strategy=routing_strategy,
+                    input_file_pinned=file_preferred_account_id is not None,
+                    turn_state_owned=turn_state_owner_account_id is not None,
+                    session_identity_bound=bool(payload.conversation),
+                    durable_transcript=None,
+                    response_id=settlement.response_id,
+                )
+            )
+
+        def _move_verified_fresh_replay_from_owner(
+            *,
+            account_id: str,
+            outcome: str,
+            relocation_evidence: RelocationEvidence | None = None,
+        ) -> bool:
             # Only a proxy-injected owner anchor with locally verified full
             # input may move; the failed owner stays excluded so sticky
             # selection cannot immediately loop back to it.
             nonlocal affinity, payload, payload_replay_required_account_id
             nonlocal preferred_account_id, require_preferred_account, verified_fresh_replay_payload
-            if not (
-                require_preferred_account
-                and preferred_account_id == account_id
-                and verified_fresh_replay_payload is not None
-            ):
+            if not (require_preferred_account and preferred_account_id == account_id):
+                return False
+            if relocation_evidence is not None:
+                verdict = _shared_definitive_relocation_verdict(evidence=relocation_evidence)
+                if not verdict.movable or verdict.body is None or verdict.requires_recovery_fence:
+                    return False
+                try:
+                    verified_fresh_replay_payload = ResponsesRequest.model_validate(dict(verdict.body))
+                except Exception:
+                    return False
+            if verified_fresh_replay_payload is None:
                 return False
             if not responses_payload_is_account_neutral_fresh_replay(
                 verified_fresh_replay_payload.to_replay_safety_payload()
@@ -1081,6 +1117,9 @@ class _StreamingRetryMixin:
             proof = verified_turn_state_fresh_replay
             if proof is None or proof.owner_account_id != account_id or turn_state_owner_account_id != account_id:
                 return False
+            verdict = _shared_definitive_relocation_verdict(evidence="definitive")
+            if not verdict.movable:
+                return False
             api_key_id = api_key.id if api_key is not None else None
             async with proxy._http_bridge_lock:
                 current_key = proxy._http_bridge_turn_state_index.get((proof.turn_state, api_key_id))
@@ -1115,9 +1154,7 @@ class _StreamingRetryMixin:
             require_preferred_account = False
             verified_turn_state_fresh_replay = None
             excluded_account_ids.add(account_id)
-            dispatch_headers = {
-                key: value for key, value in headers.items() if key.lower() != "x-codex-turn-state"
-            }
+            dispatch_headers = {key: value for key, value in headers.items() if key.lower() != "x-codex-turn-state"}
             affinity = replace(
                 _sticky_key_for_responses_request(
                     payload,
@@ -1155,6 +1192,9 @@ class _StreamingRetryMixin:
             nonlocal affinity
             if not is_upstream_usage_limit_rejection(error_code=code, message=error.get("message")):
                 return False
+            verdict = _shared_definitive_relocation_verdict(evidence="definitive")
+            if not verdict.movable:
+                return False
             if routing_strategy == "single_account":
                 return False
             if turn_state_owner_account_id is not None or file_preferred_account_id is not None:
@@ -1172,8 +1212,7 @@ class _StreamingRetryMixin:
                 proven_unavailable_legacy_owner_account_id=account_id,
             )
             logger.info(
-                "Armed verified usage-limit recovery for legacy Codex owner "
-                "request_id=%s account_id=%s",
+                "Armed verified usage-limit recovery for legacy Codex owner request_id=%s account_id=%s",
                 request_id,
                 account_id,
             )
@@ -2385,6 +2424,7 @@ class _StreamingRetryMixin:
                             and _move_verified_fresh_replay_from_owner(
                                 account_id=account.id,
                                 outcome="owner_refresh_connect_failure",
+                                relocation_evidence="definitive",
                             )
                         ):
                             await _handle_or_defer_keyed_stream_health(
@@ -2819,6 +2859,7 @@ class _StreamingRetryMixin:
                                         verified_owner_replay_moved = _move_verified_fresh_replay_from_owner(
                                             account_id=account.id,
                                             outcome="owner_pre_dispatch_proxy_connect_failure",
+                                            relocation_evidence="definitive",
                                         )
                                     can_try_other_account = verified_owner_replay_moved or (
                                         not require_preferred_account
@@ -2949,6 +2990,14 @@ class _StreamingRetryMixin:
                                     moved_verified_replay = _move_verified_fresh_replay_from_owner(
                                         account_id=account.id,
                                         outcome="owner_previsible_failure",
+                                        relocation_evidence=(
+                                            "definitive"
+                                            if is_upstream_usage_limit_rejection(
+                                                error_code=code,
+                                                message=error.message if error else None,
+                                            )
+                                            else None
+                                        ),
                                     )
                                     if not moved_verified_replay:
                                         moved_verified_replay = await _move_verified_turn_state_fresh_replay_from_owner(
@@ -3115,6 +3164,14 @@ class _StreamingRetryMixin:
                     moved_verified_replay = _move_verified_fresh_replay_from_owner(
                         account_id=account.id,
                         outcome="owner_previsible_retryable_failure",
+                        relocation_evidence=(
+                            "definitive"
+                            if is_upstream_usage_limit_rejection(
+                                error_code=exc.code,
+                                message=exc.error.get("message"),
+                            )
+                            else None
+                        ),
                     )
                     if exc.exclude_account and not moved_verified_replay:
                         moved_verified_replay = await _move_verified_turn_state_fresh_replay_from_owner(
@@ -3563,6 +3620,7 @@ class _StreamingRetryMixin:
                                     verified_owner_replay_moved = _move_verified_fresh_replay_from_owner(
                                         account_id=account.id,
                                         outcome="owner_post_refresh_proxy_connect_failure",
+                                        relocation_evidence="definitive",
                                     )
 
                                 can_try_other_account = bool(
@@ -3696,6 +3754,14 @@ class _StreamingRetryMixin:
                                 moved_verified_replay = _move_verified_fresh_replay_from_owner(
                                     account_id=account.id,
                                     outcome="owner_post_refresh_failure",
+                                    relocation_evidence=(
+                                        "definitive"
+                                        if is_upstream_usage_limit_rejection(
+                                            error_code=current_error_code,
+                                            message=current_error_payload.get("message"),
+                                        )
+                                        else None
+                                    ),
                                 )
                                 if not moved_verified_replay:
                                     moved_verified_replay = await _move_verified_turn_state_fresh_replay_from_owner(

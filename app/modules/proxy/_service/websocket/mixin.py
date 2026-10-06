@@ -441,6 +441,7 @@ from app.modules.proxy._service.websocket.helpers import (
     _websocket_continuity_anchor_for_payload,
     _websocket_continuity_error_fields,
     _websocket_continuity_response_ids,
+    _websocket_definitive_relocation_verdict,
     _websocket_downstream_response_id,
     _websocket_event_error_code,
     _websocket_event_error_message,
@@ -491,6 +492,7 @@ from app.modules.proxy.helpers import (
     _normalize_error_code,
     _parse_openai_error,
     _upstream_error_from_openai,
+    is_upstream_usage_limit_rejection,
 )
 from app.modules.proxy.http_bridge_forwarding import (
     HTTPBridgeForwardContext as HTTPBridgeForwardContext,
@@ -1810,6 +1812,7 @@ class _WebSocketMixin:
                                     openai_cache_affinity_max_age_seconds=openai_cache_affinity_max_age_seconds,
                                     prohibit_fast_mode=prohibit_fast_mode,
                                     api_key=api_key,
+                                    routing_strategy=routing_strategy,
                                     continuity_state=continuity_state,
                                     useragent=useragent,
                                     useragent_group=useragent_group,
@@ -1851,6 +1854,7 @@ class _WebSocketMixin:
                                         openai_cache_affinity_max_age_seconds=openai_cache_affinity_max_age_seconds,
                                         prohibit_fast_mode=prohibit_fast_mode,
                                         api_key=api_key,
+                                        routing_strategy=routing_strategy,
                                         continuity_state=continuity_state,
                                         useragent=useragent,
                                         useragent_group=useragent_group,
@@ -3145,6 +3149,7 @@ class _WebSocketMixin:
         sticky_threads_enabled: bool,
         openai_cache_affinity_max_age_seconds: int,
         api_key: ApiKeyData | None,
+        routing_strategy: str | None = None,
         prohibit_fast_mode: bool = False,
         continuity_state: "_WebSocketContinuityState | None" = None,
         useragent: str | None = None,
@@ -3373,6 +3378,7 @@ class _WebSocketMixin:
         request_state.raw_source_model = raw_source_model
         request_state.source_route_excluded = source_route_excluded
         request_state.responses_lite_model = next_responses_lite_model
+        request_state.routing_strategy = routing_strategy
         request_state.expose_stale_previous_response_classifier = codex_session_affinity
         request_state.require_security_work_authorized = capability_route.require_security_work_authorized
         request_state.durable_capability_lineage_required = capability_route.require_security_work_authorized
@@ -5834,6 +5840,26 @@ class _WebSocketMixin:
             payload=payload,
             has_other_pending_requests=has_other_pending_requests,
         )
+        normalized_event_error_code = _normalize_error_code(
+            _websocket_event_error_code(event_type, payload),
+            _websocket_event_error_type(event_type, payload),
+        )
+        definitive_owner_quota = bool(
+            request_state.previous_response_id is not None
+            and request_state.preferred_account_id is not None
+            and is_upstream_usage_limit_rejection(
+                error_code=normalized_event_error_code,
+                message=_websocket_event_error_message(event_type, payload),
+            )
+        )
+        owner_quota_relocation_verdict = (
+            _websocket_definitive_relocation_verdict(
+                request_state,
+                routing_strategy=request_state.routing_strategy,
+            )
+            if definitive_owner_quota
+            else None
+        )
         auth_error_code = _websocket_precreated_auth_error_code(
             request_state,
             event_type=event_type,
@@ -5897,6 +5923,14 @@ class _WebSocketMixin:
             and request_state.proxy_injected_previous_response_id
             and request_state.fresh_upstream_request_is_retry_safe
             and request_state.fresh_upstream_request_text
+            and (
+                owner_quota_relocation_verdict is None
+                or (
+                    owner_quota_relocation_verdict.movable
+                    and owner_quota_relocation_verdict.body is not None
+                    and not owner_quota_relocation_verdict.requires_recovery_fence
+                )
+            )
         )
         if (
             not accepted_lifecycle_replay

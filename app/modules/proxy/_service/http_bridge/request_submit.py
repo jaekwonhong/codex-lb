@@ -320,11 +320,79 @@ def _http_bridge_operation_fingerprint(
     api_key_scope: str,
     request_state: _WebSocketRequestState,
     text_data: str,
+    session_scoped_root: bool = False,
 ) -> str:
     fingerprint_text = _text_without_account_installation_id(text_data)
+    if session_scoped_root:
+        # Root turns have no previous_response_id, so two independent hard
+        # conversations may legitimately submit byte-identical first turns.
+        # Keep the existing global fingerprint fence for anchored/recovery
+        # operations, but namespace parentless roots to their durable session
+        # so cross-thread equality cannot replay or fence the wrong transcript.
+        fingerprint_text = f"session:{session_id}\n{fingerprint_text}"
     return durable_bridge_operation_fingerprint(
         api_key_scope=api_key_scope,
         request_text=fingerprint_text,
+    )
+
+
+def _http_bridge_is_durable_root_operation(
+    session: "_HTTPBridgeSession",
+    request_state: _WebSocketRequestState,
+    *,
+    recovery_attempt_consumed: bool,
+) -> bool:
+    durable_root_affinity = session.key.affinity_kind in {"session_header", "thread_header"} or (
+        request_state.durable_relocation_root
+        and is_http_bridge_account_neutral_replay(
+            kind=session.key.affinity_kind,
+            key=session.key.affinity_key,
+        )
+    )
+    return (
+        request_state.previous_response_id is None
+        and not request_state.operation_rebind_required
+        and not recovery_attempt_consumed
+        and durable_root_affinity
+        and not request_state.generate_false_prewarm
+        and request_state.request_kind != "prewarm"
+    )
+
+
+def _http_bridge_should_record_operation(
+    session: "_HTTPBridgeSession",
+    request_state: _WebSocketRequestState,
+    *,
+    recovery_attempt_consumed: bool,
+) -> bool:
+    """Whether this visible turn must enter the durable operation transcript.
+
+    Anchored and recovery turns have always been fenced in the operation
+    ledger.  Relocating a later anchored turn safely also requires the first
+    visible, unanchored turn of a hard Codex session/thread to exist as the
+    transcript root.  Without that row every otherwise-complete parent walk
+    eventually terminates at an absent response id.
+
+    A definitive relocation is also a durable root when it is explicitly
+    marked and dispatched on the account-neutral replay lane: the relocated
+    body contains the rebuilt conversation but intentionally has no upstream
+    response anchor.  Ordinary account-neutral forks remain excluded.
+
+    Internal unanchored forks are deliberately excluded: they are request-
+    scoped concurrency lanes rather than the canonical conversation root.
+    Likewise a client ``generate:false`` prewarm is not conversation history.
+    """
+
+    if (
+        request_state.previous_response_id is not None
+        or request_state.operation_rebind_required
+        or recovery_attempt_consumed
+    ):
+        return True
+    return _http_bridge_is_durable_root_operation(
+        session,
+        request_state,
+        recovery_attempt_consumed=recovery_attempt_consumed,
     )
 
 
@@ -1286,12 +1354,17 @@ class _HTTPBridgeRequestSubmitMixin:
         # payload-too-large rejection cannot leave a submitted retry fence.
         text_data = self._http_bridge_text_with_account_installation_id(session, request_state, text_data)
         record_operation = getattr(self._durable_bridge, "record_operation", None)
+        record_durable_root = _http_bridge_is_durable_root_operation(
+            session,
+            request_state,
+            recovery_attempt_consumed=recovery_attempt_consumed,
+        )
         if (
             callable(record_operation)
-            and (
-                request_state.previous_response_id is not None
-                or request_state.operation_rebind_required
-                or recovery_attempt_consumed
+            and _http_bridge_should_record_operation(
+                session,
+                request_state,
+                recovery_attempt_consumed=recovery_attempt_consumed,
             )
             and (request_state.operation_id is None or request_state.operation_rebind_required)
             and session.durable_session_id is not None
@@ -1307,6 +1380,7 @@ class _HTTPBridgeRequestSubmitMixin:
                     api_key_scope=api_key_scope,
                     request_state=request_state,
                     text_data=text_data,
+                    session_scoped_root=record_durable_root,
                 )
             )
             operation_id = (

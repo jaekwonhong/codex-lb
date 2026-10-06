@@ -3431,8 +3431,13 @@ def _mark_http_bridge_reader_handoff_reconnect_failed(session: Any, old_reader: 
         session.closed = True
 
 
-def _http_bridge_previous_response_owner_unavailable_error() -> ProxyResponseError:
-    return ProxyResponseError(
+_HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_ATTR = "_codex_lb_http_bridge_definitive_owner_quota"
+
+
+def _http_bridge_previous_response_owner_unavailable_error(
+    definitive_usage_exhaustion: bool = False,
+) -> ProxyResponseError:
+    exc = ProxyResponseError(
         502,
         openai_error(
             "previous_response_owner_unavailable",
@@ -3440,6 +3445,13 @@ def _http_bridge_previous_response_owner_unavailable_error() -> ProxyResponseErr
             error_type="server_error",
         ),
     )
+    if definitive_usage_exhaustion:
+        setattr(exc, _HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_ATTR, True)
+    return exc
+
+
+def _http_bridge_owner_unavailable_has_definitive_usage_exhaustion(exc: ProxyResponseError) -> bool:
+    return bool(getattr(exc, _HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_ATTR, False))
 
 
 def _http_bridge_reconnect_selection_failure(

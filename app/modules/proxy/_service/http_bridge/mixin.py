@@ -1745,8 +1745,7 @@ class _HTTPBridgeMixin(
                     selected_account_id=None,
                 )
                 if proxy_connect_failover.last_error is not None:
-                    # Preserve a confirmed pre-dispatch route failure instead
-                    # of generating ``no_accounts``.
+                    # Preserve a confirmed pre-dispatch route failure instead of generating ``no_accounts``.
                     raise proxy_connect_failover.last_error
                 if (
                     require_preferred_account
@@ -1754,7 +1753,8 @@ class _HTTPBridgeMixin(
                     and preferred_account_is_continuity_owner
                     and selection.error_code in (CONTINUITY_OWNER_UNAVAILABLE, "hard_affinity_saturated")
                 ):
-                    raise _http_bridge_previous_response_owner_unavailable_error()
+                    quota_exhausted = selection.hard_affinity_owner_usage_exhausted
+                    raise _http_bridge_previous_response_owner_unavailable_error(quota_exhausted)
                 status_code, error_payload = selection_failure_response(selection)
                 raise ProxyResponseError(status_code, error_payload)
             if require_preferred_account and preferred_account_id is not None and account.id != preferred_account_id:
@@ -2194,7 +2194,8 @@ class _HTTPBridgeMixin(
                     required_preferred_account_id is not None or hard_close_account_bound
                 ):
                     complete_failed_handoff()
-                    raise _http_bridge_previous_response_owner_unavailable_error()
+                    owner_quota_exhausted = selection.hard_affinity_owner_usage_exhausted
+                    raise _http_bridge_previous_response_owner_unavailable_error(owner_quota_exhausted)
                 if selection.error_code == USAGE_LIMIT_REACHED:
                     record_selected_account_takeover(None)
                     status_code, error_payload = selection_failure_response(selection)

@@ -383,6 +383,13 @@ class StickySelectionOutcome(Generic[SelectionInputsT]):
     # owner is one of the caller's own ``exclude_account_ids``
     # (``_hard_affinity_owner_excluded_by_caller``).
     hard_affinity_owner_excluded: bool = False
+    # Positive, account-local quota evidence for a resolved hard owner.  This
+    # deliberately does not treat a generic RATE_LIMITED status as quota:
+    # raw (pre-pressure) usage must be exhausted, or the durable status must
+    # already be QUOTA_EXCEEDED.  HTTP continuity relocation consumes this as
+    # definitive *pre-dispatch* evidence and must never infer it from the
+    # public ``hard_affinity_saturated`` code alone.
+    hard_affinity_owner_usage_exhausted: bool = False
 
 
 def _hard_affinity_owner_excluded_by_caller(
@@ -417,6 +424,30 @@ def _hard_affinity_owner_excluded_by_caller(
         error_code == "hard_affinity_saturated"
         and isinstance(owner_account_id, str)
         and owner_account_id in exclude_account_ids
+    )
+
+
+def _hard_affinity_owner_has_definitive_usage_exhaustion(
+    *,
+    error_code: str | None,
+    owner_account_id: str | None | object,
+    states: Iterable[AccountState],
+) -> bool:
+    if error_code != "hard_affinity_saturated" or not isinstance(owner_account_id, str):
+        return False
+    owner_state = next((state for state in states if state.account_id == owner_account_id), None)
+    if owner_state is None:
+        return False
+    if owner_state.status == AccountStatus.QUOTA_EXCEEDED:
+        return True
+    if owner_state.status != AccountStatus.RATE_LIMITED:
+        return False
+    return any(
+        used is not None and used >= 100.0
+        for used in (
+            owner_state.priority_used_percent,
+            owner_state.priority_secondary_used_percent,
+        )
     )
 
 
@@ -796,9 +827,7 @@ async def run_sticky_selection_path(
                     legacy_sticky_key,
                     kind=StickySessionKind.CODEX_SESSION,
                     expected_account_id=sticky_existing_account_id,
-                    proven_unavailable=(
-                        proven_unavailable_legacy_owner_account_id == sticky_existing_account_id
-                    ),
+                    proven_unavailable=(proven_unavailable_legacy_owner_account_id == sticky_existing_account_id),
                 )
                 authoritative_legacy_owner = None
                 if not owner_retired:
@@ -1404,6 +1433,11 @@ async def run_sticky_selection_path(
             error_code=selection_error_code,
             owner_account_id=sticky_existing_account_id,
             exclude_account_ids=request.exclude_account_ids,
+        ),
+        hard_affinity_owner_usage_exhausted=_hard_affinity_owner_has_definitive_usage_exhaustion(
+            error_code=selection_error_code,
+            owner_account_id=sticky_existing_account_id,
+            states=states,
         ),
     )
 
