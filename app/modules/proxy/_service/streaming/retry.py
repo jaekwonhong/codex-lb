@@ -5,7 +5,7 @@ import asyncio
 import json
 import logging
 import sys
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, AsyncGenerator, AsyncIterator, Mapping, cast
 
 import aiohttp
@@ -116,7 +116,12 @@ from app.modules.proxy.helpers import (
 )
 from app.modules.proxy.http_continuation import http_continuation_signal
 from app.modules.proxy.load_balancer import AccountLease, AccountSelection
-from app.modules.proxy.replay_safety import responses_payload_is_account_neutral_fresh_replay
+from app.modules.proxy.replay_safety import (
+    project_responses_input_for_account_neutral_fresh_replay,
+    responses_input_suffix_matches_pending_tool_calls,
+    responses_input_suffix_retains_prior_output,
+    responses_payload_is_account_neutral_fresh_replay,
+)
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED, selection_failure_response
 
 _REQUEST_TRANSPORT_HTTP = "http"
@@ -124,6 +129,20 @@ _REQUEST_TRANSPORT_WEBSOCKET = "websocket"
 _HTTP_DOWNSTREAM_TRANSPORT_POLICY_DEFAULT = "smart"
 _HTTP_DOWNSTREAM_TRANSPORT_POLICIES = frozenset({"smart", "always_http", "always_websocket", "pinned"})
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedTurnStateFreshReplay:
+    """Local proof that a registered turn-state request carries full safe history."""
+
+    turn_state: str
+    session_key: object
+    owner_account_id: str
+    alias_generation: int
+    stored_input_count: int
+    stored_input_fingerprint: str
+    pending_tool_calls: tuple[tuple[str, str], ...]
+    fresh_payload: ResponsesRequest
 
 
 def _facade() -> Any:
@@ -199,6 +218,90 @@ def _verified_cross_transport_fresh_replay(
     if not responses_payload_is_account_neutral_fresh_replay(fresh_payload.to_replay_safety_payload()):
         return None
     return fresh_payload
+
+
+async def _verified_turn_state_fresh_replay(
+    proxy: _StreamingServiceProtocol,
+    *,
+    payload: ResponsesRequest,
+    turn_state: str | None,
+    turn_state_owner_account_id: str | None,
+    api_key: ApiKeyData | None,
+) -> _VerifiedTurnStateFreshReplay | None:
+    """Verify a registered local turn-state request as a complete fresh resend.
+
+    A registered ``http_turn_*`` token is real hard continuity even though the
+    proxy synthesized its text. Cross-account recovery is therefore allowed
+    only when the live bridge that registered that exact alias still proves the
+    prior input prefix, the suffix retains the prior output (or exactly settles
+    the bridge's pending tool calls), and the projected body is account-neutral.
+    """
+
+    if turn_state is None or turn_state_owner_account_id is None:
+        return None
+    if payload.previous_response_id is not None or not isinstance(payload.input, list):
+        return None
+    api_key_id = api_key.id if api_key is not None else None
+    async with proxy._http_bridge_lock:
+        session_key = proxy._http_bridge_turn_state_index.get((turn_state, api_key_id))
+        session = proxy._http_bridge_sessions.get(session_key) if session_key is not None else None
+        if session is None or bool(getattr(session, "closed", False)):
+            return None
+        account = getattr(session, "account", None)
+        if getattr(account, "id", None) != turn_state_owner_account_id:
+            return None
+        stored_count = getattr(session, "last_completed_input_count", 0)
+        stored_fingerprint = getattr(session, "last_completed_input_prefix_fingerprint", None)
+        alias_generations = getattr(session, "turn_state_alias_registration_generations", {})
+        alias_generation = alias_generations.get(turn_state) if isinstance(alias_generations, dict) else None
+        pending = getattr(session, "last_pending_tool_calls", {})
+        pending_tool_calls = tuple(sorted(pending.items())) if isinstance(pending, dict) else ()
+    if (
+        not isinstance(stored_count, int)
+        or stored_count <= 0
+        or not isinstance(stored_fingerprint, str)
+        or not isinstance(alias_generation, int)
+        or not _facade()._input_prefix_matches_stored_context(
+            payload.input,
+            stored_count=stored_count,
+            stored_fingerprint=stored_fingerprint,
+        )
+    ):
+        return None
+    projection = project_responses_input_for_account_neutral_fresh_replay(
+        cast(list[Any], payload.input),
+        stored_count=stored_count,
+    )
+    if projection is None:
+        return None
+    safe_fresh_context = responses_input_suffix_retains_prior_output(
+        projection.input_items,
+        stored_count=projection.stored_prefix_count,
+        canonical_lite_developer_index=projection.canonical_lite_developer_index,
+    ) or (
+        bool(pending_tool_calls)
+        and responses_input_suffix_matches_pending_tool_calls(
+            projection.input_items,
+            stored_count=projection.stored_prefix_count,
+            pending_tool_calls=dict(pending_tool_calls),
+            canonical_lite_developer_index=projection.canonical_lite_developer_index,
+        )
+    )
+    if not safe_fresh_context:
+        return None
+    fresh_payload = payload.model_copy(update={"input": projection.input_items})
+    if not responses_payload_is_account_neutral_fresh_replay(fresh_payload.to_replay_safety_payload()):
+        return None
+    return _VerifiedTurnStateFreshReplay(
+        turn_state=turn_state,
+        session_key=session_key,
+        owner_account_id=turn_state_owner_account_id,
+        alias_generation=alias_generation,
+        stored_input_count=stored_count,
+        stored_input_fingerprint=stored_fingerprint,
+        pending_tool_calls=pending_tool_calls,
+        fresh_payload=fresh_payload,
+    )
 
 
 def _effective_http_downstream_transport_policy(
@@ -493,6 +596,14 @@ class _StreamingRetryMixin:
                 api_key=api_key,
                 fail_on_missing=not _is_synthesized_turn_state(turn_state),
             )
+        verified_turn_state_fresh_replay = await _verified_turn_state_fresh_replay(
+            proxy,
+            payload=payload,
+            turn_state=turn_state,
+            turn_state_owner_account_id=turn_state_owner_account_id,
+            api_key=api_key,
+        )
+        dispatch_headers: Mapping[str, str] = headers
         affinity_observation = AffinityObservation.from_policy(affinity)
         _maybe_log_proxy_request_shape(
             "stream",
@@ -960,6 +1071,73 @@ class _StreamingRetryMixin:
             )
             return True
 
+        async def _move_verified_turn_state_fresh_replay_from_owner(*, account_id: str, outcome: str) -> bool:
+            """Move a locally proven full resend off a quota-exhausted turn owner."""
+
+            nonlocal affinity, affinity_observation, dispatch_headers, payload
+            nonlocal preferred_account_id, require_preferred_account, turn_state_owner_account_id
+            nonlocal verified_turn_state_fresh_replay
+            proof = verified_turn_state_fresh_replay
+            if proof is None or proof.owner_account_id != account_id or turn_state_owner_account_id != account_id:
+                return False
+            api_key_id = api_key.id if api_key is not None else None
+            async with proxy._http_bridge_lock:
+                current_key = proxy._http_bridge_turn_state_index.get((proof.turn_state, api_key_id))
+                current_session = proxy._http_bridge_sessions.get(current_key) if current_key is not None else None
+                if (
+                    current_key != proof.session_key
+                    or current_session is None
+                    or bool(getattr(current_session, "closed", False))
+                ):
+                    return False
+                current_account = getattr(current_session, "account", None)
+                current_generations = getattr(current_session, "turn_state_alias_registration_generations", {})
+                current_generation = (
+                    current_generations.get(proof.turn_state) if isinstance(current_generations, dict) else None
+                )
+                current_pending = getattr(current_session, "last_pending_tool_calls", {})
+                current_pending_identity = (
+                    tuple(sorted(current_pending.items())) if isinstance(current_pending, dict) else ()
+                )
+                if (
+                    getattr(current_account, "id", None) != proof.owner_account_id
+                    or getattr(current_session, "last_completed_input_count", 0) != proof.stored_input_count
+                    or getattr(current_session, "last_completed_input_prefix_fingerprint", None)
+                    != proof.stored_input_fingerprint
+                    or current_generation != proof.alias_generation
+                    or current_pending_identity != proof.pending_tool_calls
+                ):
+                    return False
+            payload = proof.fresh_payload
+            turn_state_owner_account_id = None
+            preferred_account_id = None
+            require_preferred_account = False
+            verified_turn_state_fresh_replay = None
+            excluded_account_ids.add(account_id)
+            dispatch_headers = {
+                key: value for key, value in headers.items() if key.lower() != "x-codex-turn-state"
+            }
+            affinity = replace(
+                _sticky_key_for_responses_request(
+                    payload,
+                    dispatch_headers,
+                    codex_session_affinity=codex_session_affinity,
+                    openai_cache_affinity=openai_cache_affinity,
+                    openai_cache_affinity_max_age_seconds=settings.openai_cache_affinity_max_age_seconds,
+                    sticky_threads_enabled=settings.sticky_threads_enabled,
+                    api_key=api_key,
+                ),
+                reallocate_sticky=True,
+            )
+            affinity_observation = AffinityObservation.from_policy(affinity)
+            logger.info(
+                "cross_transport_verified_turn_state_fresh_replay request_id=%s outcome=%s account_id=%s",
+                request_id,
+                outcome,
+                account_id,
+            )
+            return True
+
         def _arm_legacy_owner_usage_limit_recovery(*, account_id: str, error: UpstreamError, code: str) -> bool:
             """Allow one guarded raw-session owner retirement after proven quota loss.
 
@@ -1018,7 +1196,7 @@ class _StreamingRetryMixin:
                 inner_stream = proxy._stream_once(
                     account,
                     payload,
-                    headers,
+                    dispatch_headers,
                     request_id,
                     False,
                     request_started_at=start,
@@ -2388,7 +2566,7 @@ class _StreamingRetryMixin:
                             inner_stream = proxy._stream_once(
                                 account,
                                 payload,
-                                headers,
+                                dispatch_headers,
                                 request_id,
                                 allow_retry_flag,
                                 request_started_at=start,
@@ -2836,6 +3014,11 @@ class _StreamingRetryMixin:
                                         outcome="owner_previsible_failure",
                                     )
                                     if not moved_verified_replay:
+                                        moved_verified_replay = await _move_verified_turn_state_fresh_replay_from_owner(
+                                            account_id=account.id,
+                                            outcome="owner_previsible_failure",
+                                        )
+                                    if not moved_verified_replay:
                                         _arm_legacy_owner_usage_limit_recovery(
                                             account_id=account.id,
                                             error=_upstream_error_from_openai(error),
@@ -2994,6 +3177,11 @@ class _StreamingRetryMixin:
                         account_id=account.id,
                         outcome="owner_previsible_retryable_failure",
                     )
+                    if exc.exclude_account and not moved_verified_replay:
+                        moved_verified_replay = await _move_verified_turn_state_fresh_replay_from_owner(
+                            account_id=account.id,
+                            outcome="owner_previsible_retryable_failure",
+                        )
                     if exc.exclude_account and not moved_verified_replay:
                         _arm_legacy_owner_usage_limit_recovery(
                             account_id=account.id,
@@ -3569,6 +3757,11 @@ class _StreamingRetryMixin:
                                     account_id=account.id,
                                     outcome="owner_post_refresh_failure",
                                 )
+                                if not moved_verified_replay:
+                                    moved_verified_replay = await _move_verified_turn_state_fresh_replay_from_owner(
+                                        account_id=account.id,
+                                        outcome="owner_post_refresh_failure",
+                                    )
                                 if not moved_verified_replay:
                                     _arm_legacy_owner_usage_limit_recovery(
                                         account_id=account.id,
