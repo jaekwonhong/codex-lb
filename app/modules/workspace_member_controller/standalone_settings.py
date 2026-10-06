@@ -22,6 +22,7 @@ class StandaloneSettings(BaseSettings):
     admin_token_file: Path | None = None
     opencodex_admin_token: SecretStr | None = None
     opencodex_admin_token_file: Path | None = None
+    allow_non_loopback_bind: bool = False
 
     @model_validator(mode="after")
     def validate_security_boundary(self) -> StandaloneSettings:
@@ -31,8 +32,8 @@ class StandaloneSettings(BaseSettings):
             self.opencodex_admin_token_file,
             "opencodex_admin_token",
         )
-        if not _is_loopback_host(self.host):
-            raise ValueError("controller_listen_host_must_be_loopback")
+        if not _is_loopback_host(self.host) and not self.allow_non_loopback_bind:
+            raise ValueError("non_loopback_bind_requires_explicit_opt_in")
         if not self.account_bindings_path.is_absolute():
             raise ValueError("account_bindings_path_must_be_absolute")
         for path, name in (

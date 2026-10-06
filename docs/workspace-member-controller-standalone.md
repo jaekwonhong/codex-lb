@@ -22,9 +22,10 @@ WMC_HOST=127.0.0.1
 WMC_PORT=2461
 WMC_COMPANION_BASE_URL=http://127.0.0.1:53418/member-switch/v1
 WMC_OPENCODEX_MANAGEMENT_BASE_URL=http://127.0.0.1:10101
+WMC_ALLOW_NON_LOOPBACK_BIND=false
 ```
 
-The Controller listener is intentionally loopback-only in this qualification stage. Do not expose its bearer admin surface directly to the LAN. A later deployment may add an authenticated TLS front end without changing the Controller's internal ownership boundary.
+The Controller listener defaults to loopback-only. A container may explicitly set `WMC_ALLOW_NON_LOOPBACK_BIND=true` and bind `0.0.0.0` only when its outer publish/network boundary restricts exposure (the qualified shadow deployment publishes `127.0.0.1:2461` on the Mac host). Do not expose its bearer admin surface directly to the LAN.
 
 Token files must not be group/world readable or writable (`0600` is the expected mode). Plain HTTP OpenCodex management URLs are accepted only for localhost/loopback or `host.docker.internal`.
 

@@ -407,7 +407,7 @@ The legacy Codex-LB `member_switch.rotation_worker` and its `AccountsRepository`
 
 ### Requirement: Standalone Controller process has an independent runtime shell
 
-The Workspace Member Controller SHALL be runnable as a dedicated process that does not start or import the Codex-LB inference proxy, dashboard authentication stack, account-pool workers, usage schedulers, request handlers or global dependency container. The process SHALL expose a dedicated CLI entrypoint and SHALL use Controller-specific `WMC_` configuration rather than inheriting Codex-LB process settings. In this qualification stage the HTTP listener SHALL be loopback-only and one process/worker SHALL own the listener.
+The Workspace Member Controller SHALL be runnable as a dedicated process that does not start or import the Codex-LB inference proxy, dashboard authentication stack, account-pool workers, usage schedulers, request handlers or global dependency container. The process SHALL expose a dedicated CLI entrypoint and SHALL use Controller-specific `WMC_` configuration rather than inheriting Codex-LB process settings. The HTTP listener SHALL default to loopback-only and one process/worker SHALL own the listener. A non-loopback process bind SHALL require an explicit operator opt-in and SHALL be used only behind an outer network/publish boundary that restricts the qualified Controller endpoint to loopback or an equivalently trusted management plane.
 
 #### Scenario: Standalone process module is imported
 
@@ -440,10 +440,10 @@ The Controller SHALL read configuration from `WMC_` settings. Controller and Ope
 - **WHEN** a configured admin token file is group/world readable or writable
 - **THEN** startup validation refuses the configuration before a listener is promoted ready
 
-#### Scenario: Non-loopback listen address is configured
+#### Scenario: Non-loopback listen address is configured without explicit container opt-in
 
 - **WHEN** the standalone service is configured to bind `0.0.0.0` or another non-loopback host
-- **THEN** configuration validation fails
+- **THEN** configuration validation fails unless the dedicated non-loopback-bind opt-in is set
 - **AND** bearer admin traffic is not exposed as plaintext LAN control-plane traffic by this package
 
 ### Requirement: Startup validates migration persistence and external read dependencies before readiness
@@ -485,3 +485,29 @@ The standalone read adapter SHALL preserve the existing Companion local endpoint
 - **WHEN** the standalone Controller requests the qualified Companion observation endpoint
 - **THEN** it uses the existing interactive observation timeout contract
 - **AND** it does not introduce a shorter standalone timeout that would create false shadow mismatches
+
+### Requirement: Read-only shadow qualification must preserve legacy read semantics without acquiring mutation authority
+
+Before any membership mutation canary, the standalone Controller SHALL be deployable as a separate read-only shadow and SHALL be compared against the existing Codex-LB member-management implementation using the same authoritative workspace observation source and migration state. Qualification SHALL compare catalog identity/content, active operation projection, workspace intent/version state, and membership observations. Volatile observation timestamps MAY be excluded from equality, but workspace/account/member identity, completeness, owner verification, ambiguity/error flags, codes, and member content SHALL remain part of semantic comparison. A legacy error state reproduced by the shadow SHALL be classified as equivalent behavior rather than hidden or normalized into success.
+
+The qualified shadow SHALL NOT expose membership mutation HTTP routes, SHALL reject unauthenticated Controller reads, and SHALL use a database principal that cannot write Controller state. Container/process isolation SHALL prevent the shadow from broadening host management exposure beyond the explicitly qualified boundary. Stopping or removing the shadow SHALL NOT require restart or rollback of Codex-LB inference services.
+
+#### Scenario: Legacy observation is already in an error state
+
+- **GIVEN** the existing implementation returns a schema-valid non-success workspace observation
+- **WHEN** the standalone shadow reads the same authoritative observation source
+- **THEN** qualification succeeds for that workspace only if the shadow reproduces the same semantic state and code
+- **AND** the qualification report does not relabel the pre-existing legacy error as a shadow regression or as success
+
+#### Scenario: Shadow qualification is rolled back
+
+- **WHEN** the standalone shadow container is stopped or removed
+- **THEN** Codex-LB Stable/Beta inference services and the shared PostgreSQL service continue in their prior state
+- **AND** no membership-operation rollback is required because the shadow did not have a qualified mutation route or writable database principal
+
+#### Scenario: Shadow account-binding file is empty
+
+- **GIVEN** read-only shadow qualification uses zero explicit member-to-OpenCodex bindings
+- **WHEN** catalog/status/observation parity passes
+- **THEN** the read plane MAY be qualified
+- **BUT** account-dependent rotation and membership mutation remain unqualified until a later separately authorized canary provides exact binding evidence

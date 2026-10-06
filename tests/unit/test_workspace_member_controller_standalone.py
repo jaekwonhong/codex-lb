@@ -237,8 +237,17 @@ def test_settings_require_secret_sources_and_loopback_listener(tmp_path):
             account_bindings_path=tmp_path / "bindings.json",
             opencodex_admin_token=SecretStr("o" * 48),
         )
-    with pytest.raises(ValidationError, match="controller_listen_host_must_be_loopback"):
+    with pytest.raises(ValidationError, match="non_loopback_bind_requires_explicit_opt_in"):
         settings(tmp_path, host="0.0.0.0")
+    container_settings = StandaloneSettings(
+        host="0.0.0.0",
+        allow_non_loopback_bind=True,
+        database_url=SecretStr(f"sqlite+aiosqlite:///{tmp_path / 'container.sqlite3'}"),
+        account_bindings_path=tmp_path / "bindings.json",
+        admin_token=SecretStr("a" * 48),
+        opencodex_admin_token=SecretStr("o" * 48),
+    )
+    assert container_settings.host == "0.0.0.0"
     with pytest.raises(ValidationError, match="account_bindings_path_must_be_absolute"):
         StandaloneSettings(
             database_url=SecretStr("sqlite+aiosqlite:////tmp/x.db"),

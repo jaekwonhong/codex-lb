@@ -28,7 +28,7 @@
 ## 4. Qualification and cutover
 
 - [x] 4.1 Package the standalone service with health, admin authentication, configuration, and migration/startup validation.
-- [ ] 4.2 Run a read-only shadow deployment and compare workspace/member results with the existing Codex-LB implementation.
+- [x] 4.2 Run a read-only shadow deployment and compare workspace/member results with the existing Codex-LB implementation.
 - [ ] 4.3 Qualify one separately authorized workspace mutation canary and rollback without broadening mutation authority.
 - [ ] 4.4 Transfer production workspace-membership control-plane ownership to the standalone Controller.
 - [ ] 4.5 Make OpenCodex the direct ChatGPT/Codex account-pool owner for PC1/PC2/Mac and retire the Codex-LB inference/data-plane path.
