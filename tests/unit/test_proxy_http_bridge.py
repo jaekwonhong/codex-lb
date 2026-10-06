@@ -12800,6 +12800,35 @@ async def test_reconnect_http_bridge_session_preserves_owner_error_and_quota_pro
     )
 
 
+@pytest.mark.parametrize(
+    ("error_code", "expected_definitive_quota"),
+    [
+        ("usage_limit_reached", True),
+        ("rate_limit_exceeded", False),
+        ("upstream_unavailable", False),
+    ],
+)
+def test_reconnect_connect_failure_preserves_only_definitive_owner_quota(
+    error_code: str,
+    expected_definitive_quota: bool,
+) -> None:
+    upstream_error = proxy_service.ProxyResponseError(
+        429 if error_code != "upstream_unavailable" else 503,
+        proxy_service.openai_error(error_code, "owner reconnect rejected upstream"),
+    )
+
+    mapped = http_bridge_helpers_module._http_bridge_reconnect_connect_failure(
+        upstream_error,
+        "acc-owner",
+    )
+
+    assert mapped.payload["error"]["code"] == "previous_response_owner_unavailable"
+    assert (
+        http_bridge_helpers_module._http_bridge_owner_unavailable_has_definitive_usage_exhaustion(mapped)
+        is expected_definitive_quota
+    )
+
+
 @pytest.mark.asyncio
 async def test_reconnect_http_bridge_session_preserves_exclusions_after_capacity_wait(
     monkeypatch: pytest.MonkeyPatch,

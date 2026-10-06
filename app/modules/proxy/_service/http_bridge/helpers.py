@@ -3524,7 +3524,12 @@ def _http_bridge_reconnect_connect_failure(
                 "security_work_authorization_required",
             }:
                 return exc
-            owner_error = _http_bridge_previous_response_owner_unavailable_error()
+            definitive_usage_exhaustion = (
+                _http_bridge_owner_unavailable_has_definitive_usage_exhaustion(exc) or code == "usage_limit_reached"
+            )
+            owner_error = _http_bridge_previous_response_owner_unavailable_error(
+                definitive_usage_exhaustion=definitive_usage_exhaustion
+            )
             owner_error.retry_after_seconds = exc.retry_after_seconds
             if isinstance(code, str) and code in {
                 "upstream_unavailable",
