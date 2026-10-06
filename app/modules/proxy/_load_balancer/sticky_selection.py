@@ -303,6 +303,7 @@ class StickySelectionRequest(Generic[SelectionInputsT]):
     sticky_seed_account_id: str | None
     spill_bare_session_on_account_cap: bool
     abandon_unavailable_legacy_owner: bool
+    proven_unavailable_legacy_owner_account_id: str | None
     require_unambiguous_account: bool
     sticky_max_age_seconds: int | None
     prefer_earlier_reset_accounts: bool
@@ -437,6 +438,7 @@ async def run_sticky_selection_path(
     sticky_seed_account_id = request.sticky_seed_account_id
     spill_bare_session_on_account_cap = request.spill_bare_session_on_account_cap
     abandon_unavailable_legacy_owner = request.abandon_unavailable_legacy_owner
+    proven_unavailable_legacy_owner_account_id = request.proven_unavailable_legacy_owner_account_id
     require_unambiguous_account = request.require_unambiguous_account
     sticky_max_age_seconds = request.sticky_max_age_seconds
     prefer_earlier_reset_accounts = request.prefer_earlier_reset_accounts
@@ -794,6 +796,9 @@ async def run_sticky_selection_path(
                     legacy_sticky_key,
                     kind=StickySessionKind.CODEX_SESSION,
                     expected_account_id=sticky_existing_account_id,
+                    proven_unavailable=(
+                        proven_unavailable_legacy_owner_account_id == sticky_existing_account_id
+                    ),
                 )
                 authoritative_legacy_owner = None
                 if not owner_retired:
@@ -806,6 +811,7 @@ async def run_sticky_selection_path(
             # it in capacity-wait retries would add write pressure and could
             # reinterpret a later status transition as restart authorization.
             abandon_unavailable_legacy_owner = False
+            proven_unavailable_legacy_owner_account_id = None
             if owner_retired:
                 # The raw compatibility row is now a tombstone. Drop only the
                 # selection loop's cached legacy owner and run the normal path

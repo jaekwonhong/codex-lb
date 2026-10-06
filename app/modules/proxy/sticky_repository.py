@@ -398,8 +398,17 @@ class StickySessionsRepository:
         *,
         kind: StickySessionKind,
         expected_account_id: str,
+        proven_unavailable: bool = False,
     ) -> bool:
-        """Abandon only session-header interpretation of an unavailable raw owner."""
+        """Abandon only session-header interpretation of an unavailable raw owner.
+
+        ``proven_unavailable`` is request-local upstream evidence: the current
+        owner itself rejected a still-pre-visible, account-neutral turn with an
+        account-wide usage-limit terminal. It lets the guarded owner CAS happen
+        before an API-key reservation's deferred health write persists the same
+        unavailable status. Ordinary retries never set it and still require the
+        durable account status check below.
+        """
 
         if not key or not expected_account_id:
             return False
@@ -423,6 +432,7 @@ class StickySessionsRepository:
             Account.id == expected_account_id,
             Account.status.in_(unavailable_statuses),
         )
+        owner_predicates = [] if proven_unavailable else [StickySession.account_id.in_(unavailable_owner)]
         statement = (
             update(StickySession)
             .where(
@@ -431,7 +441,7 @@ class StickySessionsRepository:
                 StickySession.account_id == expected_account_id,
                 StickySession.continuity_abandoned_at.is_(None),
                 StickySession.continuity_abandonment_scope.is_(None),
-                StickySession.account_id.in_(unavailable_owner),
+                *owner_predicates,
             )
             # The scope column is the new reader's marker. Keep the legacy
             # timestamp NULL: older replicas know only that timestamp, so they
@@ -447,10 +457,11 @@ class StickySessionsRepository:
             .returning(StickySession.key)
         )
         async with sqlite_writer_section():
-            owner_status = await self._session.scalar(owner_status_lock)
-            if owner_status not in unavailable_statuses:
-                await self._session.commit()
-                return False
+            if not proven_unavailable:
+                owner_status = await self._session.scalar(owner_status_lock)
+                if owner_status not in unavailable_statuses:
+                    await self._session.commit()
+                    return False
             result = await self._session.execute(statement)
             await self._session.commit()
         return result.scalar_one_or_none() is not None

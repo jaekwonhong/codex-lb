@@ -606,6 +606,7 @@ async def test_codex_goal_restart_cas_miss_reloads_concurrently_rebound_raw_owne
         *,
         kind: StickySessionKind,
         expected_account_id: str,
+        proven_unavailable: bool = False,
     ) -> bool:
         nonlocal race_count
         if key == raw_session and race_count == 0:
@@ -618,6 +619,7 @@ async def test_codex_goal_restart_cas_miss_reloads_concurrently_rebound_raw_owne
             key,
             kind=kind,
             expected_account_id=expected_account_id,
+            proven_unavailable=proven_unavailable,
         )
 
     seen: list[str] = []
@@ -2439,6 +2441,68 @@ async def test_unavailable_owner_tombstone_compare_and_set_preserves_concurrent_
     assert row is not None
     assert row.account_id == "acc_restart_cas_new"
     assert row.continuity_abandoned_at is None
+
+
+@pytest.mark.asyncio
+async def test_verified_upstream_usage_limit_can_source_scope_tombstone_active_owner(db_setup):
+    """Quota evidence may arrive before keyed settlement persists RATE_LIMITED."""
+
+    from app.modules.proxy.sticky_repository import StickySessionsRepository
+
+    encryptor = TokenEncryptor()
+    account_id = "acc_verified_usage_limit_active"
+    async with SessionLocal() as session:
+        accounts = AccountsRepository(session)
+        await accounts.upsert(
+            Account(
+                id=account_id,
+                email="verified-usage-limit-active@example.com",
+                plan_type="plus",
+                access_token_encrypted=encryptor.encrypt("access"),
+                refresh_token_encrypted=encryptor.encrypt("refresh"),
+                id_token_encrypted=encryptor.encrypt("id"),
+                last_refresh=utcnow(),
+                status=AccountStatus.ACTIVE,
+                deactivation_reason=None,
+            )
+        )
+
+    key = "verified-usage-limit-active-owner"
+    async with SessionLocal() as session:
+        repo = StickySessionsRepository(session)
+        await repo.upsert(key, account_id, kind=StickySessionKind.CODEX_SESSION)
+
+        assert (
+            await repo.abandon_legacy_session_header_owner_if_unavailable(
+                key,
+                kind=StickySessionKind.CODEX_SESSION,
+                expected_account_id=account_id,
+            )
+            is False
+        )
+        retired = await repo.abandon_legacy_session_header_owner_if_unavailable(
+            key,
+            kind=StickySessionKind.CODEX_SESSION,
+            expected_account_id=account_id,
+            proven_unavailable=True,
+        )
+        session_lookup = await repo.get_account_id_and_abandonment(
+            key,
+            kind=StickySessionKind.CODEX_SESSION,
+            continuity_source="session_header",
+        )
+        turn_lookup = await repo.get_account_id_and_abandonment(
+            key,
+            kind=StickySessionKind.CODEX_SESSION,
+            continuity_source="turn_state",
+        )
+
+    assert retired is True
+    assert session_lookup.account_id is None
+    assert session_lookup.continuity_abandoned is True
+    assert session_lookup.abandoned_account_id == account_id
+    assert turn_lookup.account_id == account_id
+    assert turn_lookup.continuity_abandoned is False
 
 
 @pytest.mark.asyncio

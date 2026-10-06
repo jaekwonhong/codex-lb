@@ -41430,6 +41430,254 @@ async def test_stream_verified_fresh_replay_moves_off_owner_after_previsible_quo
 
 
 @pytest.mark.asyncio
+async def test_stream_account_neutral_image_usage_limit_retires_legacy_owner_before_keyed_health_flush(monkeypatch):
+    """A pre-visible owner usage-limit may retire only the raw session owner.
+
+    This mirrors the PC1 Astra failure shape: an inline image forces the HTTP
+    bridge bypass, the selected hard session owner returns
+    ``usage_limit_reached`` before visible output, and an API-key reservation
+    keeps the durable health write deferred until final settlement. The retry
+    must carry explicit owner-unavailability proof into selection instead of
+    degrading to ``hard_affinity_saturated``.
+    """
+
+    settings = _make_proxy_settings()
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    owner_account = _make_account("acc_stream_inline_image_quota_owner")
+    replacement_account = _make_account("acc_stream_inline_image_quota_replacement")
+    api_key = _make_api_key_data("key_stream_inline_image_quota")
+    reservation = proxy_service.ApiKeyUsageReservationData(
+        reservation_id="resv_stream_inline_image_quota",
+        key_id=api_key.id,
+        model="gpt-6-astra",
+    )
+    session_id = "sid-stream-inline-image-quota"
+    selection_calls: list[dict[str, object]] = []
+    streamed_account_ids: list[str | None] = []
+    order: list[str] = []
+
+    async def fake_select_account(**kwargs):
+        selection_calls.append(dict(kwargs))
+        if len(selection_calls) == 1:
+            assert kwargs.get("legacy_sticky_key") == session_id
+            assert kwargs.get("abandon_unavailable_legacy_owner") is False
+            assert kwargs.get("proven_unavailable_legacy_owner_account_id") is None
+            lease = await service._load_balancer.acquire_account_lease(owner_account.id, kind="stream")
+            assert lease is not None
+            return AccountSelection(account=owner_account, error_message=None, lease=lease)
+        assert kwargs.get("exclude_account_ids") == {owner_account.id}
+        assert kwargs.get("abandon_unavailable_legacy_owner") is True
+        assert kwargs.get("proven_unavailable_legacy_owner_account_id") == owner_account.id
+        lease = await service._load_balancer.acquire_account_lease(replacement_account.id, kind="stream")
+        assert lease is not None
+        return AccountSelection(account=replacement_account, error_message=None, lease=lease)
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **kwargs):
+        del payload, headers, access_token, base_url, raise_for_status, kwargs
+        streamed_account_ids.append(account_id)
+        if account_id == owner_account.chatgpt_account_id:
+            yield (
+                'data: {"type":"response.failed","response":{"id":"resp_owner_quota_image",'
+                '"status":"failed","error":{"code":"usage_limit_reached",'
+                '"message":"The usage limit has been reached"},"usage":{"input_tokens":0,'
+                '"output_tokens":0,"total_tokens":0}}}\n\n'
+            )
+            return
+        assert account_id == replacement_account.chatgpt_account_id
+        yield (
+            'data: {"type":"response.completed","response":{"id":"resp_image_quota_recovered",'
+            '"status":"completed","usage":{"input_tokens":1,"output_tokens":1,'
+            '"total_tokens":2}}}\n\n'
+        )
+
+    async def settle_usage(*args, **kwargs):
+        del args, kwargs
+        order.append("settle")
+        return True
+
+    async def handle_stream_error(account, error, code, *args, **kwargs):
+        del error, args, kwargs
+        order.append(f"health:{account.id}:{code}")
+        return {"failure_class": "rate_limit"}
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", AsyncMock(side_effect=fake_select_account))
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock(side_effect=handle_stream_error))
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=lambda account, **kwargs: account))
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(side_effect=settle_usage))
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-6-astra",
+            "instructions": "inspect the inline image",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "continue"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                    ],
+                }
+            ],
+            "stream": True,
+        }
+    )
+
+    chunks = [
+        chunk
+        async for chunk in service.stream_responses(
+            payload,
+            {"session_id": session_id},
+            codex_session_affinity=True,
+            api_key=api_key,
+            api_key_reservation=reservation,
+        )
+    ]
+
+    assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.completed"
+    assert all('"type":"response.failed"' not in chunk for chunk in chunks)
+    assert streamed_account_ids == [
+        owner_account.chatgpt_account_id,
+        replacement_account.chatgpt_account_id,
+    ]
+    assert len(selection_calls) >= 2
+    assert order == ["settle", f"health:{owner_account.id}:usage_limit_reached"]
+
+
+@pytest.mark.asyncio
+async def test_stream_account_neutral_image_http_usage_limit_arms_legacy_owner_recovery(monkeypatch):
+    """The HTTP-status delivery form carries the same owner quota proof as SSE."""
+
+    settings = _make_proxy_settings()
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    owner_account = _make_account("acc_stream_image_http_quota_owner")
+    replacement_account = _make_account("acc_stream_image_http_quota_replacement")
+    session_id = "sid-stream-image-http-quota"
+    selection_calls: list[dict[str, object]] = []
+    streamed_account_ids: list[str | None] = []
+
+    async def fake_select_account(**kwargs):
+        selection_calls.append(dict(kwargs))
+        if len(selection_calls) == 1:
+            return AccountSelection(account=owner_account, error_message=None)
+        assert kwargs.get("exclude_account_ids") == {owner_account.id}
+        assert kwargs.get("abandon_unavailable_legacy_owner") is True
+        assert kwargs.get("proven_unavailable_legacy_owner_account_id") == owner_account.id
+        return AccountSelection(account=replacement_account, error_message=None)
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **kwargs):
+        del payload, headers, access_token, base_url, raise_for_status, kwargs
+        streamed_account_ids.append(account_id)
+        if account_id == owner_account.chatgpt_account_id:
+            raise proxy_module.ProxyResponseError(
+                429,
+                openai_error("usage_limit_reached", "The usage limit has been reached"),
+                failure_phase="status",
+            )
+        yield (
+            'data: {"type":"response.completed","response":{"id":"resp_image_http_quota_recovered",'
+            '"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n'
+        )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", AsyncMock(side_effect=fake_select_account))
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock(return_value={"failure_class": "rate_limit"}))
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=lambda account, **kwargs: account))
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(return_value=True))
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-6-astra",
+            "instructions": "inspect the inline image",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "continue"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                    ],
+                }
+            ],
+            "stream": True,
+        }
+    )
+
+    chunks = [
+        chunk
+        async for chunk in service.stream_responses(
+            payload,
+            {"session_id": session_id},
+            codex_session_affinity=True,
+        )
+    ]
+
+    assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.completed"
+    assert streamed_account_ids == [
+        owner_account.chatgpt_account_id,
+        replacement_account.chatgpt_account_id,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_stream_generic_rate_limit_does_not_arm_legacy_owner_usage_limit_recovery(monkeypatch):
+    settings = _make_proxy_settings()
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    owner_account = _make_account("acc_stream_generic_rate_limit_owner")
+    selection_calls: list[dict[str, object]] = []
+
+    async def fake_select_account(**kwargs):
+        selection_calls.append(dict(kwargs))
+        if len(selection_calls) == 1:
+            return AccountSelection(account=owner_account, error_message=None)
+        assert kwargs.get("abandon_unavailable_legacy_owner") is False
+        assert kwargs.get("proven_unavailable_legacy_owner_account_id") is None
+        return AccountSelection(
+            account=None,
+            error_message="No available accounts",
+            error_code="hard_affinity_saturated",
+        )
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **kwargs):
+        del payload, headers, access_token, account_id, base_url, raise_for_status, kwargs
+        yield (
+            'data: {"type":"response.failed","response":{"id":"resp_generic_rate_limit",'
+            '"status":"failed","error":{"code":"rate_limit_exceeded",'
+            '"message":"Too many requests"}}}\n\n'
+        )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", AsyncMock(side_effect=fake_select_account))
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock(return_value={"failure_class": "rate_limit"}))
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=lambda account, **kwargs: account))
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(return_value=True))
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+
+    payload = ResponsesRequest.model_validate(
+        {"model": "gpt-6-astra", "instructions": "continue", "input": [], "stream": True}
+    )
+
+    chunks = [
+        chunk
+        async for chunk in service.stream_responses(
+            payload,
+            {"session_id": "sid-generic-rate-limit"},
+            codex_session_affinity=True,
+        )
+    ]
+
+    assert len(selection_calls) >= 2
+    assert any('"type":"response.failed"' in chunk for chunk in chunks)
+
+
+@pytest.mark.asyncio
 async def test_stream_verified_fresh_replay_moves_off_owner_after_refresh_connect_failure(monkeypatch):
     settings = _make_proxy_settings()
     request_logs = _RequestLogsRecorder()
