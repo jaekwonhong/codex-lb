@@ -31,7 +31,7 @@ This separation is required so the user can inspect the forward result before au
 
 ## Exact OpenCodex account prerequisite
 
-The canary runner does not infer an OpenCodex account from email, alias, selector, old Codex-LB account id, or workspace id. Both the current and target workspace member must already have explicit `WorkspaceMemberAccountBinding` entries, and the exact referenced OpenCodex account-state projection must report a credential that is present, not paused, and not in reauthentication-required state.
+The canary runner does not infer an OpenCodex account from email, alias, selector, old Codex-LB account id, or workspace id. Both the current and target workspace member must already have explicit `WorkspaceMemberAccountBinding` entries, and the exact referenced OpenCodex account-state projection must report a credential that is present, administratively paused for routing isolation, and not in reauthentication-required state. The canary membership effect is carried by Companion, so making these accounts inference-selectable would add data-plane exposure without strengthening membership evidence.
 
 The live preflight on 2026-10-07 stopped before any durable claim or effect because the current `cdp-2` member had no explicit OpenCodex account binding. The active/pending membership journal snapshot was unchanged before and after preflight, Companion admission remained `ready`, and no canary handoff state file was created.
 

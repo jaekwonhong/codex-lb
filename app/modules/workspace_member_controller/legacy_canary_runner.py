@@ -140,8 +140,10 @@ async def _require_exact_account(
     state = await accounts.get(binding.opencodex_account_id)
     if state.account_id != binding.opencodex_account_id:
         raise RuntimeError("canary_opencodex_account_identity_mismatch")
-    if not state.has_credential or state.needs_reauth or state.paused:
+    if not state.has_credential or state.needs_reauth:
         raise RuntimeError(f"canary_opencodex_account_not_usable:{identity.preset_id}")
+    if not state.paused:
+        raise RuntimeError(f"canary_opencodex_account_not_isolated:{identity.preset_id}")
     return binding.opencodex_account_id
 
 

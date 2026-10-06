@@ -6,7 +6,7 @@ This runbook is for the separately authorized single-workspace membership canary
 
 The canary is split into three operator-visible steps: preflight, forward, and rollback. Forward and rollback are never executed automatically in the same invocation.
 
-The prepared canary target is `cdp-2`. The currently selected target preset is `cdp-2-thinklet09`. Do not substitute another workspace or target without repeating the read-only selection/preflight qualification.
+The prepared canary target is `cdp-2`. After repeating read-only selection qualification, the selected target preset is `pool-cfa8753f2d3c4154c2660a0ea4b50f95`. Do not substitute another workspace or target without repeating the read-only selection/preflight qualification.
 
 The canary requires:
 
@@ -15,7 +15,7 @@ The canary requires:
 - authoritative current membership observation with exactly one known non-owner member;
 - exact allowlisted target preset identity;
 - explicit exact OpenCodex bindings for both current and target subjects;
-- both exact OpenCodex accounts to have usable credentials;
+- both exact OpenCodex accounts to have usable credentials and remain administratively paused so the membership canary cannot place either account into inference routing;
 - the qualified Companion mutation/observation/recipient/canary/telemetry/durable-flow capability set;
 - a private absolute handoff state path with owner-only permissions.
 
@@ -27,7 +27,7 @@ Preflight is read-only and does not require the mutation acknowledgement. It mus
 
 Expected success report includes `ready=true` and `exactAccountBindings=2`. Any missing binding/account, stale/ambiguous workspace observation, active control scope, or non-idle Companion blocks the canary before mutation.
 
-As of the 11-1 qualification checkpoint, preflight is intentionally blocked because the selected current/target subjects have not both been onboarded into the OpenCodex native account pool with explicit bindings.
+As of the 11-2B qualification step, the current and selected target subjects have been onboarded into the OpenCodex native account pool, explicitly bound, and kept paused for routing isolation.
 
 ## Forward phase
 
@@ -55,6 +55,6 @@ Rollback is a separate authorization. It reads the retained handoff state and re
 
 Rollback uses a second dedicated canary operation target→original. Success requires the same evidence gates as the forward phase plus final observation that the original subject is restored, active scope is released, and Companion admission is idle again.
 
-## Current blocker
+## Routing isolation
 
-Do not execute the forward phase yet. The live 11-1 preflight proved the selected current member has no explicit OpenCodex binding, and the selected target is also not yet qualified in the native OpenCodex pool. Onboard/qualify those accounts and create explicit bindings before repeating preflight.
+The canary deliberately requires both bound OpenCodex pool accounts to remain paused. Membership mutation is executed by the qualified Companion canary path, not by OpenCodex inference routing, so unpausing would add risk without adding evidence. A missing credential or reauthentication-required state still blocks the canary.

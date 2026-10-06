@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from app.modules.workspace_member_controller.account_state import OpenCodexAccountState
 from app.modules.workspace_member_controller.binding_repository import (
     FileWorkspaceMemberAccountBindingRepository,
 )
@@ -81,3 +82,82 @@ async def test_exact_opencodex_binding_is_required_before_canary(tmp_path: Path)
             workspace_account_id="workspace-account-1",
             identity=_identity("target", "user-Target"),
         )
+
+
+def _binding_payload(account_id: str = "acct-target") -> dict[str, object]:
+    return {
+        "schemaVersion": 1,
+        "bindings": [
+            {
+                "schemaVersion": 1,
+                "workspaceId": "workspace-1",
+                "workspaceAccountId": "workspace-account-1",
+                "presetId": "target",
+                "memberUserId": "user-Target",
+                "memberEmailNormalized": "target@example.com",
+                "role": "member",
+                "opencodexAccountId": account_id,
+                "establishedAt": NOW.isoformat(),
+            }
+        ],
+    }
+
+
+def _account_state(*, paused: bool, has_credential: bool = True, needs_reauth: bool = False) -> OpenCodexAccountState:
+    return OpenCodexAccountState.model_validate(
+        {
+            "schemaVersion": 1,
+            "provider": "openai",
+            "accountId": "acct-target",
+            "isMain": False,
+            "credentialGeneration": 1,
+            "observedAt": 1,
+            "hasCredential": has_credential,
+            "needsReauth": needs_reauth,
+            "paused": paused,
+            "healthStatus": "healthy",
+            "selectionState": "excluded" if paused else "selectable",
+            "exclusionReasons": ["paused"] if paused else [],
+            "quotaState": "unknown",
+            "quotaWindows": [],
+            "cooldowns": [],
+            "stateRevision": "a" * 64,
+        }
+    )
+
+
+async def test_canary_requires_paused_opencodex_account_for_routing_isolation(tmp_path: Path):
+    path = tmp_path / "bindings.json"
+    path.write_text(json.dumps(_binding_payload()) + "\n", encoding="utf-8")
+    repository = FileWorkspaceMemberAccountBindingRepository(path)
+
+    class Accounts:
+        async def get(self, _account_id):
+            return _account_state(paused=False)
+
+    with pytest.raises(RuntimeError, match="canary_opencodex_account_not_isolated:target"):
+        await _require_exact_account(
+            bindings=repository,
+            accounts=Accounts(),  # type: ignore[arg-type]
+            workspace_id="workspace-1",
+            workspace_account_id="workspace-account-1",
+            identity=_identity("target", "user-Target"),
+        )
+
+
+async def test_canary_accepts_paused_exact_account_with_usable_credential(tmp_path: Path):
+    path = tmp_path / "bindings.json"
+    path.write_text(json.dumps(_binding_payload()) + "\n", encoding="utf-8")
+    repository = FileWorkspaceMemberAccountBindingRepository(path)
+
+    class Accounts:
+        async def get(self, _account_id):
+            return _account_state(paused=True)
+
+    assert await _require_exact_account(
+        bindings=repository,
+        accounts=Accounts(),  # type: ignore[arg-type]
+        workspace_id="workspace-1",
+        workspace_account_id="workspace-account-1",
+        identity=_identity("target", "user-Target"),
+    ) == "acct-target"
