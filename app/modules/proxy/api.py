@@ -5253,6 +5253,63 @@ async def _source_audio_transcription_response(
     return Response(content=result.body, status_code=200, headers=headers)
 
 
+_GLM_COMPACTION_MODEL = "glm5.3-flash"
+_GLM_COMPACTION_OUTPUT_TOKEN_FLOOR = 24_000
+
+
+def _codex_turn_request_kind(headers: Mapping[str, str]) -> str:
+    raw_metadata = headers.get("x-codex-turn-metadata") or headers.get("X-Codex-Turn-Metadata")
+    if not raw_metadata:
+        return "normal"
+    try:
+        metadata = json.loads(raw_metadata)
+    except json.JSONDecodeError:
+        return "normal"
+    if not isinstance(metadata, dict):
+        return "normal"
+    request_kind = metadata.get("request_kind")
+    return request_kind.strip() if isinstance(request_kind, str) and request_kind.strip() else "normal"
+
+
+def _apply_glm_compaction_request_overrides(
+    source_payload: dict[str, JsonValue],
+    headers: Mapping[str, str],
+) -> None:
+    """Keep GLM local compaction bounded and complete without changing normal turns.
+
+    Codex custom-provider compaction is a normal Responses request tagged via
+    ``x-codex-turn-metadata``. Codex currently omits ``max_output_tokens`` on
+    that path, while GLM reasoning shares the generation budget with the
+    compaction summary. The upstream default can therefore terminate the
+    stream as ``response.incomplete(max_output_tokens)`` and Codex surfaces it
+    as a disconnected stream.
+
+    Use a conservative generation floor that still leaves room inside the
+    currently advertised 262k context window, and use low reasoning only for
+    the summary turn. The user's reasoning setting remains untouched for every
+    ordinary model request. A future client-supplied larger budget wins.
+    """
+
+    if source_payload.get("model") != _GLM_COMPACTION_MODEL:
+        return
+    if _codex_turn_request_kind(headers) != "compaction":
+        return
+
+    current_max = source_payload.get("max_output_tokens")
+    if (
+        isinstance(current_max, bool)
+        or not isinstance(current_max, int)
+        or current_max < _GLM_COMPACTION_OUTPUT_TOKEN_FLOOR
+    ):
+        source_payload["max_output_tokens"] = _GLM_COMPACTION_OUTPUT_TOKEN_FLOOR
+
+    reasoning = source_payload.get("reasoning")
+    if is_json_mapping(reasoning):
+        source_payload["reasoning"] = {**reasoning, "effort": "low"}
+    else:
+        source_payload["reasoning"] = {"effort": "low"}
+
+
 async def _source_responses_response(
     request: Request,
     payload: ResponsesRequest,
@@ -5324,6 +5381,7 @@ async def _source_responses_response(
         raise
     try:
         source_payload = _shape_source_responses_payload(payload, source, api_key=api_key)
+        _apply_glm_compaction_request_overrides(source_payload, request.headers)
         forwarded_reasoning = source_payload.get("reasoning")
         forwarded_effort = forwarded_reasoning.get("effort") if is_json_mapping(forwarded_reasoning) else None
         owner.reasoning_effort = forwarded_effort if isinstance(forwarded_effort, str) else None
