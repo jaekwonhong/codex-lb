@@ -435,6 +435,16 @@ def _hard_affinity_owner_has_definitive_usage_exhaustion(
 ) -> bool:
     if error_code != "hard_affinity_saturated" or not isinstance(owner_account_id, str):
         return False
+    return _owner_has_definitive_usage_exhaustion(owner_account_id=owner_account_id, states=states)
+
+
+def _owner_has_definitive_usage_exhaustion(
+    *,
+    owner_account_id: str | None | object,
+    states: Iterable[AccountState],
+) -> bool:
+    if not isinstance(owner_account_id, str):
+        return False
     owner_state = next((state for state in states if state.account_id == owner_account_id), None)
     if owner_state is None:
         return False
@@ -1422,6 +1432,18 @@ async def run_sticky_selection_path(
             )
         break
 
+    required_owner_usage_exhausted = _owner_has_definitive_usage_exhaustion(
+        owner_account_id=request.required_account_id,
+        states=states,
+    )
+    if (
+        selected_snapshot is None
+        and required_owner_usage_exhausted
+        and selection_error_code in {None, "usage_limit_reached"}
+    ):
+        selection_error_code = "hard_affinity_saturated"
+
+    owner_account_id = sticky_existing_account_id or request.required_account_id
     return StickySelectionOutcome(
         selection_inputs=selection_inputs,
         selected_snapshot=selected_snapshot,
@@ -1436,7 +1458,7 @@ async def run_sticky_selection_path(
         ),
         hard_affinity_owner_usage_exhausted=_hard_affinity_owner_has_definitive_usage_exhaustion(
             error_code=selection_error_code,
-            owner_account_id=sticky_existing_account_id,
+            owner_account_id=owner_account_id,
             states=states,
         ),
     )

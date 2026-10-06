@@ -916,6 +916,7 @@ class LoadBalancer:
             error_message = unbound_outcome.error_message
             selection_error_code = unbound_outcome.error_code
             selection_resets_at = unbound_outcome.resets_at
+            hard_affinity_owner_usage_exhausted = unbound_outcome.hard_affinity_owner_usage_exhausted
             if unbound_outcome.disposition == "direct_error":
                 return AccountSelection(
                     account=None,
