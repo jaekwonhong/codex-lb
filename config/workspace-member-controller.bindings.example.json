@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "bindings": [
+    {
+      "schemaVersion": 1,
+      "workspaceId": "workspace-1",
+      "workspaceAccountId": "00000000-0000-4000-8000-000000000001",
+      "presetId": "member-1",
+      "memberUserId": "user-Example1",
+      "memberEmailNormalized": "member@example.com",
+      "role": "member",
+      "opencodexAccountId": "replace-with-exact-opencodex-account-id",
+      "establishedAt": "2026-10-06T00:00:00Z"
+    }
+  ]
+}

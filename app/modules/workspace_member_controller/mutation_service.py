@@ -71,6 +71,8 @@ class WorkspaceMembershipMutationService:
             except Exception as exc:
                 self._raise_journal_error(exc)
             created_now = True
+        if entry is None:
+            raise MembershipMutationError("mutation_journal_create_failed")
         self._require_same_operation(entry, command, fingerprint)
         if entry.state.phase in {"completed", "failed"} and entry.command_id != str(command.command_id):
             raise MembershipMutationError("mutation_operation_terminal")

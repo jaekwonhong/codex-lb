@@ -404,3 +404,84 @@ The legacy Codex-LB `member_switch.rotation_worker` and its `AccountsRepository`
 - **WHEN** non-legacy modules under `app.modules.workspace_member_controller` are scanned
 - **THEN** none imports Codex-LB account, proxy, usage, reset-credit, member-switch, database-model, or dependency-container modules
 - **AND** migration-only imports are confined to explicitly named legacy adapters
+
+### Requirement: Standalone Controller process has an independent runtime shell
+
+The Workspace Member Controller SHALL be runnable as a dedicated process that does not start or import the Codex-LB inference proxy, dashboard authentication stack, account-pool workers, usage schedulers, request handlers or global dependency container. The process SHALL expose a dedicated CLI entrypoint and SHALL use Controller-specific `WMC_` configuration rather than inheriting Codex-LB process settings. In this qualification stage the HTTP listener SHALL be loopback-only and one process/worker SHALL own the listener.
+
+#### Scenario: Standalone process module is imported
+
+- **WHEN** the standalone Controller runtime and app modules are loaded
+- **THEN** Codex-LB `app.main`, proxy, account, usage, dashboard-auth and global dependency-container modules are not imported as runtime dependencies
+- **AND** the Controller can construct its own ASGI application and database/read adapters
+
+### Requirement: Standalone admin and health surfaces are intentionally separated
+
+`GET /health/live` SHALL be an unauthenticated liveness endpoint containing no workspace/account identity data. `GET /health/ready` SHALL be an unauthenticated readiness endpoint that returns only sanitized status/count information and SHALL return 503 when dependency validation fails. Every `/v1` Controller route SHALL require the dedicated Controller bearer admin token. Interactive API documentation/openapi routes SHALL be disabled in the standalone process. The slice-9 HTTP surface SHALL remain read-only; no membership mutation POST/PUT/PATCH/DELETE route SHALL be exposed.
+
+#### Scenario: Caller has no Controller admin bearer
+
+- **WHEN** the caller requests `/v1/catalog`, `/v1/status` or an observation route
+- **THEN** the Controller returns 401
+- **AND** health endpoints remain independently probeable
+
+#### Scenario: Caller attempts a membership mutation route during slice 9
+
+- **WHEN** the caller sends a POST/PUT/PATCH/DELETE request under the Controller `/v1` namespace
+- **THEN** no qualified mutation route exists
+- **AND** the request cannot reach the internal mutation service by HTTP
+
+### Requirement: Standalone configuration is fail-closed and keeps secrets out of URLs and command arguments
+
+The Controller SHALL read configuration from `WMC_` settings. Controller and OpenCodex admin secrets SHALL each have exactly one source: an environment secret or an absolute token file. Token files SHALL reject group/world permission bits. The standalone listener SHALL refuse non-loopback bind addresses in this qualification stage. Plain HTTP OpenCodex management URLs SHALL be restricted to local/host bridge addresses. The migration database SHALL be durable; in-memory SQLite and relative SQLite paths SHALL be rejected.
+
+#### Scenario: Token file permissions are too broad
+
+- **WHEN** a configured admin token file is group/world readable or writable
+- **THEN** startup validation refuses the configuration before a listener is promoted ready
+
+#### Scenario: Non-loopback listen address is configured
+
+- **WHEN** the standalone service is configured to bind `0.0.0.0` or another non-loopback host
+- **THEN** configuration validation fails
+- **AND** bearer admin traffic is not exposed as plaintext LAN control-plane traffic by this package
+
+### Requirement: Startup validates migration persistence and external read dependencies before readiness
+
+Before the standalone process serves as ready, it SHALL prove database connectivity, presence of all Controller-owned migration tables, required columns used by the extracted contracts, a schema-valid Companion catalog, OpenCodex service readiness, and the explicit member-to-account binding file. If any configured binding exists, startup SHALL also prove that the binding matches exactly one current Companion workspace/member identity and that its exact `opencodex_account_id` resolves through the OpenCodex Controller account-state projection. Startup failure SHALL close resources rather than leaking an engine or HTTP client.
+
+`workspace-member-controller --validate` SHALL run the same qualification without opening the HTTP listener.
+
+#### Scenario: Migration database is stale
+
+- **GIVEN** the shared migration database is reachable but a required Controller table or relied-on column is missing
+- **WHEN** startup validation runs
+- **THEN** readiness fails before serving Controller reads
+
+#### Scenario: Read-only shadow has no account bindings yet
+
+- **GIVEN** the explicit binding file is valid and empty
+- **WHEN** startup validation runs
+- **THEN** the Controller still proves Companion catalog access and OpenCodex `/readyz` readiness
+- **AND** startup does not invent bindings from legacy account records
+
+### Requirement: Explicit account-binding supply is versioned and never inferred
+
+The standalone Controller SHALL load member-to-OpenCodex account bindings only from its explicit versioned binding source. Duplicate exact workspace-member identities SHALL be invalid. Reusing one OpenCodex account id for different user/email subjects SHALL be invalid unless a future qualified same-subject reconciliation explicitly expands the contract. Startup SHALL verify every binding against the exact current catalog identity. Matching email, selector, alias, old Codex-LB account id or workspace id SHALL NOT create or repair a binding automatically.
+
+#### Scenario: Binding file references the wrong member user id
+
+- **GIVEN** a binding names a valid workspace and OpenCodex account but the member user id differs from the current exact catalog member
+- **WHEN** startup validation runs
+- **THEN** startup fails with a binding identity mismatch
+- **AND** the Controller does not substitute another catalog member or OpenCodex account
+
+### Requirement: Standalone Companion reads preserve the qualified local control protocol
+
+The standalone read adapter SHALL preserve the existing Companion local endpoint restrictions, `Host`, `Origin`, `X-Member-Switch-Protocol: managed_member_switch_v1`, no-redirect behavior and no automatic retry. Catalog reads SHALL use the normal bounded timeout and membership observation SHALL preserve the qualified interactive timeout window rather than shortening it. Companion failures or schema-invalid responses SHALL fail closed.
+
+#### Scenario: Membership observation requires the interactive window
+
+- **WHEN** the standalone Controller requests the qualified Companion observation endpoint
+- **THEN** it uses the existing interactive observation timeout contract
+- **AND** it does not introduce a shorter standalone timeout that would create false shadow mismatches

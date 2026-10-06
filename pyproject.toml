@@ -135,6 +135,7 @@ python-version = "3.13"
 [project.scripts]
 codex-lb = "app.cli:main"
 codex-lb-db = "app.db.migrate:main"
+workspace-member-controller = "app.modules.workspace_member_controller.standalone_cli:main"
 
 [build-system]
 requires = ["hatchling==1.32.0"]

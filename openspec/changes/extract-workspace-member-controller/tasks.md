@@ -27,7 +27,7 @@
 
 ## 4. Qualification and cutover
 
-- [ ] 4.1 Package the standalone service with health, admin authentication, configuration, and migration/startup validation.
+- [x] 4.1 Package the standalone service with health, admin authentication, configuration, and migration/startup validation.
 - [ ] 4.2 Run a read-only shadow deployment and compare workspace/member results with the existing Codex-LB implementation.
 - [ ] 4.3 Qualify one separately authorized workspace mutation canary and rollback without broadening mutation authority.
 - [ ] 4.4 Transfer production workspace-membership control-plane ownership to the standalone Controller.

@@ -86,6 +86,18 @@ An admitted rotation decision emits immutable `AccountDecisionEvidence` containi
 
 All non-legacy modules under `app.modules.workspace_member_controller` are regression-checked against imports from Codex-LB DB/account/proxy/usage/reset/member-switch/data-plane modules. The only remaining imports of those implementations live in explicitly named `legacy_*` migration adapters. Production ownership still changes only in the later shadow/canary/cutover slices.
 
+## Standalone Controller process packaging
+
+Slice 9 packages the extracted control-plane core as a dedicated `workspace-member-controller` process without starting Codex-LB's proxy, dashboard, account pool, usage schedulers or request handlers. The process owns a minimal FastAPI/uvicorn shell, reads only `WMC_` configuration, listens on loopback by contract in this qualification stage, disables interactive API documentation, exposes public liveness/readiness probes, and protects every `/v1` Controller read route with a dedicated bearer admin token. No membership mutation HTTP route is activated.
+
+Secrets are supplied either directly through environment values or through absolute owner-only token files; a secret cannot have both sources and token-file modes with group/world permissions are rejected. The OpenCodex management base may use plaintext HTTP only for loopback/localhost/`host.docker.internal`. The migration database URL is explicit and durable; in-memory SQLite and relative SQLite paths are rejected. `workspace-member-controller --validate` performs the same dependency/startup qualification without opening a listener.
+
+The standalone process no longer imports `app.main`, `app.db.session`, `app.dependencies`, dashboard auth, account repositories, proxy code, usage schedulers or Codex-LB process configuration. During migration it reads the existing Controller-owned tables through direct SQL read adapters and validates both required table names and the columns relied on by the extracted contracts. The later mutation canary still owns qualification of write adapters.
+
+Workspace observation is provided by a read-only Companion HTTP adapter that preserves the qualified local Host/Origin/control-protocol contract and the existing 190-second interactive observation timeout. OpenCodex startup readiness uses exact unauthenticated `/readyz`; therefore a read-only shadow deployment with an empty binding file still proves OpenCodex is ready. When bindings exist, startup additionally reads every exact referenced account through the non-secret Controller account-state projection.
+
+Member-to-account bindings are supplied only by an explicit versioned JSON file. Startup verifies each row against the exact current Companion workspace/member identity and then against the exact OpenCodex account id. The file rejects duplicate workspace-member identities and reuse of one OpenCodex account by conflicting subjects. Empty bindings are permitted for read-only shadow qualification, but no account-dependent mutation may infer a missing binding from email, selector, alias or former Codex-LB account identity.
+
 ## Extraction strategy
 
 The current member-management implementation is not treated as a cleanly separable package. It still imports Codex-LB database models, account repositories, OAuth/auth-handoff services, proxy account cache, usage observations, reset-credit facilities, and scheduler/runtime support. Those dependencies will be inventoried before an extraction boundary is finalized.

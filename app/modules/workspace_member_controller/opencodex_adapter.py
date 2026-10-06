@@ -25,7 +25,13 @@ class OpenCodexHttpAccountStateAdapter(OpenCodexAccountStatePort):
         timeout_seconds: float = 5.0,
     ) -> None:
         parsed = urlparse(base_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.query or parsed.fragment:
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
             raise ValueError("invalid_opencodex_management_base_url")
         token = admin_token.strip()
         if not token:
