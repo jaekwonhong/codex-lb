@@ -5254,7 +5254,7 @@ async def _source_audio_transcription_response(
 
 
 _GLM_COMPACTION_MODEL = "glm5.3-flash"
-_GLM_COMPACTION_OUTPUT_TOKEN_FLOOR = 24_000
+_GLM_COMPACTION_OUTPUT_TOKENS = 32_768
 
 
 def _codex_turn_request_kind(headers: Mapping[str, str]) -> str:
@@ -5284,10 +5284,9 @@ def _apply_glm_compaction_request_overrides(
     stream as ``response.incomplete(max_output_tokens)`` and Codex surfaces it
     as a disconnected stream.
 
-    Use a conservative generation floor that still leaves room inside the
-    currently advertised 262k context window, and use low reasoning only for
-    the summary turn. The user's reasoning setting remains untouched for every
-    ordinary model request. A future client-supplied larger budget wins.
+    Use the TensorFold serving ceiling for the compaction generation budget and
+    medium reasoning only for the summary turn. The user's reasoning setting
+    remains untouched for every ordinary model request.
     """
 
     if source_payload.get("model") != _GLM_COMPACTION_MODEL:
@@ -5295,19 +5294,13 @@ def _apply_glm_compaction_request_overrides(
     if _codex_turn_request_kind(headers) != "compaction":
         return
 
-    current_max = source_payload.get("max_output_tokens")
-    if (
-        isinstance(current_max, bool)
-        or not isinstance(current_max, int)
-        or current_max < _GLM_COMPACTION_OUTPUT_TOKEN_FLOOR
-    ):
-        source_payload["max_output_tokens"] = _GLM_COMPACTION_OUTPUT_TOKEN_FLOOR
+    source_payload["max_output_tokens"] = _GLM_COMPACTION_OUTPUT_TOKENS
 
     reasoning = source_payload.get("reasoning")
     if is_json_mapping(reasoning):
-        source_payload["reasoning"] = {**reasoning, "effort": "low"}
+        source_payload["reasoning"] = {**reasoning, "effort": "medium"}
     else:
-        source_payload["reasoning"] = {"effort": "low"}
+        source_payload["reasoning"] = {"effort": "medium"}
 
 
 async def _source_responses_response(
