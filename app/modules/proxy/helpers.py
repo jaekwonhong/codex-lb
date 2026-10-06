@@ -8,7 +8,7 @@ from pydantic import ValidationError
 
 from app.core import usage as usage_core
 from app.core.balancer.types import ClassifiedFailure, FailureClass, FailurePhase, UpstreamError
-from app.core.errors import OpenAIErrorDetail, OpenAIErrorParam
+from app.core.errors import OpenAIErrorDetail, OpenAIErrorParam, is_upstream_usage_limit_message
 from app.core.openai.chat_responses import _coerce_number
 from app.core.openai.models import OpenAIError
 from app.core.plan_types import normalize_rate_limit_plan_type
@@ -37,8 +37,10 @@ PLAN_TYPE_PRIORITY = (
     "k12",
 )
 
-_RATE_LIMIT_CODES = frozenset({"rate_limit_exceeded", "usage_limit_reached"})
+_USAGE_LIMIT_CODE = "usage_limit_reached"
+_RATE_LIMIT_CODES = frozenset({"rate_limit_exceeded", _USAGE_LIMIT_CODE})
 _QUOTA_CODES = frozenset({"insufficient_quota", "usage_not_included", "quota_exceeded"})
+_MESSAGE_CLASSIFIED_CODES = frozenset({"upstream_error"})
 _TRANSIENT_CODES = frozenset(
     {"server_error", "upstream_error", "stream_incomplete", "overloaded_error", "server_is_overloaded"}
 )
@@ -105,6 +107,13 @@ def is_upstream_model_capacity_error(message: str | None) -> bool:
     return any(marker in normalized_message for marker in _MODEL_CAPACITY_MESSAGE_MARKERS)
 
 
+def is_upstream_usage_limit_rejection(*, error_code: str, message: str | None) -> bool:
+    """True only for a spent usage window, including message-only terminal frames."""
+    return error_code == _USAGE_LIMIT_CODE or (
+        error_code in _MESSAGE_CLASSIFIED_CODES and is_upstream_usage_limit_message(message)
+    )
+
+
 def classify_upstream_failure(
     *,
     error_code: str,
@@ -117,6 +126,8 @@ def classify_upstream_failure(
         failure_class = "rate_limit"
     elif error_code in _QUOTA_CODES:
         failure_class = "quota"
+    elif is_upstream_usage_limit_rejection(error_code=error_code, message=error.get("message")):
+        failure_class = "rate_limit"
     elif (
         error_code in _TRANSIENT_CODES
         or is_upstream_model_capacity_error(error.get("message"))

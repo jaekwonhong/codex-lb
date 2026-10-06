@@ -30388,21 +30388,17 @@ async def test_stream_via_http_bridge_recovers_dead_owner_with_replayable_full_r
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sdk_contract", [False, True])
 @pytest.mark.parametrize("alternate_id", [None, "acc-alternate"])
-async def test_fresh_reattach_delta_requires_local_history_recovery_when_owner_quota_is_exhausted(
+async def test_fresh_reattach_delta_quota_advice_defers_to_authoritative_admission(
     monkeypatch: pytest.MonkeyPatch,
     sdk_contract: bool,
     alternate_id: str | None,
 ) -> None:
-    """A durable reattach delta must fail explicitly instead of soliciting history.
+    """Read-only quota advice never authorizes an account switch by itself.
 
-    This reproduces the PC2 production shape: the client sends no explicit
-    previous_response_id, the bridge injects the durable anchor, and that owner
-    is quota-blocked. The delta cannot safely move by itself, regardless of
-    whether a healthy alternate is currently selectable, and native Codex HTTP
-    did not reconstruct full history from a previous_response_not_found response
-    in production. The bridge therefore stops before upstream dispatch and
-    requires local-history recovery instead of advertising a retryable-looking
-    previous_response_owner_unavailable error.
+    The normal admission path remains authoritative. If it admits the owner,
+    the request stays on that owner even when the advisory snapshot also names
+    an alternate. A later definitive owner-quota rejection is what may enter
+    the shared relocation verdict and durable-transcript recovery path.
     """
 
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
@@ -30434,7 +30430,23 @@ async def test_fresh_reattach_delta_requires_local_history_recovery_when_owner_q
         latest_response_id="resp_owner_anchor",
         model="gpt-5.4",
     )
-    get_or_create = AsyncMock(side_effect=AssertionError("recovery refusal must happen before upstream creation"))
+    creation_calls: list[dict[str, Any]] = []
+
+    async def get_or_create(
+        key: proxy_service._HTTPBridgeSessionKey,
+        **kwargs: Any,
+    ) -> proxy_service._HTTPBridgeSession:
+        creation_calls.append(kwargs)
+        session = _make_bridge_session(key=key, key_value=key.affinity_key)
+        session.account = cast(Any, SimpleNamespace(id="acc-owner", status=AccountStatus.ACTIVE))
+        session.request_model = payload.model
+        return session
+
+    async def stream_events(
+        _session: proxy_service._HTTPBridgeSession,
+        **_kwargs: Any,
+    ):
+        yield 'data: {"type":"response.completed","response":{"id":"resp-owner-still-admitted"}}\n\n'
 
     async def quota_owner_advice(*args: Any, **kwargs: Any) -> OwnerRecoveryAdvice:
         del args, kwargs
@@ -30469,6 +30481,7 @@ async def test_fresh_reattach_delta_requires_local_history_recovery_when_owner_q
     monkeypatch.setattr(service, "_resolve_file_account_for_responses", AsyncMock(return_value=None))
     monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value="acc-owner"))
     monkeypatch.setattr(service, "_get_or_create_http_bridge_session", get_or_create)
+    monkeypatch.setattr(service, "_stream_http_bridge_session_events", stream_events)
 
     stream = service._stream_via_http_bridge(
         payload,
@@ -30486,23 +30499,12 @@ async def test_fresh_reattach_delta_requires_local_history_recovery_when_owner_q
         enforce_openai_sdk_contract=sdk_contract,
     )
 
-    with pytest.raises(ProxyResponseError) as exc_info:
-        _ = [chunk async for chunk in stream]
+    chunks = [chunk async for chunk in stream]
 
-    # This helper exercises the backend Codex bridge contract directly
-    # (codex_session_affinity=True), not /v1.  Desktop may carry Stainless
-    # implementation metadata on that route, but the native backend identity
-    # remains authoritative for the pre-dispatch recovery refusal.  /v1 keeps
-    # codex_session_affinity=False and is covered by the recovery-contract
-    # boundary tests.
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.payload["error"]["type"] == "invalid_request_error"
-    assert exc_info.value.payload["error"]["code"] == "continuity_recovery_required"
-    assert "param" not in exc_info.value.payload["error"]
-    assert exc_info.value.failure_phase == "pre_dispatch"
-    assert exc_info.value.failure_detail == "local_history_recovery_required"
-    assert exc_info.value.local_pre_dispatch_refusal is True
-    get_or_create.assert_not_awaited()
+    assert chunks == ['data: {"type":"response.completed","response":{"id":"resp-owner-still-admitted"}}\n\n']
+    assert len(creation_calls) == 1
+    assert creation_calls[0]["preferred_account_id"] == "acc-owner"
+    assert creation_calls[0]["previous_response_id"] == "resp_owner_anchor"
 
 
 @pytest.mark.asyncio

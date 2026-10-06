@@ -1226,7 +1226,8 @@ def _websocket_owner_pinned_quota_error_code(
         _websocket_event_error_code(event_type, payload),
         _websocket_event_error_type(event_type, payload),
     )
-    if is_upstream_model_capacity_error(_websocket_event_error_message(event_type, payload)):
+    error_message = _websocket_event_error_message(event_type, payload)
+    if is_upstream_model_capacity_error(error_message):
         if error_code in {
             "rate_limit_exceeded",
             "usage_limit_reached",

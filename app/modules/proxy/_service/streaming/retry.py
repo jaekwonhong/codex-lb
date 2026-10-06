@@ -113,6 +113,7 @@ from app.modules.proxy.helpers import (
     classify_upstream_failure,
     is_upstream_burst_rejection,
     is_upstream_model_capacity_error,
+    is_upstream_usage_limit_rejection,
 )
 from app.modules.proxy.http_continuation import http_continuation_signal
 from app.modules.proxy.load_balancer import AccountLease, AccountSelection

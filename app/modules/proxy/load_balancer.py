@@ -231,9 +231,7 @@ class AccountSelection:
     # own ``exclude_account_ids``: the wait a transient owner outage earns
     # cannot clear this one (``_hard_affinity_owner_excluded_by_caller``).
     hard_affinity_owner_excluded: bool = False
-    # Internal positive quota evidence for a resolved hard owner.  Unlike the
-    # public hard-affinity error code this is safe to use as definitive
-    # pre-dispatch relocation evidence.
+    # Positive quota evidence for the resolved hard owner; safe for definitive relocation.
     hard_affinity_owner_usage_exhausted: bool = False
 
 

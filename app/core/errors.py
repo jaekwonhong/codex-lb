@@ -121,6 +121,14 @@ SYNTHETIC_TRANSPORT_FAILURE_MARKER = "_codex_lb_synthetic_transport_failure"
 SYNTHETIC_TRANSPORT_FAILURE_CODES = frozenset(
     {"stream_incomplete", "stream_idle_timeout", "upstream_request_timeout", "upstream_unavailable"}
 )
+_USAGE_LIMIT_MESSAGE_MARKERS = (
+    "usage limit has been reached",
+    "usage limit reached",
+    "hit your usage limit",
+    "reached your usage limit",
+    "exceeded your usage limit",
+)
+_MESSAGE_WORD_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
 
 
 def openai_error(
@@ -157,6 +165,14 @@ def previous_response_stream_incomplete_error() -> OpenAIErrorEnvelope:
         PREVIOUS_RESPONSE_STREAM_INCOMPLETE_MESSAGE,
         error_type="server_error",
     )
+
+
+def is_upstream_usage_limit_message(message: str | None) -> bool:
+    """True when upstream says this account's subscription window is spent."""
+    if message is None:
+        return False
+    normalized = _MESSAGE_WORD_SEPARATOR_RE.sub(" ", message.lower()).strip()
+    return any(marker in normalized for marker in _USAGE_LIMIT_MESSAGE_MARKERS)
 
 
 def is_previous_response_not_found_message(message: str | None) -> bool:

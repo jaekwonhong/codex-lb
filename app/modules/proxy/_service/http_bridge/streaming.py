@@ -2609,29 +2609,14 @@ class _HTTPBridgeStreamingMixin:
                 if advice is None:
                     break
                 horizon = advice.hint.retry_after(clock.time())
-                # A genuinely short hold keeps the warm owner. Long/unknown
-                # holds and quota/headroom pressure prefer zero-delay transfer.
+                # A genuinely short cooldown keeps the warm owner. Advisory
+                # quota/headroom state is not relocation evidence: let normal
+                # admission revalidate the owner so any cross-account move is
+                # decided only by the shared relocation verdict.
                 short_hold = (
                     advice.hint.reason == "cooldown" and horizon is not None and horizon <= OWNER_WAIT_BUDGET_SECONDS
                 )
-                portable = (
-                    payload.previous_response_id is None
-                    and rewritten_file_account_id is None
-                    and durable_full_resend_allows_account_neutral_replay()
-                )
-                if not short_hold and portable and advice.alternate_id is not None:
-                    owner_recovery_budget.start(advice_started)
-                    switch_to_account_neutral_replay(
-                        event="owner_pressure_pre_dispatch_transfer",
-                        detail=f"reason={advice.hint.reason}, outcome=verified_full_resend",
-                    )
-                    recovery_alternate_id = advice.alternate_id
-                    request_state.preferred_account_id = recovery_alternate_id
-                    preferred_account_has_continuity_provenance = False
-                    break
-                if advice.hint.reason == "headroom":
-                    # Headroom is a preference, not a fabricated 429. Without
-                    # proof or a safe alternate retain the valid owner.
+                if advice.hint.reason in {"quota_exhausted", "headroom"}:
                     break
                 owner_recovery_budget.start(advice_started)
                 wait = (

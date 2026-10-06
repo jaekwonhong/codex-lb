@@ -3461,6 +3461,8 @@ def _http_bridge_previous_response_owner_unavailable_error(
     if isinstance(selection, bool) and definitive_usage_exhaustion is None:
         definitive_usage_exhaustion = selection
         selection = None
+    if definitive_usage_exhaustion is None:
+        definitive_usage_exhaustion = bool(getattr(selection, "hard_affinity_owner_usage_exhausted", False))
     message = "Previous response owner account is unavailable; retry later."
     reason = getattr(selection, "error_code", None)
     if isinstance(reason, str) and reason in {
@@ -3479,7 +3481,7 @@ def _http_bridge_previous_response_owner_unavailable_error(
     resets_at = getattr(selection, "resets_at", None)
     retry_after = None
     if isinstance(resets_at, int | float) and not isinstance(resets_at, bool) and math.isfinite(resets_at):
-        retry_after = max(0, math.ceil(resets_at - (time.time() if now is None else now)))
+        retry_after = max(0, math.ceil(resets_at - (utcnow().timestamp() if now is None else now)))
         payload["error"]["resets_at"] = resets_at
         payload["error"]["resets_in_seconds"] = retry_after
     exc = ProxyResponseError(502, payload, retry_after_seconds=retry_after)

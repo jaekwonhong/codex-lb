@@ -567,6 +567,24 @@ async def test_rate_limit_still_marks_rate_limit(code: str) -> None:
     load_balancer.record_error.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    ("error_code", "message", "expected"),
+    [
+        ("upstream_error", "The usage limit has been reached", True),
+        ("upstream_error", "You’ve hit your\nusage limit.", True),
+        ("usage_limit_reached", None, True),
+        ("rate_limit_exceeded", "The usage limit has been reached", False),
+        ("upstream_error", "Selected model is at capacity", False),
+    ],
+)
+def test_usage_limit_rejection_reads_message_only_when_code_is_unclassified(
+    error_code: str,
+    message: str | None,
+    expected: bool,
+) -> None:
+    assert proxy_helpers_module.is_upstream_usage_limit_rejection(error_code=error_code, message=message) is expected
+
+
 def _stream_error_load_balancer() -> SimpleNamespace:
     return SimpleNamespace(
         record_error=AsyncMock(),
