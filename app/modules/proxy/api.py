@@ -255,6 +255,9 @@ from app.modules.model_sources.selection import (
 from app.modules.proxy import affinity as proxy_affinity_module
 from app.modules.proxy import images_service as images_service_module
 from app.modules.proxy import service as proxy_service_module
+from app.modules.proxy._service.http_bridge.helpers import (
+    _http_bridge_owner_unavailable_has_definitive_usage_exhaustion,
+)
 from app.modules.proxy._service.observability import record_http_bridge_routing
 from app.modules.proxy._service.support import (
     _bind_propagated_capacity_startup_ready,
@@ -279,6 +282,7 @@ from app.modules.proxy.capability_routing import required_capability_metadata_va
 from app.modules.proxy.downstream_delivery import DeliveryTracedStreamingResponse
 from app.modules.proxy.helpers import _openai_error_param, _parse_openai_error, _rate_limit_details
 from app.modules.proxy.http_bridge_forwarding import (
+    HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_HEADER,
     HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER,
     parse_forwarded_request,
 )
@@ -6741,9 +6745,12 @@ def _owner_forward_local_refusal_headers(
 
     if not forwarded_request or not isinstance(error, ProxyResponseError):
         return {}
-    if not error.local_pre_dispatch_refusal:
-        return {}
-    return {HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER: "1"}
+    headers: dict[str, str] = {}
+    if error.local_pre_dispatch_refusal:
+        headers[HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER] = "1"
+    if _http_bridge_owner_unavailable_has_definitive_usage_exhaustion(error):
+        headers[HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_HEADER] = "1"
+    return headers
 
 
 async def _http_bridge_active_for_request(

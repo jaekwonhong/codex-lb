@@ -14,12 +14,16 @@ from app.core.clients.proxy import ProxyResponseError
 from app.core.config.settings import get_settings
 from app.core.openai.requests import ResponsesRequest
 from app.modules.api_keys.service import ApiKeyUsageReservationData
+from app.modules.proxy._service.http_bridge.helpers import (
+    _http_bridge_owner_unavailable_has_definitive_usage_exhaustion,
+)
 from app.modules.proxy.http_bridge_forwarding import (
     HTTP_BRIDGE_AFFINITY_KEY_HEADER,
     HTTP_BRIDGE_AFFINITY_KIND_HEADER,
     HTTP_BRIDGE_CLIENT_IP_HEADER,
     HTTP_BRIDGE_CLIENT_IP_SIGNATURE_HEADER,
     HTTP_BRIDGE_CODEX_AFFINITY_HEADER,
+    HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_HEADER,
     HTTP_BRIDGE_FILE_OWNER_HEADER,
     HTTP_BRIDGE_FORWARDED_HEADER,
     HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER,
@@ -1411,10 +1415,19 @@ async def test_owner_forward_non_200_body_read_failure_keeps_rejected(
 
 
 @pytest.mark.parametrize(
-    ("owner_headers", "expected_local_refusal"),
+    ("owner_headers", "expected_local_refusal", "expected_definitive_quota"),
     [
-        ({HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER: "1"}, True),
-        ({}, False),
+        ({HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER: "1"}, True, False),
+        ({HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_HEADER: "1"}, False, True),
+        (
+            {
+                HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER: "1",
+                HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_HEADER: "1",
+            },
+            True,
+            True,
+        ),
+        ({}, False, False),
     ],
 )
 @pytest.mark.asyncio
@@ -1422,6 +1435,7 @@ async def test_owner_forward_non_200_carries_local_refusal_provenance(
     monkeypatch: pytest.MonkeyPatch,
     owner_headers: dict[str, str],
     expected_local_refusal: bool,
+    expected_definitive_quota: bool,
 ) -> None:
     """The rebuilt error must keep what only the owner could know.
 
@@ -1487,6 +1501,7 @@ async def test_owner_forward_non_200_carries_local_refusal_provenance(
     assert exc_info.value.status_code == 502
     assert exc_info.value.payload["error"]["code"] == "stream_incomplete"
     assert exc_info.value.local_pre_dispatch_refusal is expected_local_refusal
+    assert _http_bridge_owner_unavailable_has_definitive_usage_exhaustion(exc_info.value) is expected_definitive_quota
 
 
 @pytest.mark.asyncio

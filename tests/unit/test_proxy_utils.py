@@ -46374,6 +46374,23 @@ def test_owner_forward_failure_allows_local_recovery_only_for_safe_outcomes() ->
         _OwnerForwardRequestError(base, outcome=_OwnerForwardOutcome.RECEIVER_ACKNOWLEDGED)
     )
 
+    owner_quota = http_bridge_helpers_module._http_bridge_previous_response_owner_unavailable_error(True)
+    wrapped_owner_quota = _OwnerForwardRequestError(owner_quota, outcome=_OwnerForwardOutcome.RECEIVER_REJECTED)
+    assert http_bridge_helpers_module._http_bridge_owner_unavailable_has_definitive_usage_exhaustion(
+        wrapped_owner_quota
+    )
+
+
+def test_owner_forward_headers_preserve_definitive_owner_quota_only_for_internal_forwarding() -> None:
+    from app.modules.proxy.http_bridge_forwarding import HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_HEADER
+
+    error = http_bridge_helpers_module._http_bridge_previous_response_owner_unavailable_error(True)
+
+    assert proxy_api._owner_forward_local_refusal_headers(error, forwarded_request=True) == {
+        HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_HEADER: "1"
+    }
+    assert proxy_api._owner_forward_local_refusal_headers(error, forwarded_request=False) == {}
+
 
 @pytest.mark.asyncio
 async def test_forwarded_receiver_cleanup_handoff_timeout_returns_503() -> None:
