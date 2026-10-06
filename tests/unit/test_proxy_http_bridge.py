@@ -30417,12 +30417,14 @@ async def test_stream_via_http_bridge_recovers_dead_owner_with_replayable_full_r
 @pytest.mark.asyncio
 @pytest.mark.parametrize("sdk_contract", [False, True])
 @pytest.mark.parametrize("alternate_id", [None, "acc-alternate"])
-async def test_fresh_reattach_delta_quota_advice_defers_to_authoritative_admission(
+@pytest.mark.parametrize("advice_reason", ["quota_exhausted", "cooldown"])
+async def test_fresh_reattach_delta_owner_pressure_advice_defers_to_authoritative_admission(
     monkeypatch: pytest.MonkeyPatch,
     sdk_contract: bool,
     alternate_id: str | None,
+    advice_reason: Any,
 ) -> None:
-    """Read-only quota advice never authorizes an account switch by itself.
+    """Read-only owner-pressure advice never decides relocation by itself.
 
     The normal admission path remains authoritative. If it admits the owner,
     the request stays on that owner even when the advisory snapshot also names
@@ -30477,11 +30479,11 @@ async def test_fresh_reattach_delta_quota_advice_defers_to_authoritative_admissi
     ):
         yield 'data: {"type":"response.completed","response":{"id":"resp-owner-still-admitted"}}\n\n'
 
-    async def quota_owner_advice(*args: Any, **kwargs: Any) -> OwnerRecoveryAdvice:
+    async def owner_pressure_advice(*args: Any, **kwargs: Any) -> OwnerRecoveryAdvice:
         del args, kwargs
         return OwnerRecoveryAdvice(
             owner_id="acc-owner",
-            hint=OwnerRecoveryHint("quota_exhausted", time.time() + 3600),
+            hint=OwnerRecoveryHint(advice_reason, time.time() + 3600),
             alternate_id=alternate_id,
         )
 
@@ -30503,7 +30505,7 @@ async def test_fresh_reattach_delta_quota_advice_defers_to_authoritative_admissi
         ),
     )
     monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
-    monkeypatch.setattr(http_bridge_streaming_module, "assess_owner_recovery", quota_owner_advice)
+    monkeypatch.setattr(http_bridge_streaming_module, "assess_owner_recovery", owner_pressure_advice)
     monkeypatch.setattr(service._durable_bridge, "lookup_request_targets", AsyncMock(return_value=durable_lookup))
     monkeypatch.setattr(service, "_http_bridge_has_live_local_session", AsyncMock(return_value=False))
     monkeypatch.setattr(service, "_http_bridge_can_forward_to_active_owner", AsyncMock(return_value=False))

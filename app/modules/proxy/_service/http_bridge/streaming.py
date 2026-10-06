@@ -2640,6 +2640,14 @@ class _HTTPBridgeStreamingMixin:
                     ):
                         yield line
                     continue
+                if advice.hint.reason == "cooldown":
+                    # A long/stale advisory cooldown is not definitive quota
+                    # evidence and cannot decide that a durable continuation
+                    # needs local-history recovery. Let authoritative admission
+                    # re-read the required owner. A real exhausted-owner result
+                    # can then enter the shared relocation verdict, while an
+                    # ordinary cooldown still fails closed below.
+                    break
                 if native_explicit_anchor_requires_local_recovery():
                     # Current Codex Desktop sends an explicit anchor on normal
                     # continuation turns.  Once the known owner cannot recover
