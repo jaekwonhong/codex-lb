@@ -4,9 +4,33 @@ from datetime import datetime
 from typing import Literal, TypeAlias
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field
 
 from app.modules.shared.schemas import DashboardModel
+from app.modules.workspace_member_controller.domain import (
+    Catalog as Catalog,
+)
+from app.modules.workspace_member_controller.domain import (
+    CurrentMember as CurrentMember,
+)
+from app.modules.workspace_member_controller.domain import (
+    Identity as Identity,
+)
+from app.modules.workspace_member_controller.domain import (
+    Member as Member,
+)
+from app.modules.workspace_member_controller.domain import (
+    MembershipObservation as MembershipObservation,
+)
+from app.modules.workspace_member_controller.domain import (
+    MembershipObservationMember as MembershipObservationMember,
+)
+from app.modules.workspace_member_controller.domain import (
+    OwnerAuthTarget as OwnerAuthTarget,
+)
+from app.modules.workspace_member_controller.domain import (
+    Workspace as Workspace,
+)
 
 CONTROL_PROTOCOL = "managed_member_switch_v1"
 OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY = "ego_lite_owner_membership_observation_v1"
@@ -41,112 +65,6 @@ class CompanionAdmission(DashboardModel):
     code: str
     operation_id: str | None = None
     client_flow_id: str | None = None
-
-
-class Member(DashboardModel):
-    preset_id: str = Field(min_length=1)
-    display_name: str = Field(min_length=1)
-    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-    user_id: str = Field(pattern=r"^user-[A-Za-z0-9]+$")
-
-
-class CurrentMember(DashboardModel):
-    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-    user_id: str = Field(pattern=r"^user-[A-Za-z0-9]+$")
-    preset_id: str | None = None
-    auth_state: Literal[
-        "active",
-        "handoff_quarantined",
-        "inactive",
-        "absent",
-        "ambiguous",
-        "unmanaged",
-        "unknown",
-    ] = "unknown"
-    auth_account_id: str | None = None
-
-
-class OwnerAuthTarget(DashboardModel):
-    preset_id: str = Field(min_length=1)
-    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
-    user_id: str = Field(pattern=r"^user-[A-Za-z0-9]+$")
-    auth_state: Literal[
-        "active",
-        "handoff_quarantined",
-        "inactive",
-        "absent",
-        "ambiguous",
-        "unmanaged",
-        "unknown",
-    ] = "unknown"
-    auth_account_id: str | None = None
-
-
-class Workspace(DashboardModel):
-    id: str = Field(min_length=1)
-    workspace_account_id: str = Field(min_length=1)
-    workspace_name: str = Field(min_length=1)
-    owner_email: str = Field(min_length=3)
-    owner_auth: OwnerAuthTarget | None = None
-    members: list[Member]
-    current_members: list[CurrentMember] = Field(default_factory=list)
-    membership_code: str = "not_checked"
-    membership_observed_at: datetime | None = None
-
-    @model_validator(mode="after")
-    def validate_owner_auth_boundary(self) -> Workspace:
-        owner = self.owner_auth
-        if owner is None:
-            return self
-        if owner.preset_id != f"owner:{self.id}" or owner.email.casefold() != self.owner_email.casefold():
-            raise ValueError("owner_auth_identity_mismatch")
-        if any(
-            member.email.casefold() == owner.email.casefold() or member.user_id == owner.user_id
-            for member in self.members
-        ):
-            raise ValueError("owner_auth_must_not_be_member_candidate")
-        return self
-
-
-class Catalog(DashboardModel):
-    enabled: bool
-    schema_version: Literal[1]
-    catalog_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
-    capabilities: list[str] = Field(default_factory=list)
-    workspaces: list[Workspace]
-
-
-class MembershipObservationMember(DashboardModel):
-    email: str
-    user_id: str
-    preset_id: str | None = None
-    classification: str
-
-
-class MembershipObservation(DashboardModel):
-    schema_version: Literal[1]
-    available: bool
-    code: str
-    workspace_id: str
-    workspace_account_id: str
-    catalog_fingerprint: str
-    observed_at: datetime
-    complete: bool
-    owner_verified: bool
-    identity_ambiguous: bool
-    partial_identity: bool
-    duplicate_identity: bool
-    unknown_member: bool
-    members: list[MembershipObservationMember]
-
-
-class Identity(DashboardModel):
-    workspace_id: str
-    workspace_account_id: str
-    preset_id: str
-    target_email: str
-    target_user_id: str
-    catalog_fingerprint: str
 
 
 class PreviewRequest(DashboardModel):

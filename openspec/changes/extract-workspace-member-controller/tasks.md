@@ -16,8 +16,8 @@
 
 ## 3. Incremental extraction
 
-- [ ] 3.1 Extract workspace catalog/read models from Codex-LB proxy/account types.
-- [ ] 3.2 Extract membership observation behind an independent port.
+- [x] 3.1 Extract workspace catalog/read models from Codex-LB proxy/account types.
+- [x] 3.2 Extract membership observation behind an independent port.
 - [ ] 3.3 Extract the minimum workspace-intent and membership-operation persistence contract.
 - [ ] 3.4 Stand up a read-only Controller API for catalog/status/observation.
 - [ ] 3.5 Implement the OpenCodex account-state adapter.

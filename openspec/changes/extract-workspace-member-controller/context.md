@@ -44,6 +44,10 @@ The detailed single-writer boundary is frozen in `ownership-contract.md`. In sho
 
 The cross-service identity and freshness boundary is frozen in `account-identity-state-contract.md`. The durable foreign identity is the exact OpenCodex `account_id`; selectors, aliases, log labels and emails are never sufficient join keys. Credential/main identity generations and an opaque state revision fence decisions and commands but do not form durable workspace-member identity. Required account evidence is exact-account, freshness-bounded and fail-closed.
 
+## Extracted workspace read boundary
+
+Slice 4 introduces `app.modules.workspace_member_controller` as the dependency-light Controller domain/read boundary. Workspace catalog, member/owner read models, membership observations, and the read-only catalog/observation Protocols live there without importing Codex-LB dashboard, proxy, account, database-model, or dependency-container modules. The legacy `member_switch.schemas` module re-exports those models so existing routes and tests retain the same wire contract while runtime callers migrate toward the standalone boundary.
+
 ## Extraction strategy
 
 The current member-management implementation is not treated as a cleanly separable package. It still imports Codex-LB database models, account repositories, OAuth/auth-handoff services, proxy account cache, usage observations, reset-credit facilities, and scheduler/runtime support. Those dependencies will be inventoried before an extraction boundary is finalized.

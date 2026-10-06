@@ -152,3 +152,21 @@ Any Controller-initiated OpenCodex account-management command SHALL identify the
 - **WHEN** delivery may have crossed the effect boundary but the reply is unavailable
 - **THEN** the Controller does not issue a blind replacement command
 - **AND** it reads the exact OpenCodex account state and reconciles the command outcome before any retry
+
+### Requirement: Workspace catalog and membership observation use a data-plane-independent read boundary
+
+Workspace catalog, workspace/member/owner read models, and membership observation models SHALL be owned by the Workspace Member Controller domain boundary and SHALL NOT depend on Codex-LB request-routing, account-repository, dashboard-model, database-model, or dependency-container types. The read boundary SHALL expose separate catalog and membership-observation ports so read-only Controller workflows can be constructed without importing membership mutation effects. During migration, legacy Codex-LB surfaces MAY re-export the extracted models only when the serialized wire contract remains unchanged.
+
+#### Scenario: Legacy member-switch route serializes an extracted catalog model
+
+- **GIVEN** an existing Codex-LB route still imports `Catalog` through the legacy member-switch schema module
+- **WHEN** it serializes a workspace catalog returned by the extracted Controller domain model
+- **THEN** the existing camelCase field aliases and UTC datetime wire representation remain unchanged
+- **AND** the underlying model is owned by the standalone Controller domain rather than the dashboard schema layer
+
+#### Scenario: Read-only observation workflow is constructed without mutation ports
+
+- **GIVEN** a Controller workflow only needs the workspace catalog and current membership observation
+- **WHEN** its dependencies are wired
+- **THEN** it can depend only on the independent catalog and membership-observation ports
+- **AND** it does not require member mutation, proxy routing, account repository, or dashboard dependencies
