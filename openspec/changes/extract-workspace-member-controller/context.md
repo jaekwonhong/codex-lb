@@ -48,6 +48,12 @@ The cross-service identity and freshness boundary is frozen in `account-identity
 
 Slice 4 introduces `app.modules.workspace_member_controller` as the dependency-light Controller domain/read boundary. Workspace catalog, member/owner read models, membership observations, and the read-only catalog/observation Protocols live there without importing Codex-LB dashboard, proxy, account, database-model, or dependency-container modules. The legacy `member_switch.schemas` module re-exports those models so existing routes and tests retain the same wire contract while runtime callers migrate toward the standalone boundary.
 
+## Minimal persistence and read-only API boundary
+
+Slice 5 adds a dependency-light persistence contract for Controller-owned workspace intent and membership-operation journal state plus a standalone read service/API skeleton. The Controller core does not import ORM models. Existing durable `MemberRotationWorkspaceControl` and `MemberSwitchControlRecord` rows are reused only through `legacy_persistence.py` compatibility adapters so migration does not create duplicate state authorities. The read API exposes only `GET /v1/catalog`, `GET /v1/status`, and `GET /v1/workspaces/{workspace_id}/observation`; it does not expose mutation methods, raw journal payloads, command hashes, account credentials, or Codex-LB dashboard authentication. Service authentication remains a packaging concern for slice 9.
+
+Membership observation remains a live read-port concern in this slice rather than a newly persisted mirror. Durable observation/evidence is added only when a later mutation workflow explicitly needs immutable operation evidence.
+
 ## Extraction strategy
 
 The current member-management implementation is not treated as a cleanly separable package. It still imports Codex-LB database models, account repositories, OAuth/auth-handoff services, proxy account cache, usage observations, reset-credit facilities, and scheduler/runtime support. Those dependencies will be inventoried before an extraction boundary is finalized.

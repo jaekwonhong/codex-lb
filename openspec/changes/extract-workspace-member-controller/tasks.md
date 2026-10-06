@@ -18,8 +18,8 @@
 
 - [x] 3.1 Extract workspace catalog/read models from Codex-LB proxy/account types.
 - [x] 3.2 Extract membership observation behind an independent port.
-- [ ] 3.3 Extract the minimum workspace-intent and membership-operation persistence contract.
-- [ ] 3.4 Stand up a read-only Controller API for catalog/status/observation.
+- [x] 3.3 Extract the minimum workspace-intent and membership-operation persistence contract.
+- [x] 3.4 Stand up a read-only Controller API for catalog/status/observation.
 - [ ] 3.5 Implement the OpenCodex account-state adapter.
 - [ ] 3.6 Extract add/remove/switch mutation commands and preserve durable no-replay recovery.
 - [ ] 3.7 Replace Codex-LB usage/quota inputs used by rotation decisions with OpenCodex-owned account state where the contract is sufficient.

@@ -170,3 +170,39 @@ Workspace catalog, workspace/member/owner read models, and membership observatio
 - **WHEN** its dependencies are wired
 - **THEN** it can depend only on the independent catalog and membership-observation ports
 - **AND** it does not require member mutation, proxy routing, account repository, or dashboard dependencies
+
+### Requirement: Controller persistence is accessed through data-plane-independent contracts
+
+The Workspace Member Controller core SHALL access workspace intent and membership-operation journal state through Controller-owned persistence contracts rather than importing Codex-LB ORM/account/proxy types. During migration, compatibility adapters MAY reuse existing durable workspace-intent and member-switch journal tables, but the Controller core SHALL NOT create or maintain a duplicate mutable authority for the same intent or operation. The read contract SHALL expose only the fields required for Controller status/recovery and SHALL NOT expose raw stored workflow payloads, command fingerprints/hashes, inference-account credentials, or Codex-LB routing cache state.
+
+#### Scenario: Read service reports an active legacy journal operation
+
+- **GIVEN** an active membership operation is stored in the existing Codex-LB member-switch journal
+- **WHEN** the Controller read service loads status through the compatibility persistence adapter
+- **THEN** it can report operation id, kind, revision, pending action, and command id
+- **AND** raw journal payload and command hash are not exposed through the Controller persistence/read model
+- **AND** no Codex-LB `Account` lookup is required for that read
+
+#### Scenario: Workspace intent has not yet been written
+
+- **GIVEN** a managed workspace has no durable automatic-rotation intent row
+- **WHEN** the read service asks the workspace-intent contract for current state
+- **THEN** the compatibility adapter returns the existing disabled/version-zero default semantics
+- **AND** it does not create a row on the read path
+
+### Requirement: Initial Controller HTTP surface is read-only
+
+Before mutation extraction and standalone service authentication are qualified, the Controller SHALL expose only read operations for catalog, Controller status, and exact-workspace membership observation. The read router SHALL contain no POST, PUT, PATCH, or DELETE operation. Observation responses SHALL be accepted only when workspace id, workspace account id, and catalog fingerprint match the current catalog identity; mismatches SHALL fail closed rather than being returned as authoritative membership state. Authentication and process-level exposure SHALL be added by the standalone packaging slice before production network exposure.
+
+#### Scenario: Observation returns a different workspace account
+
+- **GIVEN** the catalog binds `workspace-1` to one `workspace_account_id`
+- **WHEN** the observation adapter returns the same workspace id with a different workspace account id
+- **THEN** the Controller read API rejects the observation as an identity mismatch
+- **AND** the mismatched observation is not returned as current membership state
+
+#### Scenario: Read-only router is inspected before standalone packaging
+
+- **WHEN** the initial Controller router is constructed
+- **THEN** its application methods are limited to GET/HEAD semantics
+- **AND** no membership intent update, member mutation, or account-management command route exists
