@@ -54,6 +54,14 @@ Slice 5 adds a dependency-light persistence contract for Controller-owned worksp
 
 Membership observation remains a live read-port concern in this slice rather than a newly persisted mirror. Durable observation/evidence is added only when a later mutation workflow explicitly needs immutable operation evidence.
 
+## OpenCodex exact-account state adapter
+
+Slice 6 adds a narrow OpenCodex management-plane projection at `GET /api/codex-auth/controller-account-state?accountId=...` and a Controller HTTP adapter for it. The qualified OpenCodex source checkpoint is `af4f476` (`feature/controller-account-state-projection-20261006`). The OpenCodex route requires the raw management `admin-token` principal, accepts exactly one account id, returns only normalized non-secret account state, and reads current OpenCodex config/credential-generation/runtime-health/quota caches without probing upstream or inspecting other accounts. A cold/unobserved quota therefore remains `unknown` and is rejected later by Controller freshness/admission policy rather than refreshed implicitly.
+
+The projection includes exact account id, pool credential generation or main identity generation, observation time, normalized health/selection/quota state, optional quota windows/reset-credit evidence, current cooldown evidence, and a deterministic SHA-256 `stateRevision` over the stable normalized state. `observedAt` is intentionally excluded from that digest so identical state has the same revision across repeated reads. No access token, refresh token, cookie, upstream bearer, ChatGPT physical account id, or raw upstream response is returned.
+
+The Controller-side adapter uses `Authorization: Bearer <OpenCodex admin token>`, verifies the returned account id exactly, validates the projection schema/generation namespace, maps 404/auth/unavailable failures into explicit fail-closed errors, and exposes freshness helpers without independently recalculating OpenCodex selection eligibility. Rotation/mutation code is not wired to this adapter in this slice.
+
 ## Extraction strategy
 
 The current member-management implementation is not treated as a cleanly separable package. It still imports Codex-LB database models, account repositories, OAuth/auth-handoff services, proxy account cache, usage observations, reset-credit facilities, and scheduler/runtime support. Those dependencies will be inventoried before an extraction boundary is finalized.

@@ -206,3 +206,46 @@ Before mutation extraction and standalone service authentication are qualified, 
 - **WHEN** the initial Controller router is constructed
 - **THEN** its application methods are limited to GET/HEAD semantics
 - **AND** no membership intent update, member mutation, or account-management command route exists
+
+### Requirement: Controller reads exact non-secret account state from OpenCodex without causing quota probes
+
+OpenCodex SHALL expose a management-authenticated exact-account read projection for the Workspace Member Controller. The read SHALL require the raw management admin principal, SHALL accept exactly one requested account id, SHALL NOT silently substitute another pool account, and SHALL NOT trigger an upstream quota/credential probe merely to satisfy the Controller read. It SHALL project only OpenCodex-owned cached/runtime state; unobserved quota SHALL remain `unknown`. The projection SHALL contain the applicable pool credential generation or native-main identity generation, normalized health/selection/quota state, observation timestamps, an opaque deterministic state revision, and only non-secret decision evidence. It SHALL NOT contain access tokens, refresh tokens, cookies, inference API keys, raw upstream authorization material, or raw upstream quota responses.
+
+#### Scenario: Controller reads a cold exact account
+
+- **GIVEN** an exact OpenCodex pool account exists with a live credential but no currently observed quota snapshot
+- **WHEN** the Controller state endpoint is read for that account id
+- **THEN** the response identifies that exact account and current credential generation
+- **AND** quota state is returned as `unknown` rather than probing upstream
+- **AND** no other account is refreshed or selected as a substitute
+
+#### Scenario: Repeated read sees unchanged account state
+
+- **GIVEN** credential generation, selection state, health, quota, cooldown and reset-credit evidence have not changed
+- **WHEN** the same exact account is read twice at different observation times
+- **THEN** the `observedAt` values may differ
+- **AND** the deterministic `stateRevision` remains identical
+
+#### Scenario: Non-admin management principal requests Controller state
+
+- **WHEN** a GUI session, missing principal, or data-plane caller attempts to use the Controller account-state management route
+- **THEN** OpenCodex refuses the route
+- **AND** no account-state projection is returned
+
+### Requirement: Controller OpenCodex adapter validates exact identity and freshness without becoming routing authority
+
+The Controller's OpenCodex account-state adapter SHALL send the exact durable `opencodex_account_id` to the OpenCodex projection and SHALL reject a successful response whose returned account id differs. It SHALL validate the generation namespace and state-revision shape before returning a projection to Controller logic. It SHALL expose freshness checks over OpenCodex observation timestamps but SHALL NOT independently infer account selection eligibility from raw quota percentages. Missing accounts, authorization failures, malformed projections and transport failures SHALL be explicit fail-closed errors and SHALL NOT cause fallback to another account.
+
+#### Scenario: OpenCodex response names another account
+
+- **GIVEN** the Controller requested account A
+- **WHEN** the management response is otherwise valid but names account B
+- **THEN** the adapter rejects the projection as an identity mismatch
+- **AND** it does not retry the read against account B
+
+#### Scenario: Projection is stale for membership policy
+
+- **GIVEN** the adapter returned a schema-valid exact-account projection
+- **WHEN** its `observedAt` or required `quotaObservedAt` exceeds the Controller policy freshness bound
+- **THEN** the projection helper reports it stale
+- **AND** downstream membership policy must obtain a new OpenCodex projection before using that evidence
