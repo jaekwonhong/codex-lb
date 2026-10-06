@@ -399,6 +399,30 @@ def _read_admin_token(path: Path) -> str:
     return token
 
 
+def _read_database_url(path: Path) -> str:
+    if not path.is_absolute():
+        raise SystemExit("WMC_CANARY_DATABASE_URL_FILE must be absolute")
+    mode = stat.S_IMODE(path.stat().st_mode)
+    if mode & 0o077:
+        raise SystemExit("canary database URL file permissions are too open")
+    value = path.read_text(encoding="utf-8").strip()
+    if not value:
+        raise SystemExit("canary database URL is empty")
+    return value
+
+
+def _database_url_from_environment() -> str:
+    inline = os.environ.get("WMC_CANARY_DATABASE_URL", "").strip()
+    file_value = os.environ.get("WMC_CANARY_DATABASE_URL_FILE", "").strip()
+    if inline and file_value:
+        raise SystemExit("set only one of WMC_CANARY_DATABASE_URL or WMC_CANARY_DATABASE_URL_FILE")
+    if file_value:
+        return _read_database_url(Path(file_value))
+    if inline:
+        return inline
+    raise SystemExit("missing canary settings: WMC_CANARY_DATABASE_URL or WMC_CANARY_DATABASE_URL_FILE")
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Preflight or run one forward/rollback membership canary phase.")
     parser.add_argument("--phase", choices=("preflight", "forward", "rollback"), default="preflight")
@@ -416,8 +440,8 @@ def main() -> None:
         not args.execute or os.environ.get("WMC_CANARY_MUTATION_ACK") != _ACK
     ):
         raise SystemExit("canary mutation requires --execute and exact WMC_CANARY_MUTATION_ACK")
+    database_url = _database_url_from_environment()
     required = {
-        "WMC_CANARY_DATABASE_URL": os.environ.get("WMC_CANARY_DATABASE_URL", "").strip(),
         "WMC_CANARY_COMPANION_URL": os.environ.get("WMC_CANARY_COMPANION_URL", "").strip(),
         "WMC_CANARY_BINDINGS_PATH": os.environ.get("WMC_CANARY_BINDINGS_PATH", "").strip(),
         "WMC_CANARY_OPENCODEX_MANAGEMENT_BASE_URL": os.environ.get(
@@ -434,7 +458,7 @@ def main() -> None:
     report = asyncio.run(
         run_phase(
             phase=args.phase,
-            database_url=required["WMC_CANARY_DATABASE_URL"],
+            database_url=database_url,
             companion_url=required["WMC_CANARY_COMPANION_URL"],
             bindings_path=Path(required["WMC_CANARY_BINDINGS_PATH"]),
             opencodex_base_url=required["WMC_CANARY_OPENCODEX_MANAGEMENT_BASE_URL"],

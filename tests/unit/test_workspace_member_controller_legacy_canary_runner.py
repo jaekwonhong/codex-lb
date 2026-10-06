@@ -14,6 +14,7 @@ from app.modules.workspace_member_controller.binding_repository import (
 from app.modules.workspace_member_controller.legacy_canary_runner import (
     CanaryIdentity,
     CanaryState,
+    _database_url_from_environment,
     _read_state,
     _require_exact_account,
     _write_state,
@@ -63,6 +64,38 @@ def test_canary_state_file_rejects_broad_permissions(tmp_path: Path):
 
     with pytest.raises(RuntimeError, match="canary_state_permissions_too_open"):
         _read_state(path)
+
+
+def test_canary_database_url_can_be_read_from_owner_only_file(tmp_path: Path, monkeypatch):
+    path = tmp_path / "database-url"
+    path.write_text("postgresql+asyncpg://example\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+    monkeypatch.delenv("WMC_CANARY_DATABASE_URL", raising=False)
+    monkeypatch.setenv("WMC_CANARY_DATABASE_URL_FILE", str(path))
+
+    assert _database_url_from_environment() == "postgresql+asyncpg://example"
+
+
+def test_canary_database_url_file_rejects_broad_permissions(tmp_path: Path, monkeypatch):
+    path = tmp_path / "database-url"
+    path.write_text("postgresql+asyncpg://example\n", encoding="utf-8")
+    os.chmod(path, 0o644)
+    monkeypatch.delenv("WMC_CANARY_DATABASE_URL", raising=False)
+    monkeypatch.setenv("WMC_CANARY_DATABASE_URL_FILE", str(path))
+
+    with pytest.raises(SystemExit, match="database URL file permissions are too open"):
+        _database_url_from_environment()
+
+
+def test_canary_database_url_rejects_ambiguous_inline_and_file(tmp_path: Path, monkeypatch):
+    path = tmp_path / "database-url"
+    path.write_text("postgresql+asyncpg://example\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+    monkeypatch.setenv("WMC_CANARY_DATABASE_URL", "postgresql+asyncpg://inline")
+    monkeypatch.setenv("WMC_CANARY_DATABASE_URL_FILE", str(path))
+
+    with pytest.raises(SystemExit, match="set only one"):
+        _database_url_from_environment()
 
 
 async def test_exact_opencodex_binding_is_required_before_canary(tmp_path: Path):
