@@ -1058,9 +1058,7 @@ def _websocket_precreated_retry_error_code(
         if _websocket_response_id(None, payload) is not None:
             return None
         return "server_is_overloaded"
-    if error_code not in _facade()._WEBSOCKET_TRANSPARENT_REPLAY_ERROR_CODES:
-        return None
-    return error_code
+    return _websocket_transparent_replay_error_code(error_code, error_message)
 
 
 def _websocket_precreated_replay_fallback_error(

@@ -83,6 +83,8 @@ _HTTP_BRIDGE_SIGNATURE_VERSION_V2 = "2"
 # transport-failure lifecycle aborts the committed body, moving issue #2364's
 # empty 200 from the owner onto the origin.
 HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER = "x-codex-bridge-local-pre-dispatch-refusal"
+HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_HEADER = "x-codex-bridge-definitive-owner-quota"
+_HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_ATTR = "_codex_lb_http_bridge_definitive_owner_quota"
 
 
 @dataclass(frozen=True, slots=True)
@@ -219,7 +221,7 @@ class HTTPBridgeOwnerClient:
                             # non-200 response, so the origin may safely release.
                             on_response_rejected()
                         payload_text = await response.text()
-                        raise ProxyResponseError(
+                        forwarded_error = ProxyResponseError(
                             response.status,
                             _owner_forward_error_payload(status_code=response.status, payload_text=payload_text),
                             failure_phase="owner_forward_status",
@@ -235,6 +237,9 @@ class HTTPBridgeOwnerClient:
                                 response.headers.get(HTTP_BRIDGE_LOCAL_PRE_DISPATCH_REFUSAL_HEADER)
                             ),
                         )
+                        if _bool_header(response.headers.get(HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_HEADER)):
+                            setattr(forwarded_error, _HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_ATTR, True)
+                        raise forwarded_error
                     if on_response_ready is not None:
                         on_response_ready()
                     yielded_event = False

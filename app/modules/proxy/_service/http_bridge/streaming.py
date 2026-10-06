@@ -3100,8 +3100,16 @@ class _HTTPBridgeStreamingMixin:
                         default_message="HTTP bridge owner request failed",
                     )
                     return
-                owner_forward_fresh_replay = owner_unavailable_allows_account_neutral_replay(exc)
-                if owner_forward_fresh_replay:
+                definitive_owner_quota_replay = await try_definitive_owner_quota_relocation(exc)
+                if definitive_owner_quota_replay:
+                    owner_forward_fresh_replay = True
+                elif _http_bridge_is_previous_response_owner_unavailable(
+                    exc
+                ) and _http_bridge_owner_unavailable_has_definitive_usage_exhaustion(exc):
+                    raise
+                else:
+                    owner_forward_fresh_replay = owner_unavailable_allows_account_neutral_replay(exc)
+                if owner_forward_fresh_replay and not definitive_owner_quota_replay:
                     switch_to_account_neutral_replay()
                 should_attempt_previous_response_recovery = not owner_forward_fresh_replay and (
                     effective_payload.previous_response_id is not None

@@ -157,6 +157,8 @@ from app.modules.proxy.http_bridge_forwarding import (
     OwnerForwardRelayFailure,
 )
 
+_HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_ATTR = "_codex_lb_http_bridge_definitive_owner_quota"
+
 logger = logging.getLogger("app.modules.proxy.service")
 T = TypeVar("T")
 
@@ -187,6 +189,8 @@ class _OwnerForwardRequestError(ProxyResponseError):
             failed_session=source.failed_session,
             local_pre_dispatch_refusal=source.local_pre_dispatch_refusal,
         )
+        if getattr(source, _HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_ATTR, False):
+            setattr(self, _HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_ATTR, True)
         self.outcome = outcome
 
 
