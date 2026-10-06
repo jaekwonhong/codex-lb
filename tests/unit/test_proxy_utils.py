@@ -41547,8 +41547,19 @@ async def test_stream_account_neutral_image_usage_limit_retires_legacy_owner_bef
     assert order == ["settle", f"health:{owner_account.id}:usage_limit_reached"]
 
 
+@pytest.mark.parametrize(
+    ("owner_error_code", "expect_recovery"),
+    [
+        pytest.param("usage_limit_reached", True, id="owner-usage-limit-recovers"),
+        pytest.param("rate_limit_exceeded", False, id="generic-rate-limit-stays-pinned"),
+    ],
+)
 @pytest.mark.asyncio
-async def test_stream_verified_turn_state_full_resend_image_moves_after_owner_usage_limit(monkeypatch):
+async def test_stream_verified_turn_state_full_resend_image_moves_only_after_owner_usage_limit(
+    monkeypatch,
+    owner_error_code: str,
+    expect_recovery: bool,
+):
     """A registered turn-state may move only when the live bridge proves full safe history.
 
     This is the direct-image PC1 Astra shape: the image bypasses HTTP bridge
@@ -41625,11 +41636,19 @@ async def test_stream_verified_turn_state_full_resend_image_moves_after_owner_us
             assert kwargs.get("preferred_account_id") == owner_account.id
             assert policy.codex_session_source == "turn_state"
             return AccountSelection(account=owner_account, error_message=None)
-        assert kwargs.get("preferred_account_id") is None
         assert kwargs.get("exclude_account_ids") == {owner_account.id}
-        assert policy.codex_session_source == "thread_header"
-        assert policy.reallocate_sticky is True
-        return AccountSelection(account=replacement_account, error_message=None)
+        if expect_recovery:
+            assert kwargs.get("preferred_account_id") is None
+            assert policy.codex_session_source == "thread_header"
+            assert policy.reallocate_sticky is True
+            return AccountSelection(account=replacement_account, error_message=None)
+        assert kwargs.get("preferred_account_id") == owner_account.id
+        assert policy.codex_session_source == "turn_state"
+        return AccountSelection(
+            account=None,
+            error_message="No available accounts",
+            error_code="hard_affinity_saturated",
+        )
 
     async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **kwargs):
         del access_token, base_url, raise_for_status, kwargs
@@ -41639,8 +41658,8 @@ async def test_stream_verified_turn_state_full_resend_image_moves_after_owner_us
         if account_id == owner_account.chatgpt_account_id:
             yield (
                 'data: {"type":"response.failed","response":{"id":"resp_turn_owner_quota",'
-                '"status":"failed","error":{"code":"usage_limit_reached",'
-                '"message":"The usage limit has been reached"}}}\n\n'
+                f'"status":"failed","error":{{"code":"{owner_error_code}",'
+                '"message":"The upstream request was rejected"}}}\n\n'
             )
             return
         assert account_id == replacement_account.chatgpt_account_id
@@ -41697,15 +41716,21 @@ async def test_stream_verified_turn_state_full_resend_image_moves_after_owner_us
         )
     ]
 
-    assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.completed"
-    assert streamed_account_ids == [
-        owner_account.chatgpt_account_id,
-        replacement_account.chatgpt_account_id,
-    ]
     assert any(key.lower() == "x-codex-turn-state" for key in streamed_headers[0])
-    assert all(key.lower() != "x-codex-turn-state" for key in streamed_headers[1])
-    assert streamed_payloads[1].input == full_input
-    assert order == ["settle", f"health:{owner_account.id}:usage_limit_reached"]
+    if expect_recovery:
+        assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.completed"
+        assert streamed_account_ids == [
+            owner_account.chatgpt_account_id,
+            replacement_account.chatgpt_account_id,
+        ]
+        assert all(key.lower() != "x-codex-turn-state" for key in streamed_headers[1])
+        assert streamed_payloads[1].input == full_input
+        assert order == ["settle", f"health:{owner_account.id}:usage_limit_reached"]
+    else:
+        assert streamed_account_ids == [owner_account.chatgpt_account_id]
+        assert len(streamed_headers) == 1
+        assert len(selection_calls) >= 2
+        assert order == ["settle", f"health:{owner_account.id}:rate_limit_exceeded"]
 
 
 @pytest.mark.asyncio
