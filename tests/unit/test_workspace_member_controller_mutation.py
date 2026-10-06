@@ -186,8 +186,8 @@ class Effects:
             raise self.error
         return self.response or completed_receipt(cmd)
 
-    async def reconcile(self, *, operation_id, command_id, request_fingerprint):
-        self.reconcile_calls.append((operation_id, command_id, request_fingerprint))
+    async def reconcile(self, *, operation_id, command_id, request_fingerprint, mutation):
+        self.reconcile_calls.append((operation_id, command_id, request_fingerprint, mutation))
         return self.response
 
 
@@ -263,7 +263,7 @@ async def test_restart_reconciles_same_command_receipt_without_execute_replay():
 
     assert result.phase == "completed"
     assert recovered.execute_calls == []
-    assert recovered.reconcile_calls == [(str(OPERATION_ID), str(COMMAND_ID), cmd.fingerprint())]
+    assert recovered.reconcile_calls == [(str(OPERATION_ID), str(COMMAND_ID), cmd.fingerprint(), cmd.mutation)]
     assert journal.entry.active_scope is None
 
 

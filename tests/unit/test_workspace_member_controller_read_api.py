@@ -195,6 +195,8 @@ def test_entire_controller_core_has_no_codex_lb_data_plane_imports():
         "app.modules.shared",
     )
     legacy_adapters = {
+        "legacy_canary_runner.py",
+        "legacy_companion_canary_effect.py",
         "legacy_persistence.py",
         "legacy_mutation_journal.py",
         "legacy_rotation_budget.py",

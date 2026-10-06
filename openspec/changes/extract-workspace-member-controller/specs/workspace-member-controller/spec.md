@@ -511,3 +511,37 @@ The qualified shadow SHALL NOT expose membership mutation HTTP routes, SHALL rej
 - **WHEN** catalog/status/observation parity passes
 - **THEN** the read plane MAY be qualified
 - **BUT** account-dependent rotation and membership mutation remain unqualified until a later separately authorized canary provides exact binding evidence
+
+### Requirement: A single-workspace mutation canary requires exact OpenCodex ownership before any membership effect
+
+Before a canary membership switch can acquire effect ownership, both the currently observed workspace member and the selected allowlisted target SHALL have explicit exact `WorkspaceMemberAccountBinding` records. Each binding SHALL resolve the exact `opencodex_account_id` through the OpenCodex Controller account-state projection, and that state SHALL show a credential present, not paused, and not requiring reauthentication. The Controller SHALL NOT infer or repair canary bindings from email, alias, selector, workspace id, or legacy Codex-LB account identity. Missing exact binding or unusable exact account state SHALL fail closed before the mutation journal claim/effect path.
+
+#### Scenario: Current workspace member is not explicitly bound into OpenCodex
+
+- **GIVEN** the workspace observation is otherwise authoritative and the target preset is allowlisted
+- **WHEN** no exact binding exists for the current member
+- **THEN** canary preflight fails before mutation
+- **AND** no Controller command receipt, active scope, Companion operation, or rollback handoff is created
+
+### Requirement: Canary forward and rollback are separately authorized phases
+
+The qualification runner SHALL expose distinct `preflight`, `forward`, and `rollback` phases. `preflight` SHALL be read-only. `forward` SHALL execute at most one current-to-target canary and SHALL NOT automatically perform rollback in the same invocation. A successful forward SHALL retain a private owner-only handoff containing the exact original/target identities and exact account ids needed for the later rollback. `rollback` SHALL require that handoff, SHALL prove the target is still current, SHALL revalidate both exact account bindings, and SHALL execute at most one target-to-original canary.
+
+Both mutation phases SHALL require an explicit execution flag and an additional fixed acknowledgement value. An ambiguous forward outcome SHALL stop the workflow and SHALL NOT trigger automatic rollback or a second forward start.
+
+#### Scenario: Forward result is ambiguous after start may have been sent
+
+- **WHEN** the canary lacks authoritative evidence sufficient to settle the original forward command
+- **THEN** the command remains outcome-unknown/no-replay
+- **AND** the runner does not start rollback automatically
+- **AND** later recovery must reconcile the original client-flow identity first
+
+### Requirement: Canary success requires evidence stronger than HTTP acceptance
+
+A canary switch SHALL use only the dedicated qualified Companion canary endpoint and SHALL NOT fall back to an ordinary operation endpoint. After start, completed membership mutation SHALL require exact outgoing identity, an `outgoing_workspace_absence_observed` trace, invitation issuance, final target membership confirmation, no unsafe response-capture state, and successful Companion finalize/release. Pre-membership authoritative failure MAY settle as non-effect. Missing removal trace, identity mismatch, unsafe response capture, failed finalization, or other partial post-effect evidence SHALL remain outcome-unknown rather than being normalized into success.
+
+#### Scenario: Companion reports completed target membership without exact removal trace
+
+- **WHEN** the operation lacks authoritative evidence that the exact outgoing identity was absent from the workspace
+- **THEN** the canary is not finalized as completed
+- **AND** the Controller retains unknown-effect handling and no-replay recovery semantics

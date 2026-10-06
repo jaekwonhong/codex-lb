@@ -166,6 +166,7 @@ class WorkspaceMembershipMutationService:
                 operation_id=entry.operation_id,
                 command_id=entry.command_id,
                 request_fingerprint=entry.state.command_fingerprint,
+                mutation=entry.state.mutation,
             )
         except Exception as exc:
             raise MembershipMutationError("mutation_reconciliation_unavailable") from exc

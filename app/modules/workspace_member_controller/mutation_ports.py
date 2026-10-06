@@ -7,6 +7,7 @@ from app.modules.workspace_member_controller.mutation_models import (
     MembershipMutationAdmissionEvidence,
     MembershipMutationCommand,
     MembershipMutationReceipt,
+    MembershipMutationSpec,
 )
 
 
@@ -35,4 +36,5 @@ class MembershipMutationEffectPort(Protocol):
         operation_id: str,
         command_id: str,
         request_fingerprint: str,
+        mutation: MembershipMutationSpec,
     ) -> MembershipMutationReceipt | None: ...
