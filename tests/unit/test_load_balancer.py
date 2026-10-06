@@ -30,6 +30,7 @@ from app.core.balancer.logic import DRAIN_PRIMARY_THRESHOLD_PCT, PROBE_QUIET_SEC
 from app.core.usage.quota import apply_usage_quota
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, StickySessionKind, UsageHistory
+from app.modules.proxy._load_balancer import sticky_selection as sticky_selection_module
 from app.modules.proxy._load_balancer.tunables import RoutingTunables
 from app.modules.proxy.load_balancer import (
     LoadBalancer,
@@ -55,6 +56,41 @@ from tests.unit.test_proxy_load_balancer_refresh import (
 )
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.mark.parametrize(
+    "owner_state",
+    [
+        AccountState("owner", AccountStatus.QUOTA_EXCEEDED),
+        AccountState(
+            "owner",
+            AccountStatus.RATE_LIMITED,
+            priority_used_percent=100.0,
+        ),
+    ],
+)
+def test_hard_affinity_owner_quota_evidence_is_marked_definitive(owner_state: AccountState) -> None:
+    assert sticky_selection_module._hard_affinity_owner_has_definitive_usage_exhaustion(
+        error_code="hard_affinity_saturated",
+        owner_account_id="owner",
+        states=[owner_state],
+    )
+
+
+@pytest.mark.parametrize(
+    "owner_state",
+    [
+        AccountState("owner", AccountStatus.RATE_LIMITED, used_percent=100.0),
+        AccountState("owner", AccountStatus.RATE_LIMITED, priority_used_percent=99.9),
+        AccountState("owner", AccountStatus.ACTIVE, priority_used_percent=100.0),
+    ],
+)
+def test_hard_affinity_owner_quota_evidence_rejects_nondefinitive_rate_limit(owner_state: AccountState) -> None:
+    assert not sticky_selection_module._hard_affinity_owner_has_definitive_usage_exhaustion(
+        error_code="hard_affinity_saturated",
+        owner_account_id="owner",
+        states=[owner_state],
+    )
 
 
 def test_select_account_picks_lowest_used_percent():

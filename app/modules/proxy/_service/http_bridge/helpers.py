@@ -3449,11 +3449,18 @@ def _mark_http_bridge_reader_handoff_reconnect_failed(session: Any, old_reader: 
         session.closed = True
 
 
+_HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_ATTR = "_codex_lb_http_bridge_definitive_owner_quota"
+
+
 def _http_bridge_previous_response_owner_unavailable_error(
     selection: Any = None,
     *,
     now: float | None = None,
+    definitive_usage_exhaustion: bool | None = None,
 ) -> ProxyResponseError:
+    if isinstance(selection, bool) and definitive_usage_exhaustion is None:
+        definitive_usage_exhaustion = selection
+        selection = None
     message = "Previous response owner account is unavailable; retry later."
     reason = getattr(selection, "error_code", None)
     if isinstance(reason, str) and reason in {
@@ -3475,7 +3482,14 @@ def _http_bridge_previous_response_owner_unavailable_error(
         retry_after = max(0, math.ceil(resets_at - (time.time() if now is None else now)))
         payload["error"]["resets_at"] = resets_at
         payload["error"]["resets_in_seconds"] = retry_after
-    return ProxyResponseError(502, payload, retry_after_seconds=retry_after)
+    exc = ProxyResponseError(502, payload, retry_after_seconds=retry_after)
+    if definitive_usage_exhaustion:
+        setattr(exc, _HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_ATTR, True)
+    return exc
+
+
+def _http_bridge_owner_unavailable_has_definitive_usage_exhaustion(exc: ProxyResponseError) -> bool:
+    return bool(getattr(exc, _HTTP_BRIDGE_DEFINITIVE_OWNER_QUOTA_ATTR, False))
 
 
 def _http_bridge_reconnect_selection_failure(

@@ -97,6 +97,7 @@ from app.modules.proxy._service.http_bridge.helpers import (
     _http_bridge_is_previous_response_owner_unavailable,
     _http_bridge_models_compatible,
     _http_bridge_owner_lookup_unavailable_error_envelope,
+    _http_bridge_owner_unavailable_has_definitive_usage_exhaustion,
     _http_bridge_payload_looks_like_full_resend,
     _http_bridge_payload_without_previous_response_id,
     _http_bridge_previous_response_error_envelope,
@@ -161,6 +162,7 @@ from app.modules.proxy._service.http_bridge.service_stubs import (
     _response_create_client_metadata,
     _responses_request_contains_input_image,
     _responses_request_uses_image_generation,
+    _routing_strategy,
     _service_get_settings,
     _service_get_settings_cache,
     _stream_keepalive_max_count,
@@ -276,7 +278,10 @@ from app.modules.proxy.helpers import (
 )
 from app.modules.proxy.load_balancer import AccountSelection, LoadBalancer
 from app.modules.proxy.owner_recovery import assess_owner_recovery, turn_is_unsubmitted
+from app.modules.proxy.replay_relocation import RelocationInputs, decide_relocation
 from app.modules.proxy.replay_safety import (
+    RELOCATION_TRANSCRIPT_MAX_BYTES,
+    RELOCATION_TRANSCRIPT_MAX_TURNS,
     AccountNeutralReplayProjection,
     project_responses_input_for_account_neutral_fresh_replay,
     responses_input_suffix_matches_pending_tool_calls,
@@ -1419,6 +1424,7 @@ class _HTTPBridgeStreamingMixin:
             request_state.capacity_startup_wait_event = capacity_startup_wait_event
             request_state.owner_recovery_budget = owner_recovery_budget
             request_state.capacity_startup_ready_event = capacity_startup_ready_event
+            request_state.routing_strategy = _routing_strategy(dashboard_settings)
             lifecycle = begin_bridge_lifecycle(request_state.api_key_reservation)
             request_state.deferred_account_error_backoffs = lifecycle.pending_backoffs
             request_state.deferred_account_backoff_tracker = deferred_account_backoff_tracker
@@ -2371,6 +2377,7 @@ class _HTTPBridgeStreamingMixin:
             event: str = "owner_unavailable_fresh_resend",
             detail: str = "outcome=projected_plaintext_full_resend_without_anchor",
             preserve_operation: bool = False,
+            durable_relocation_root: bool = False,
         ) -> None:
             nonlocal account_neutral_recovery
             nonlocal affinity
@@ -2435,6 +2442,7 @@ class _HTTPBridgeStreamingMixin:
             if fresh_payload is None:
                 raise RuntimeError("account-neutral replay projection missing after eligibility check")
             request_state, text_data = prepare_bridge_request(fresh_payload)
+            request_state.durable_relocation_root = durable_relocation_root
             if preserve_operation_identity:
                 request_state.operation_id = prior_operation_id
                 request_state.operation_fingerprint = prior_operation_fingerprint
@@ -2688,6 +2696,91 @@ class _HTTPBridgeStreamingMixin:
                     now=clock.time(),
                 )
 
+        async def try_definitive_owner_quota_relocation(exc: ProxyResponseError) -> bool:
+            """Rebuild one owner-bound turn only after definitive quota loss.
+
+            A hard-owner selection failure by itself is deliberately
+            insufficient: cap pressure, transient backoff, or caller
+            exclusions all reach similar public errors.  The internal marker
+            carried by ``_create_http_bridge_session`` is positive raw usage
+            evidence from the resolved owner.  Any missing durable material or
+            ownership fact makes the pure relocation verdict decline and this
+            function leaves the existing fail-closed path untouched.
+            """
+
+            nonlocal durable_full_resend_fresh_payload
+            if not _http_bridge_is_previous_response_owner_unavailable(exc):
+                return False
+            if not _http_bridge_owner_unavailable_has_definitive_usage_exhaustion(exc):
+                return False
+            candidate_request_text = text_data
+            if durable_full_resend_fresh_payload is not None:
+                _fresh_state, candidate_request_text = prepare_bridge_request(durable_full_resend_fresh_payload)
+                del _fresh_state
+            elif request_state.fresh_upstream_request_is_retry_safe and request_state.fresh_upstream_request_text:
+                candidate_request_text = request_state.fresh_upstream_request_text
+            anchor_response_id = request_state.previous_response_id
+            transcript = None
+            if isinstance(anchor_response_id, str) and anchor_response_id.strip():
+                try:
+                    transcript = await self._durable_bridge.get_replayable_transcript(
+                        response_id=anchor_response_id,
+                        max_turns=RELOCATION_TRANSCRIPT_MAX_TURNS,
+                        max_bytes=RELOCATION_TRANSCRIPT_MAX_BYTES,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Durable transcript lookup failed during definitive owner-quota relocation; failing closed",
+                        exc_info=True,
+                    )
+            verdict = decide_relocation(
+                RelocationInputs(
+                    transport="http_bridge",
+                    payload=cast(Mapping[str, JsonValue], effective_payload.to_payload()),
+                    current_request_text=candidate_request_text,
+                    evidence="definitive",
+                    downstream_output_visible=False,
+                    routing_strategy=_routing_strategy(dashboard_settings),
+                    input_file_pinned=file_required_preferred_account,
+                    turn_state_owned=bool(
+                        incoming_turn_state_header is not None
+                        and durable_lookup is not None
+                        and durable_lookup.canonical_kind == "turn_state_header"
+                    ),
+                    session_identity_bound=bool(effective_payload.conversation),
+                    durable_transcript=transcript,
+                    response_id=request_state.response_id,
+                    spooled_event_count=request_state.response_event_count,
+                )
+            )
+            if not verdict.movable or verdict.body is None or verdict.requires_recovery_fence:
+                _log_http_bridge_event(
+                    "owner_quota_relocation_declined",
+                    bridge_session_key,
+                    account_id=request_state.preferred_account_id,
+                    model=effective_payload.model,
+                    detail=f"reason={verdict.decline_reason or 'unknown'}",
+                    cache_key_family=bridge_session_key.affinity_kind,
+                    model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
+                )
+                return False
+            try:
+                relocated_payload = ResponsesRequest.model_validate(dict(verdict.body))
+            except Exception:
+                logger.warning(
+                    "Durable transcript relocation produced an invalid Responses payload; failing closed",
+                    exc_info=True,
+                )
+                return False
+            durable_full_resend_fresh_payload = relocated_payload
+            switch_to_account_neutral_replay(
+                event="owner_quota_durable_relocation",
+                detail=f"source={verdict.source or 'durable_transcript'}, outcome=rebuilt_without_anchor",
+                preserve_operation=False,
+                durable_relocation_root=True,
+            )
+            return True
+
         if (
             dead_owner_anchor
             and durable_lookup is not None
@@ -2816,6 +2909,18 @@ class _HTTPBridgeStreamingMixin:
                 # carries its own continuity is a safe fresh raw-HTTP replay.
                 if effective_payload.previous_response_id != payload.previous_response_id:
                     setattr(exc, _HTTP_BRIDGE_PREPARED_ANCHOR_ATTR, True)
+                if switch_model_transition_to_account_neutral_fork(exc):
+                    continue
+                if await try_definitive_owner_quota_relocation(exc):
+                    continue
+                if _http_bridge_is_previous_response_owner_unavailable(
+                    exc
+                ) and _http_bridge_owner_unavailable_has_definitive_usage_exhaustion(exc):
+                    # A definitive owner-quota failure has already passed
+                    # through the shared relocation verdict above. A decline
+                    # is final: production-Beta recovery helpers must not reopen
+                    # cross-account relocation behind that verdict.
+                    raise
                 if _http_bridge_is_previous_response_owner_unavailable(exc):
                     last_owner_recovery_error = exc
                     owner_recovery_budget.start(clock.monotonic())
@@ -2902,8 +3007,6 @@ class _HTTPBridgeStreamingMixin:
                     ):
                         raise local_history_recovery_refusal(late_advice.hint.reason) from exc
                     raise
-                if switch_model_transition_to_account_neutral_fork(exc):
-                    continue
                 if not owner_unavailable_allows_account_neutral_replay(exc):
                     if await retire_unavailable_continuity_owner(exc):
                         continue

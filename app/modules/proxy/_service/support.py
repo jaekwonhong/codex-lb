@@ -1213,6 +1213,12 @@ class _WebSocketRequestState:
     operation_rebound_from_account_id: str | None = None
     operation_rebound_from_model: str | None = None
     operation_rebound_from_parent_response_id: str | None = None
+    # A definitive continuity relocation rebuilds the complete conversation
+    # and dispatches it without an upstream anchor on an account-neutral
+    # synthetic bridge key.  Mark that dispatch as a durable transcript root
+    # so a later owner loss can walk back through it instead of losing the
+    # chain at the relocation boundary.
+    durable_relocation_root: bool = False
     operation_replay: bool = False
     operation_dispatched: bool = False
     # Last response identity successfully written to the durable operation.
@@ -1226,6 +1232,7 @@ class _WebSocketRequestState:
     # would be recorded as a Lite acceptance for a non-Lite upstream request.
     fresh_upstream_request_responses_lite_model: str | None = None
     request_stage: str = "first_turn"
+    routing_strategy: str | None = None
     preferred_account_id: str | None = None
     # Once an account-bound body has been dispatched, retries remain pinned to
     # that owner even when stale-anchor recovery removes previous_response_id.

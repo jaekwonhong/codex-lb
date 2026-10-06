@@ -796,9 +796,7 @@ logger = logging.getLogger(__name__)
 _ResponsesPayloadT = TypeVar("_ResponsesPayloadT", ResponsesRequest, ResponsesCompactRequest)
 _DOWNSTREAM_WEBSOCKET_IDLE_CLOSE_REASON = "Idle downstream websocket timeout"
 _DOWNSTREAM_WEBSOCKET_RECEIVE_POLL_SECONDS = 1.0
-# Keep the first HTTP bridge liveness frame behind the API layer's startup
-# error probe window. If a keepalive becomes the first yielded chunk, the HTTP
-# status is committed as 200 and startup ProxyResponseError handling is masked.
+# Keep the first bridge liveness frame behind startup error probing so keepalive cannot commit HTTP 200 early.
 _HTTP_BRIDGE_STARTUP_KEEPALIVE_GRACE_SECONDS = 0.5
 
 
@@ -1896,8 +1894,7 @@ class ProxyService(
                         sticky_source=preferred_sticky_inputs[4],
                         legacy_sticky_key=preferred_sticky_inputs[5],
                         legacy_continuity_source=legacy_continuity_source,
-                        # Exact ownership chooses the account; a first-ever thread
-                        # still seeds atomically without overwriting a process default.
+                        # Exact ownership selects the account; first-ever threads still seed atomically.
                         sticky_seed_key=sticky_seed_key,
                         sticky_seed_kind=sticky_seed_kind,
                         abandon_unavailable_legacy_owner=abandon_unavailable_legacy_owner,
