@@ -58,3 +58,13 @@ Rollback uses a second dedicated canary operation target→original. Success req
 ## Routing isolation
 
 The canary deliberately requires both bound OpenCodex pool accounts to remain paused. Membership mutation is executed by the qualified Companion canary path, not by OpenCodex inference routing, so unpausing would add risk without adding evidence. A missing credential or reauthentication-required state still blocks the canary.
+
+## Durable Companion canary budget
+
+The deployed Companion is intentionally **one canary workflow for the retained lifetime of its durable receipt store**. The running `FourSessionLauncher` binary has SHA256 `1ec90e2b7315a9a19d718b03ff7c8ec54e90ff72aa9ca92b83a060fe0456b2d1`, matching the preserved `rotation-build-candidate-20260918` package candidate. Its source contract rejects a new canary whenever any retained receipt already carries canary state.
+
+This budget has no expiry or refund. Completion, failure, finalization/release, process restart, or a different client-flow/operation id do not restore it. The retained-store contract also explicitly says that restoring an old store or starting with an empty store is **not** authority to replenish the canary budget. The deployed HTTP surface has no canary reset/re-arm endpoint.
+
+The earlier `cdp-2-thinklet09` canary bound the single durable canary receipt and ended before a membership effect was authorized (`RemoveClaimed=false`, `RemovalConfirmed=false`, `InviteClaimed=false`). That is nevertheless sufficient to consume the workflow budget because the receipt is persisted before membership work is scheduled. The later qualified target therefore fails closed at start with `canary_workflow_budget_spent`; retrying it against the current Companion cannot succeed and must not be attempted.
+
+If another live canary is required, do not delete or rewrite `member-switch.operations.json` and do not route through the ordinary `/operations` endpoint. A new, separately qualified Companion contract/release must explicitly define a new canary qualification epoch (or equivalent operator-authorized budget generation) while retaining prior canary evidence and no-replay guarantees. Only after that candidate is tested, provenance-qualified, deployed, and re-preflighted may another forward canary be authorized.
