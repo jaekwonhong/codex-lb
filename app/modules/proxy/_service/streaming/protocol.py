@@ -11,6 +11,9 @@ class _StreamingServiceProtocol(Protocol):
     _ensure_fresh_with_budget: Any
     _get_work_admission: Any
     _handle_stream_error: Any
+    _http_bridge_lock: Any
+    _http_bridge_sessions: Any
+    _http_bridge_turn_state_index: Any
     _load_balancer: Any
     _maybe_touch_api_key_reservation: Any
     _raise_for_unsupported_input_image_references: Any

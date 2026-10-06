@@ -41548,6 +41548,253 @@ async def test_stream_account_neutral_image_usage_limit_retires_legacy_owner_bef
 
 
 @pytest.mark.asyncio
+async def test_stream_verified_turn_state_full_resend_image_moves_after_owner_usage_limit(monkeypatch):
+    """A registered turn-state may move only when the live bridge proves full safe history.
+
+    This is the direct-image PC1 Astra shape: the image bypasses HTTP bridge
+    submission, but the registered bridge alias still retains the prior-input
+    fingerprint needed to prove that the incoming body is a complete resend.
+    """
+
+    settings = _make_proxy_settings()
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    owner_account = _make_account("acc_turn_state_image_quota_owner")
+    replacement_account = _make_account("acc_turn_state_image_quota_replacement")
+    api_key = _make_api_key_data("key_turn_state_image_quota")
+    reservation = proxy_service.ApiKeyUsageReservationData(
+        reservation_id="resv_turn_state_image_quota",
+        key_id=api_key.id,
+        model="gpt-6-astra",
+    )
+    turn_state = "http_turn_0123456789abcdef0123456789abcdef"
+    process_session = "process-turn-state-image-quota"
+    thread_id = "thread-turn-state-image-quota"
+    stored_prefix: list[JsonValue] = [
+        {"role": "user", "content": [{"type": "input_text", "text": "earlier question"}]}
+    ]
+    full_input: list[JsonValue] = [
+        *stored_prefix,
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "earlier answer"}],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "inspect this image"},
+                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+            ],
+        },
+    ]
+    bridge_key = proxy_service._HTTPBridgeSessionKey("prompt_cache", "turn-state-image-bridge", api_key.id)
+    bridge_session = proxy_service._HTTPBridgeSession(
+        key=bridge_key,
+        headers={},
+        affinity=proxy_service._AffinityPolicy(),
+        request_model="gpt-6-astra",
+        account=owner_account,
+        upstream=AsyncMock(),
+        upstream_control=proxy_service._WebSocketUpstreamControl(),
+        pending_requests=deque(),
+        pending_lock=anyio.Lock(),
+        response_create_gate=asyncio.Semaphore(1),
+        queued_request_count=0,
+        last_used_at=0.0,
+        idle_ttl_seconds=30.0,
+        downstream_turn_state=turn_state,
+        downstream_turn_state_aliases={turn_state},
+        turn_state_alias_registration_generations={turn_state: 1},
+        last_completed_input_count=len(stored_prefix),
+        last_completed_input_prefix_fingerprint=proxy_service._fingerprint_input_items(stored_prefix),
+    )
+    service._http_bridge_turn_state_index[(turn_state, api_key.id)] = bridge_key
+    service._http_bridge_sessions[bridge_key] = bridge_session
+
+    selection_calls: list[dict[str, object]] = []
+    streamed_account_ids: list[str | None] = []
+    streamed_headers: list[dict[str, str]] = []
+    streamed_payloads: list[ResponsesRequest] = []
+    order: list[str] = []
+
+    async def fake_select(*_args, **kwargs):
+        selection_calls.append(dict(kwargs))
+        policy = cast(proxy_service._AffinityPolicy, kwargs["affinity_policy"])
+        if len(selection_calls) == 1:
+            assert kwargs.get("preferred_account_id") == owner_account.id
+            assert policy.codex_session_source == "turn_state"
+            return AccountSelection(account=owner_account, error_message=None)
+        assert kwargs.get("preferred_account_id") is None
+        assert kwargs.get("exclude_account_ids") == {owner_account.id}
+        assert policy.codex_session_source == "thread_header"
+        assert policy.reallocate_sticky is True
+        return AccountSelection(account=replacement_account, error_message=None)
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **kwargs):
+        del access_token, base_url, raise_for_status, kwargs
+        streamed_account_ids.append(account_id)
+        streamed_headers.append(dict(headers))
+        streamed_payloads.append(payload)
+        if account_id == owner_account.chatgpt_account_id:
+            yield (
+                'data: {"type":"response.failed","response":{"id":"resp_turn_owner_quota",'
+                '"status":"failed","error":{"code":"usage_limit_reached",'
+                '"message":"The usage limit has been reached"}}}\n\n'
+            )
+            return
+        assert account_id == replacement_account.chatgpt_account_id
+        yield (
+            'data: {"type":"response.completed","response":{"id":"resp_turn_quota_recovered",'
+            '"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n'
+        )
+
+    async def settle_usage(*args, **kwargs):
+        del args, kwargs
+        order.append("settle")
+        return True
+
+    async def handle_stream_error(account, error, code, *args, **kwargs):
+        del error, args, kwargs
+        order.append(f"health:{account.id}:{code}")
+        return {"failure_class": "rate_limit"}
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(service, "_select_account_with_budget_compatible", AsyncMock(side_effect=fake_select))
+    monkeypatch.setattr(
+        service,
+        "_resolve_compact_turn_state_owner",
+        AsyncMock(return_value=owner_account.id),
+    )
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_handle_stream_error", AsyncMock(side_effect=handle_stream_error))
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=lambda account, **kwargs: account))
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(side_effect=settle_usage))
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-6-astra",
+            "instructions": "continue with the image",
+            "input": full_input,
+            "stream": True,
+        }
+    )
+    chunks = [
+        chunk
+        async for chunk in service.stream_responses(
+            payload,
+            {
+                "session_id": process_session,
+                "thread-id": thread_id,
+                "x-codex-turn-state": turn_state,
+            },
+            codex_session_affinity=True,
+            openai_cache_affinity=True,
+            api_key=api_key,
+            api_key_reservation=reservation,
+        )
+    ]
+
+    assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.completed"
+    assert streamed_account_ids == [
+        owner_account.chatgpt_account_id,
+        replacement_account.chatgpt_account_id,
+    ]
+    assert any(key.lower() == "x-codex-turn-state" for key in streamed_headers[0])
+    assert all(key.lower() != "x-codex-turn-state" for key in streamed_headers[1])
+    assert streamed_payloads[1].input == full_input
+    assert order == ["settle", f"health:{owner_account.id}:usage_limit_reached"]
+
+
+@pytest.mark.asyncio
+async def test_verified_turn_state_replay_rejects_incomplete_or_account_scoped_history():
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    owner_account = _make_account("acc_turn_state_replay_guard_owner")
+    turn_state = "http_turn_fedcba9876543210fedcba9876543210"
+    stored_prefix: list[JsonValue] = [
+        {"role": "user", "content": [{"type": "input_text", "text": "earlier question"}]}
+    ]
+    bridge_key = proxy_service._HTTPBridgeSessionKey("prompt_cache", "turn-state-guard-bridge", None)
+    bridge_session = proxy_service._HTTPBridgeSession(
+        key=bridge_key,
+        headers={},
+        affinity=proxy_service._AffinityPolicy(),
+        request_model="gpt-6-astra",
+        account=owner_account,
+        upstream=AsyncMock(),
+        upstream_control=proxy_service._WebSocketUpstreamControl(),
+        pending_requests=deque(),
+        pending_lock=anyio.Lock(),
+        response_create_gate=asyncio.Semaphore(1),
+        queued_request_count=0,
+        last_used_at=0.0,
+        idle_ttl_seconds=30.0,
+        downstream_turn_state=turn_state,
+        downstream_turn_state_aliases={turn_state},
+        turn_state_alias_registration_generations={turn_state: 1},
+        last_completed_input_count=len(stored_prefix),
+        last_completed_input_prefix_fingerprint=proxy_service._fingerprint_input_items(stored_prefix),
+    )
+    service._http_bridge_turn_state_index[(turn_state, None)] = bridge_key
+    service._http_bridge_sessions[bridge_key] = bridge_session
+
+    missing_prior_output = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-6-astra",
+            "instructions": "continue",
+            "input": [
+                *stored_prefix,
+                {"role": "user", "content": [{"type": "input_text", "text": "new question"}]},
+            ],
+            "stream": True,
+        }
+    )
+    file_scoped = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-6-astra",
+            "instructions": "continue",
+            "input": [
+                *stored_prefix,
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "phase": "final_answer",
+                    "content": [{"type": "output_text", "text": "earlier answer"}],
+                },
+                {
+                    "role": "user",
+                    "content": [{"type": "input_image", "file_id": "file_owner_scoped"}],
+                },
+            ],
+            "stream": True,
+        }
+    )
+
+    assert (
+        await streaming_retry_module._verified_turn_state_fresh_replay(
+            service,
+            payload=missing_prior_output,
+            turn_state=turn_state,
+            turn_state_owner_account_id=owner_account.id,
+            api_key=None,
+        )
+        is None
+    )
+    assert (
+        await streaming_retry_module._verified_turn_state_fresh_replay(
+            service,
+            payload=file_scoped,
+            turn_state=turn_state,
+            turn_state_owner_account_id=owner_account.id,
+            api_key=None,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
 async def test_stream_account_neutral_image_http_usage_limit_arms_legacy_owner_recovery(monkeypatch):
     """The HTTP-status delivery form carries the same owner quota proof as SSE."""
 
