@@ -751,6 +751,82 @@ async def test_required_continuity_owner_ignores_usage_draining_burn_first() -> 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("sticky_key", [None, "owner-thread"])
+async def test_required_continuity_owner_quota_preserves_definitive_owner_evidence(
+    sticky_key: str | None,
+) -> None:
+    owner = _make_account("acc-owner-quota", "owner-quota@example.com")
+    alternate = _make_account("acc-alternate", "alternate@example.com")
+    now = utcnow()
+    now_epoch = int(now.replace(tzinfo=timezone.utc).timestamp())
+    owner.status = AccountStatus.QUOTA_EXCEEDED
+    owner.reset_at = now_epoch + 600
+    primary = {
+        owner.id: UsageHistory(
+            id=1,
+            account_id=owner.id,
+            recorded_at=now,
+            window="primary",
+            used_percent=20.0,
+            reset_at=now_epoch + 300,
+            window_minutes=5,
+            credits_has=False,
+            credits_unlimited=False,
+            credits_balance=0.0,
+        ),
+        alternate.id: UsageHistory(
+            id=2,
+            account_id=alternate.id,
+            recorded_at=now,
+            window="primary",
+            used_percent=10.0,
+            reset_at=now_epoch + 300,
+            window_minutes=5,
+        ),
+    }
+    secondary = {
+        owner.id: UsageHistory(
+            id=3,
+            account_id=owner.id,
+            recorded_at=now,
+            window="secondary",
+            used_percent=100.0,
+            reset_at=now_epoch + 600,
+            window_minutes=60,
+            credits_has=False,
+            credits_unlimited=False,
+            credits_balance=0.0,
+        ),
+        alternate.id: UsageHistory(
+            id=4,
+            account_id=alternate.id,
+            recorded_at=now,
+            window="secondary",
+            used_percent=10.0,
+            reset_at=now_epoch + 3600,
+            window_minutes=60,
+        ),
+    }
+    accounts_repo = StubAccountsRepository([owner, alternate])
+    usage_repo = StubUsageRepository(primary=primary, secondary=secondary)
+    sticky_repo = StubStickySessionsRepository()
+    balancer = LoadBalancer(lambda: _repo_factory(accounts_repo, usage_repo, sticky_repo))
+
+    selection = await balancer.select_account(
+        sticky_key=sticky_key,
+        sticky_kind=StickySessionKind.PROMPT_CACHE if sticky_key is not None else None,
+        required_account_id=owner.id,
+        required_continuity_owner=True,
+        routing_strategy="capacity_weighted",
+    )
+
+    assert selection.account is None
+    assert selection.error_code == "hard_affinity_saturated"
+    assert selection.hard_affinity_owner_usage_exhausted is True
+    assert selection.resets_at == now_epoch + 600
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("sticky_key", [None, "unresolved-conversation"])
 async def test_unresolved_single_owner_continuity_ignores_fresh_usage_drain(sticky_key: str | None) -> None:
     burn = _make_account("acc-burn", "burn@example.com")

@@ -25,6 +25,7 @@ from app.modules.proxy._load_balancer.sticky_selection import (
     _clone_account,
     _filter_recovery_probe_candidates,
     _filter_states_for_account_caps,
+    _owner_has_definitive_usage_exhaustion,
     _probing_result_requires_recovery_reservation,
     _select_account_preferring_budget_safe,
 )
@@ -96,6 +97,7 @@ class UnboundSelectionOutcome(Generic[SelectionInputsT]):
     error_code: str | None
     resets_at: int | None = None
     disposition: str = "shared_result"
+    hard_affinity_owner_usage_exhausted: bool = False
 
 
 async def run_unbound_selection_path(
@@ -530,6 +532,17 @@ async def run_unbound_selection_path(
 
         break
 
+    required_owner_usage_exhausted = _owner_has_definitive_usage_exhaustion(
+        owner_account_id=required_account_id,
+        states=states,
+    )
+    if (
+        selected_snapshot is None
+        and required_owner_usage_exhausted
+        and selection_error_code in {None, "usage_limit_reached"}
+    ):
+        selection_error_code = "hard_affinity_saturated"
+
     return UnboundSelectionOutcome(
         selection_inputs=selection_inputs,
         selected_snapshot=selected_snapshot,
@@ -537,4 +550,5 @@ async def run_unbound_selection_path(
         error_message=error_message,
         error_code=selection_error_code,
         resets_at=selection_resets_at,
+        hard_affinity_owner_usage_exhausted=required_owner_usage_exhausted,
     )
