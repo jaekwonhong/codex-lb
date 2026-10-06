@@ -1071,12 +1071,20 @@ class _StreamingRetryMixin:
             )
             return True
 
-        async def _move_verified_turn_state_fresh_replay_from_owner(*, account_id: str, outcome: str) -> bool:
+        async def _move_verified_turn_state_fresh_replay_from_owner(
+            *,
+            account_id: str,
+            error: UpstreamError,
+            code: str,
+            outcome: str,
+        ) -> bool:
             """Move a locally proven full resend off a quota-exhausted turn owner."""
 
             nonlocal affinity, affinity_observation, dispatch_headers, payload
             nonlocal preferred_account_id, require_preferred_account, turn_state_owner_account_id
             nonlocal verified_turn_state_fresh_replay
+            if code != USAGE_LIMIT_REACHED:
+                return False
             proof = verified_turn_state_fresh_replay
             if proof is None or proof.owner_account_id != account_id or turn_state_owner_account_id != account_id:
                 return False
@@ -3016,6 +3024,8 @@ class _StreamingRetryMixin:
                                     if not moved_verified_replay:
                                         moved_verified_replay = await _move_verified_turn_state_fresh_replay_from_owner(
                                             account_id=account.id,
+                                            error=_upstream_error_from_openai(error),
+                                            code=code,
                                             outcome="owner_previsible_failure",
                                         )
                                     if not moved_verified_replay:
@@ -3180,6 +3190,8 @@ class _StreamingRetryMixin:
                     if exc.exclude_account and not moved_verified_replay:
                         moved_verified_replay = await _move_verified_turn_state_fresh_replay_from_owner(
                             account_id=account.id,
+                            error=exc.error,
+                            code=exc.code,
                             outcome="owner_previsible_retryable_failure",
                         )
                     if exc.exclude_account and not moved_verified_replay:
@@ -3760,6 +3772,8 @@ class _StreamingRetryMixin:
                                 if not moved_verified_replay:
                                     moved_verified_replay = await _move_verified_turn_state_fresh_replay_from_owner(
                                         account_id=account.id,
+                                        error=current_error_payload,
+                                        code=current_error_code,
                                         outcome="owner_post_refresh_failure",
                                     )
                                 if not moved_verified_replay:
