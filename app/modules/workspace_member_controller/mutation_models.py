@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field, model_validator
 
+from app.modules.workspace_member_controller.account_state import AccountDecisionEvidence
 from app.modules.workspace_member_controller.domain import ControllerModel
 
 MembershipMutationAction = Literal["add", "remove", "switch"]
@@ -67,6 +68,7 @@ class MembershipMutationCommand(ControllerModel):
     command_id: UUID
     expected_revision: int = Field(ge=0)
     mutation: MembershipMutationSpec
+    account_decision_evidence: AccountDecisionEvidence | None = None
 
     def fingerprint(self) -> str:
         canonical = json.dumps(
@@ -142,6 +144,7 @@ class MembershipMutationState(ControllerModel):
     created_at: datetime
     updated_at: datetime
     admission: MembershipMutationAdmissionEvidence
+    account_decision_evidence: AccountDecisionEvidence | None = None
     receipt: MembershipMutationReceipt | None = None
 
     @model_validator(mode="after")
@@ -183,4 +186,5 @@ class MembershipMutationView(ControllerModel):
     updated_at: datetime
     pending_action: str | None = None
     command_id: str | None = None
+    account_decision_evidence: AccountDecisionEvidence | None = None
     receipt: MembershipMutationReceipt | None = None

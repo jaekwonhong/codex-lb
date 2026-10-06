@@ -160,10 +160,12 @@ def test_controller_mutation_core_avoids_legacy_member_switch_db_proxy_and_dashb
         "app.dependencies",
     )
     for name in (
+        "account_binding.py",
         "mutation_models.py",
         "mutation_ports.py",
         "mutation_admission.py",
         "mutation_service.py",
+        "rotation_decision.py",
         "persistence.py",
     ):
         path = root / name
@@ -175,3 +177,36 @@ def test_controller_mutation_core_avoids_legacy_member_switch_db_proxy_and_dashb
             elif isinstance(node, ast.Import):
                 imports.extend(alias.name for alias in node.names)
         assert not any(module.startswith(prefix) for module in imports for prefix in forbidden), (name, imports)
+
+
+def test_entire_controller_core_has_no_codex_lb_data_plane_imports():
+    root = Path(__file__).parents[2] / "app" / "modules" / "workspace_member_controller"
+    forbidden = (
+        "app.core",
+        "app.db",
+        "app.dependencies",
+        "app.modules.accounts",
+        "app.modules.member_auth_handoff",
+        "app.modules.member_rotation_operator",
+        "app.modules.member_switch",
+        "app.modules.proxy",
+        "app.modules.rate_limit_reset_credits",
+        "app.modules.usage",
+        "app.modules.shared",
+    )
+    legacy_adapters = {
+        "legacy_persistence.py",
+        "legacy_mutation_journal.py",
+        "legacy_rotation_budget.py",
+    }
+    for path in root.glob("*.py"):
+        if path.name in legacy_adapters:
+            continue
+        tree = ast.parse(path.read_text())
+        imports = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imports.append(node.module)
+            elif isinstance(node, ast.Import):
+                imports.extend(alias.name for alias in node.names)
+        assert not any(module.startswith(prefix) for module in imports for prefix in forbidden), (path.name, imports)

@@ -7,6 +7,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
+from app.modules.workspace_member_controller.account_state import AccountDecisionEvidence
 from app.modules.workspace_member_controller.mutation_models import (
     MembershipMutationAdmissionEvidence,
     MembershipMutationCommand,
@@ -55,6 +56,21 @@ def command(action: str = "switch", *, command_id: UUID = COMMAND_ID, expected_r
         command_id=command_id,
         expected_revision=expected_revision,
         mutation=mutation(action),
+    )
+
+
+def decision_evidence() -> AccountDecisionEvidence:
+    return AccountDecisionEvidence(
+        account_id="acct-outgoing",
+        credential_generation=7,
+        state_revision="d" * 64,
+        observed_at=1_000_000,
+        quota_observed_at=999_000,
+        selection_state="excluded",
+        quota_state="exhausted",
+        needs_reauth=False,
+        paused=False,
+        reset_credit_available_count=0,
     )
 
 
@@ -173,6 +189,22 @@ class Effects:
     async def reconcile(self, *, operation_id, command_id, request_fingerprint):
         self.reconcile_calls.append((operation_id, command_id, request_fingerprint))
         return self.response
+
+
+class EvidenceGuard:
+    def __init__(self, journal, *, error=None):
+        self.journal = journal
+        self.error = error
+        self.calls = []
+
+    async def revalidate_account_evidence(self, evidence):
+        self.calls.append(evidence)
+        assert self.journal.entry.pending_action == "switch"
+        assert self.journal.entry.state.phase == "effect_pending"
+        assert self.journal.entry.state.account_decision_evidence == evidence
+        if self.error:
+            raise self.error
+        return object()
 
 
 @pytest.mark.parametrize("action", ["add", "remove", "switch"])
@@ -305,6 +337,61 @@ async def test_authoritative_non_effect_is_terminal_and_releases_scope():
     result = await service.submit(cmd)
     assert result.phase == "failed"
     assert result.pending_action is None
+    assert journal.entry.active_scope is None
+
+
+async def test_account_decision_evidence_is_persisted_and_revalidated_after_durable_claim():
+    journal = MemoryJournal()
+    effects = Effects()
+    effects.journal = journal
+    evidence = decision_evidence()
+    cmd = command().model_copy(update={"account_decision_evidence": evidence})
+    guard = EvidenceGuard(journal)
+    service = WorkspaceMembershipMutationService(
+        journal,
+        PermitAdmission(),
+        effects,
+        account_evidence_guard=guard,
+        clock=lambda: NOW,
+    )
+
+    result = await service.submit(cmd)
+
+    assert result.phase == "completed"
+    assert result.account_decision_evidence == evidence
+    assert journal.entry.state.account_decision_evidence == evidence
+    assert guard.calls == [evidence]
+    assert len(effects.execute_calls) == 1
+
+
+async def test_changed_account_evidence_after_claim_closes_as_authoritative_non_effect_without_execute():
+    class Changed(RuntimeError):
+        code = "rotation_account_evidence_changed"
+
+    journal = MemoryJournal()
+    effects = Effects()
+    effects.journal = journal
+    evidence = decision_evidence()
+    cmd = command().model_copy(update={"account_decision_evidence": evidence})
+    guard = EvidenceGuard(journal, error=Changed("changed"))
+    service = WorkspaceMembershipMutationService(
+        journal,
+        PermitAdmission(),
+        effects,
+        account_evidence_guard=guard,
+        clock=lambda: NOW,
+    )
+
+    result = await service.submit(cmd)
+
+    assert result.phase == "failed"
+    assert result.pending_action is None
+    assert result.last_code == "rotation_account_evidence_changed"
+    assert result.receipt is not None
+    assert result.receipt.outcome == "authoritative_non_effect"
+    assert result.receipt.remove_effect == "authoritative_non_effect"
+    assert result.receipt.add_effect == "authoritative_non_effect"
+    assert effects.execute_calls == []
     assert journal.entry.active_scope is None
 
 

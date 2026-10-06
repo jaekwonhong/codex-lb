@@ -214,3 +214,19 @@ member_rotation_operator
 ## Slice-1 conclusion
 
 The member-management capability is separable, but not by moving the three module directories intact. The durable membership workflow, effect/no-replay safety, observation and operator read models form a coherent control-plane core. The strongest coupling to the inference data plane is concentrated in account credential/status mutation, account routing-cache publication, account probing, live usage refresh/reset-credit orchestration, and the Codex-LB process shell. Those seams are the inputs to the next ownership-boundary slice.
+
+## Slice-8 replacement status
+
+The extracted Controller core now replaces the data-plane seams above as follows:
+
+| Legacy Codex-LB dependency | Extracted Controller replacement | Status |
+| --- | --- | --- |
+| `AccountsRepository` / `Account` lookup for outgoing member | `WorkspaceMemberAccountBindingPort` using exact durable `opencodex_account_id` | replaced in Controller core; no email/account-id auto-migration |
+| background usage updater / `RotationUsageObservation` / weekly assessment | `OpenCodexAccountStatePort` normalized `quota_state` + freshness/generation fences | replaced in Controller core |
+| local interpretation of raw quota percentages | OpenCodex normalized quota state; raw windows retained only as decision evidence | retired from Controller decision authority |
+| Codex-LB reset-credit resolver/executor | OpenCodex `reset_credit_state`; positive count returns `reset_required` and performs no local reset | local executor retired from Controller core; fenced OpenCodex mutation command remains a later activation concern |
+| `RotationQuotaRepository` as a concrete dependency | `MembershipMutationBudgetPort` | core replaced; `LegacyMembershipMutationBudget` temporarily reuses the existing Controller-owned rolling-effect table |
+| Codex-LB credential generation/status/cache state | OpenCodex exact-account projection and immutable `AccountDecisionEvidence` | replaced |
+| account evidence between decision and membership effect | journaled account decision evidence + post-claim OpenCodex revalidation | replaced |
+
+`app.modules.member_switch.rotation_worker` remains unchanged as rollback/shadow-comparison code until the qualification and cutover slices. It is no longer a dependency of the extracted Controller core. The core deliberately has no automatic import from legacy Codex-LB account rows into `WorkspaceMemberAccountBinding`: old local account ids, emails and selectors are not proof of the exact OpenCodex account foreign key. Binding population must therefore be explicit/qualified during standalone packaging and canary preparation.

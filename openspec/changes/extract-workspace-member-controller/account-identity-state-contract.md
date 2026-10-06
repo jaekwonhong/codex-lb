@@ -215,4 +215,4 @@ The current OpenCodex source already has the primitives needed for this contract
 - health/reauth state and account listing projections;
 - exact generation checks before credential-scoped writes.
 
-The ordinary account-list DTO intentionally does not expose every credential generation. Therefore the standalone Controller SHOULD NOT scrape internal credential files or infer a generation from email/quota data. Slice 6 must provide a narrow OpenCodex control-plane adapter/projection that exposes non-secret generation/revision fences explicitly while retaining OpenCodex as the writer.
+The ordinary account-list DTO intentionally does not expose every credential generation. The qualified OpenCodex checkpoint `af4f476` provides the narrow exact-account control-plane projection required by this contract, and the Controller consumes that projection without scraping internal credential files or inferring a generation from email/quota data. Rotation policy uses the normalized projected quota/selection/reset-credit state rather than recomputing routing eligibility from raw percentages.

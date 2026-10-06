@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal, Protocol
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, model_validator
 
 from app.modules.workspace_member_controller.domain import ControllerModel
 
@@ -22,6 +22,25 @@ class OpenCodexCooldown(ControllerModel):
 
 class OpenCodexResetCreditState(ControllerModel):
     available_count: int = Field(ge=0)
+
+
+class AccountDecisionEvidence(ControllerModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    provider: Literal["openai"] = "openai"
+    account_id: str = Field(min_length=1)
+    credential_generation: int | None = Field(default=None, ge=0)
+    main_identity_generation: int | None = Field(default=None, ge=0)
+    state_revision: str = Field(pattern=r"^[a-f0-9]{64}$")
+    observed_at: int = Field(ge=0)
+    quota_observed_at: int | None = Field(default=None, ge=0)
+    selection_state: Literal["selectable", "excluded", "unknown"]
+    quota_state: Literal["available", "exhausted", "unknown"]
+    needs_reauth: bool
+    paused: bool
+    quota_windows: list[OpenCodexQuotaWindow] = Field(default_factory=list)
+    reset_credit_available_count: int | None = Field(default=None, ge=0)
 
 
 class OpenCodexAccountState(ControllerModel):

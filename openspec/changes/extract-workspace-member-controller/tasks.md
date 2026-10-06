@@ -22,8 +22,8 @@
 - [x] 3.4 Stand up a read-only Controller API for catalog/status/observation.
 - [x] 3.5 Implement the OpenCodex account-state adapter.
 - [x] 3.6 Extract add/remove/switch mutation commands and preserve durable no-replay recovery.
-- [ ] 3.7 Replace Codex-LB usage/quota inputs used by rotation decisions with OpenCodex-owned account state where the contract is sufficient.
-- [ ] 3.8 Remove remaining Codex-LB account/proxy/data-plane dependencies from the Controller boundary.
+- [x] 3.7 Replace Codex-LB usage/quota inputs used by rotation decisions with OpenCodex-owned account state where the contract is sufficient.
+- [x] 3.8 Remove remaining Codex-LB account/proxy/data-plane dependencies from the Controller boundary.
 
 ## 4. Qualification and cutover
 

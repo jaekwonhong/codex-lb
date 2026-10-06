@@ -10,6 +10,7 @@ from app.modules.workspace_member_controller.mutation_models import (
     MembershipMutationView,
 )
 from app.modules.workspace_member_controller.mutation_ports import (
+    AccountDecisionEvidenceGuard,
     MembershipMutationAdmissionPort,
     MembershipMutationEffectPort,
 )
@@ -32,11 +33,13 @@ class WorkspaceMembershipMutationService:
         admission: MembershipMutationAdmissionPort,
         effects: MembershipMutationEffectPort,
         *,
+        account_evidence_guard: AccountDecisionEvidenceGuard | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._journal = journal
         self._admission = admission
         self._effects = effects
+        self._account_evidence_guard = account_evidence_guard
         self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     async def get(self, operation_id: str) -> MembershipMutationView | None:
@@ -61,6 +64,7 @@ class WorkspaceMembershipMutationService:
                 created_at=now,
                 updated_at=now,
                 admission=fresh_admission,
+                account_decision_evidence=command.account_decision_evidence,
             )
             try:
                 entry = await self._journal.create_mutation(state)
@@ -108,10 +112,43 @@ class WorkspaceMembershipMutationService:
         except Exception as exc:
             self._raise_journal_error(exc)
 
+        evidence = command.account_decision_evidence
+        if evidence is not None:
+            if self._account_evidence_guard is None:
+                return await self._settle_local_non_effect(entry, command, "account_evidence_guard_unavailable")
+            try:
+                await self._account_evidence_guard.revalidate_account_evidence(evidence)
+            except Exception as exc:
+                code = getattr(exc, "code", None)
+                suffix = code if isinstance(code, str) and code else "account_evidence_revalidation_failed"
+                return await self._settle_local_non_effect(entry, command, suffix)
+
         try:
             receipt = await self._effects.execute(command)
         except Exception as exc:
             raise MembershipMutationError("mutation_outcome_unknown") from exc
+        return await self._apply_receipt(entry, receipt)
+
+    async def _settle_local_non_effect(
+        self,
+        entry: MembershipMutationJournalEntry,
+        command: MembershipMutationCommand,
+        code: str,
+    ) -> MembershipMutationView:
+        action = command.mutation.action
+        receipt = MembershipMutationReceipt(
+            operation_id=entry.operation_id,
+            command_id=str(command.command_id),
+            request_fingerprint=entry.state.command_fingerprint,
+            action=action,
+            workspace_id=command.mutation.workspace_id,
+            workspace_account_id=command.mutation.workspace_account_id,
+            outcome="authoritative_non_effect",
+            code=code,
+            observed_at=self._clock(),
+            remove_effect="authoritative_non_effect" if action in {"remove", "switch"} else "not_attempted",
+            add_effect="authoritative_non_effect" if action in {"add", "switch"} else "not_attempted",
+        )
         return await self._apply_receipt(entry, receipt)
 
     async def reconcile(self, operation_id: str) -> MembershipMutationView:
@@ -184,6 +221,8 @@ class WorkspaceMembershipMutationService:
             raise MembershipMutationError("mutation_operation_identity_mismatch")
         if entry.state.command_fingerprint != fingerprint:
             raise MembershipMutationError("mutation_command_identity_mismatch")
+        if entry.state.account_decision_evidence != command.account_decision_evidence:
+            raise MembershipMutationError("mutation_account_evidence_mismatch")
 
     @staticmethod
     def _require_receipt_identity(
@@ -222,6 +261,7 @@ class WorkspaceMembershipMutationService:
             updated_at=entry.state.updated_at,
             pending_action=entry.pending_action,
             command_id=entry.command_id,
+            account_decision_evidence=entry.state.account_decision_evidence,
             receipt=entry.state.receipt,
         )
 

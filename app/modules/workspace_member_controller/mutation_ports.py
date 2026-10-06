@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from app.modules.workspace_member_controller.account_state import AccountDecisionEvidence
 from app.modules.workspace_member_controller.mutation_models import (
     MembershipMutationAdmissionEvidence,
     MembershipMutationCommand,
     MembershipMutationReceipt,
 )
+
+
+class AccountDecisionEvidenceGuard(Protocol):
+    async def revalidate_account_evidence(self, evidence: AccountDecisionEvidence) -> object: ...
 
 
 class MembershipMutationAdmissionPort(Protocol):

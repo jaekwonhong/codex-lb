@@ -331,3 +331,76 @@ The internal add/remove/switch command service and effect/journal ports MAY exis
 - **WHEN** the extracted Controller HTTP router is enumerated after mutation command extraction
 - **THEN** it still exposes only the previously qualified GET/HEAD read surface
 - **AND** mutation commands are reachable only as internal service contracts, not network operations
+
+### Requirement: Workspace-member rotation uses exact OpenCodex account state instead of Codex-LB usage/account authority
+
+The extracted Workspace Member Controller rotation decision SHALL resolve the current workspace member to an exact durable OpenCodex account binding and SHALL read live account evidence only through the OpenCodex account-state projection. The decision core SHALL NOT import or query Codex-LB `Account`/`AccountsRepository`, usage updater/history, proxy routing state, account-selection cache, or request-account failover state. Email, selector and alias SHALL NOT substitute for the durable `opencodex_account_id`. The current workspace/member identity SHALL also be re-proven from a fresh authoritative membership observation before account evidence can authorize a rotation decision.
+
+#### Scenario: Bound member has a fresh exhausted OpenCodex account
+
+- **GIVEN** the current workspace member is exactly bound to OpenCodex account A
+- **AND** OpenCodex returns a fresh generation-fenced projection for A with normalized quota state `exhausted`
+- **WHEN** the Controller evaluates workspace-member rotation
+- **THEN** it binds decision evidence to account A and that exact generation/state revision
+- **AND** it does not lookup a Codex-LB account by email, workspace id, or local account id
+
+#### Scenario: Email matches but exact account binding is absent
+
+- **GIVEN** the workspace member email resembles an OpenCodex account label
+- **WHEN** no durable exact member-to-account binding exists
+- **THEN** rotation fails closed as `account_binding_missing`
+- **AND** the Controller does not search another account by email or selector
+
+### Requirement: Rotation trusts OpenCodex normalized quota state rather than raw percentage reconstruction
+
+The Controller SHALL treat OpenCodex `quota_state` as the authoritative normalized quota classification for membership policy. Raw normalized quota-window percentages MAY be retained in immutable audit evidence but SHALL NOT be used to independently derive available/exhausted routing state. A quota-dependent rotation SHALL require a fresh projection and fresh `quota_observed_at`. `quota_state=unknown` or stale quota evidence SHALL block rotation. `quota_state=available` SHALL not trigger membership replacement even if a raw window percentage appears high; `quota_state=exhausted` MAY continue even if a raw window percentage appears low, subject to all other Controller safety gates.
+
+#### Scenario: Raw percentage disagrees with normalized quota state
+
+- **GIVEN** OpenCodex reports normalized quota state `available` with a raw window at 100 percent
+- **WHEN** the Controller evaluates rotation
+- **THEN** it treats the account as quota-available and does not reserve membership mutation budget
+- **AND** it does not override OpenCodex by recalculating exhaustion from the raw percentage
+
+### Requirement: Reset-credit ownership remains in OpenCodex while membership mutation budget remains in the Controller
+
+A quota-exhausted rotation SHALL require known OpenCodex reset-credit evidence. If reset-credit evidence is absent, the Controller SHALL fail closed. If OpenCodex reports one or more available reset credits, the Controller SHALL return `reset_required` and SHALL NOT reserve or execute a workspace membership mutation. The Controller SHALL NOT call the legacy Codex-LB reset-credit executor. A production reset action, when enabled, SHALL use an OpenCodex-owned exact-account idempotent command. If the fresh OpenCodex projection authoritatively reports zero available reset credits, the Controller MAY proceed to its own membership-specific rolling mutation budget.
+
+The rolling 24-hour/168-hour membership mutation budget remains Controller-owned safety state because it governs external workspace membership effects rather than inference routing. A migration adapter MAY reuse the existing durable rotation-quota table, but the Controller core SHALL depend only on the membership-budget port and SHALL pass no Codex-LB inference-account/usage object to it.
+
+#### Scenario: Exhausted account still has a reset credit
+
+- **WHEN** OpenCodex reports `quota_state=exhausted` and reset-credit available count greater than zero
+- **THEN** the Controller returns `reset_required`
+- **AND** it does not reserve membership mutation budget or call a membership effect
+
+#### Scenario: Exhausted account has no reset credit and budget is full
+
+- **GIVEN** OpenCodex fresh evidence reports zero available reset credits
+- **WHEN** the Controller-owned rolling membership budget rejects the reservation
+- **THEN** the rotation result is membership-budget blocked
+- **AND** that result does not change OpenCodex account routing state
+
+### Requirement: OpenCodex account decision evidence is immutable and revalidated immediately before membership effect
+
+An admitted quota-driven rotation SHALL create immutable account decision evidence containing the exact OpenCodex account id, applicable credential/main generation, state revision, observation times, normalized selection/quota state, reauth/pause state, reset-credit count, and relevant normalized quota windows. When a membership mutation depends on that evidence, the evidence SHALL be included in the durable mutation command/journal fingerprint. After the command is durably claimed and marked effect-pending but before the external membership effect is invoked, the Controller SHALL re-read the exact account through OpenCodex and require the same generation and state revision plus fresh exhausted/no-reset-credit preconditions.
+
+If this post-claim revalidation fails, the Controller SHALL NOT call the membership-effect executor. Because the failure is observed before the external effect call, the Controller SHALL settle the claimed command with an authoritative local non-effect receipt and release its mutation scope.
+
+#### Scenario: Credential generation changes after durable mutation claim
+
+- **GIVEN** a mutation command retained generation N and was durably claimed
+- **WHEN** OpenCodex reports generation N+1 before the membership effect call
+- **THEN** the Controller records authoritative non-effect for that command
+- **AND** no add/remove/switch effect is sent
+- **AND** a future rotation requires a new current OpenCodex decision
+
+### Requirement: Legacy Codex-LB rotation worker is outside the extracted Controller core
+
+The legacy Codex-LB `member_switch.rotation_worker` and its `AccountsRepository`, `Account`, background usage updater, weekly usage evidence, Codex-LB reset-credit executor and request-account runtime dependencies MAY remain temporarily for rollback/shadow comparison, but SHALL NOT be imported by the extracted Controller core. Non-legacy Controller modules SHALL have no imports from Codex-LB DB/account/proxy/usage/reset/member-switch/data-plane implementations. Explicitly named `legacy_*` migration adapters MAY reference old persistence implementations only to preserve existing durable Controller-owned state until final cutover.
+
+#### Scenario: Controller core dependency boundary is inspected
+
+- **WHEN** non-legacy modules under `app.modules.workspace_member_controller` are scanned
+- **THEN** none imports Codex-LB account, proxy, usage, reset-credit, member-switch, database-model, or dependency-container modules
+- **AND** migration-only imports are confined to explicitly named legacy adapters
