@@ -55,6 +55,7 @@ class _AffinitySelectionKwargs(TypedDict):
     sticky_seed_kind: StickySessionKind | None
     spill_bare_session_on_account_cap: bool
     abandon_unavailable_legacy_owner: bool
+    proven_unavailable_legacy_owner_account_id: str | None
     require_unambiguous_account: bool
     sticky_max_age_seconds: int | None
 
@@ -70,6 +71,11 @@ class _AffinityPolicy:
     # An explicit, self-contained Codex goal restart may retire only a raw
     # compatibility owner whose durable account status is unavailable.
     abandon_unavailable_legacy_owner: bool = False
+    # Request-local authoritative evidence that the raw compatibility owner
+    # itself rejected this still-pre-visible turn with an account-wide usage
+    # limit. This is never persisted as policy and is deliberately separate
+    # from ordinary retry exclusions, which can represent transient failures.
+    proven_unavailable_legacy_owner_account_id: str | None = None
     max_age_seconds: int | None = None
     codex_session_source: _CodexSessionSource | None = None
     # A thread row is soft locality, but old replicas may have persisted the
@@ -140,6 +146,7 @@ class _AffinityPolicy:
             "sticky_seed_kind": self.seed_selection_kind,
             "spill_bare_session_on_account_cap": self.spill_on_account_cap,
             "abandon_unavailable_legacy_owner": self.abandon_unavailable_legacy_owner,
+            "proven_unavailable_legacy_owner_account_id": self.proven_unavailable_legacy_owner_account_id,
             "require_unambiguous_account": self.require_unambiguous_account,
             "sticky_max_age_seconds": self.max_age_seconds,
         }

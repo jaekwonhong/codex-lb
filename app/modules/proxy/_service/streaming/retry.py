@@ -960,6 +960,50 @@ class _StreamingRetryMixin:
             )
             return True
 
+        def _arm_legacy_owner_usage_limit_recovery(*, account_id: str, error: UpstreamError, code: str) -> bool:
+            """Allow one guarded raw-session owner retirement after proven quota loss.
+
+            This is narrower than ordinary retry exclusion. The upstream owner
+            itself must have returned a usage-limit terminal before any visible
+            output, and the complete request must already be account-neutral.
+            Stored response/turn-state/file ownership and single-account routing
+            therefore stay fail-closed. The account id is carried as request-local
+            proof so selection can perform its source-scoped owner CAS even when
+            an API-key reservation defers the durable health write until final
+            settlement.
+            """
+
+            nonlocal affinity
+            # The production-beta base predates the upstream message-derived
+            # usage-limit classifier. Keep this hotfix deliberately narrower:
+            # only the explicit account-wide usage-limit code that caused the
+            # PC1 Astra failure is authoritative retirement evidence.
+            if code != USAGE_LIMIT_REACHED:
+                return False
+            if routing_strategy == "single_account":
+                return False
+            if turn_state_owner_account_id is not None or file_preferred_account_id is not None:
+                return False
+            if affinity.codex_session_source not in {"session_header", "thread_header"}:
+                return False
+            if affinity.legacy_selection_key is None:
+                return False
+            if not responses_payload_is_account_neutral_fresh_replay(payload.to_replay_safety_payload()):
+                return False
+            affinity = replace(
+                affinity,
+                reallocate_sticky=True,
+                abandon_unavailable_legacy_owner=True,
+                proven_unavailable_legacy_owner_account_id=account_id,
+            )
+            logger.info(
+                "Armed verified usage-limit recovery for legacy Codex owner "
+                "request_id=%s account_id=%s",
+                request_id,
+                account_id,
+            )
+            return True
+
         async def _stream_post_refresh_with_capacity_recovery(
             account: Account,
             *,
@@ -2787,10 +2831,16 @@ class _StreamingRetryMixin:
                                     await _release_tracked_stream_lease(current_account_lease)
                                     current_account_lease = None
                                     excluded_account_ids.add(account.id)
-                                    _move_verified_fresh_replay_from_owner(
+                                    moved_verified_replay = _move_verified_fresh_replay_from_owner(
                                         account_id=account.id,
                                         outcome="owner_previsible_failure",
                                     )
+                                    if not moved_verified_replay:
+                                        _arm_legacy_owner_usage_limit_recovery(
+                                            account_id=account.id,
+                                            error=_upstream_error_from_openai(error),
+                                            code=code,
+                                        )
                                     break
                                 await proxy._handle_stream_error(
                                     account,
@@ -2940,10 +2990,16 @@ class _StreamingRetryMixin:
                         await _release_tracked_stream_lease(current_account_lease)
                         current_account_lease = None
                         excluded_account_ids.add(account.id)
-                    _move_verified_fresh_replay_from_owner(
+                    moved_verified_replay = _move_verified_fresh_replay_from_owner(
                         account_id=account.id,
                         outcome="owner_previsible_retryable_failure",
                     )
+                    if exc.exclude_account and not moved_verified_replay:
+                        _arm_legacy_owner_usage_limit_recovery(
+                            account_id=account.id,
+                            error=exc.error,
+                            code=exc.code,
+                        )
                     continue
                 except _TerminalStreamError:
                     if settlement.settlement_order_required:
@@ -3509,10 +3565,16 @@ class _StreamingRetryMixin:
                                 last_transient_exc = retry_exc
                                 await _release_tracked_stream_lease(current_account_lease)
                                 current_account_lease = None
-                                _move_verified_fresh_replay_from_owner(
+                                moved_verified_replay = _move_verified_fresh_replay_from_owner(
                                     account_id=account.id,
                                     outcome="owner_post_refresh_failure",
                                 )
+                                if not moved_verified_replay:
+                                    _arm_legacy_owner_usage_limit_recovery(
+                                        account_id=account.id,
+                                        error=current_error_payload,
+                                        code=current_error_code,
+                                    )
                                 excluded_account_ids.add(account.id)
                                 continue
                             health_write_allowed = await _drain_pending_post_refresh_penalty_on_terminal(settlement)

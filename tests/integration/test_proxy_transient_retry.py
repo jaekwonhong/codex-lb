@@ -753,6 +753,112 @@ async def test_stream_connect_phase_429_usage_limit_transparent_failover(async_c
 
 
 @pytest.mark.asyncio
+async def test_astra_inline_image_hard_session_owner_usage_limit_recovers_on_replacement(async_client, monkeypatch):
+    """Regression for the PC1 Beta Astra ``No available accounts`` failure.
+
+    A raw legacy CODEX_SESSION row pins the turn to A. The inline image forces
+    the direct streaming path (HTTP bridge bypass), A reports account-wide
+    usage exhaustion before visible output, and B must serve the same
+    account-neutral turn instead of the retry collapsing into
+    ``hard_affinity_saturated``.
+    """
+
+    from app.db.models import StickySessionKind
+    from app.modules.proxy.sticky_repository import StickySessionsRepository
+
+    owner_id = await _import_account(async_client, "acc_astra_image_quota_owner", "astra-image-owner@example.com")
+    replacement_id = await _import_account(
+        async_client,
+        "acc_astra_image_quota_replacement",
+        "astra-image-replacement@example.com",
+    )
+    session_id = "sid-astra-inline-image-owner-quota"
+    async with SessionLocal() as session:
+        await StickySessionsRepository(session).upsert(
+            session_id,
+            owner_id,
+            kind=StickySessionKind.CODEX_SESSION,
+        )
+
+    seen_account_ids: list[str | None] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **kwargs):
+        del payload, headers, access_token, base_url, raise_for_status, kwargs
+        seen_account_ids.append(account_id)
+        if account_id == "acc_astra_image_quota_owner":
+            yield _sse_event(
+                {
+                    "type": "response.failed",
+                    "response": {
+                        "id": "resp_astra_image_owner_quota",
+                        "status": "failed",
+                        "error": {
+                            "code": "usage_limit_reached",
+                            "message": "The usage limit has been reached",
+                        },
+                    },
+                }
+            )
+            return
+        assert account_id == "acc_astra_image_quota_replacement"
+        yield _success_sse_event("resp_astra_image_quota_recovered")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+
+    async with async_client.stream(
+        "POST",
+        "/backend-api/codex/responses",
+        headers={"session_id": session_id},
+        json={
+            "model": "gpt-6-astra",
+            "instructions": "inspect the inline image",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "continue"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                    ],
+                }
+            ],
+            "stream": True,
+        },
+    ) as response:
+        assert response.status_code == 200
+        lines = [line async for line in response.aiter_lines() if line]
+
+    events = _extract_events(lines)
+    assert [event["type"] for event in events if event.get("type") in {"response.failed", "response.completed"}] == [
+        "response.completed"
+    ]
+    assert seen_account_ids == [
+        "acc_astra_image_quota_owner",
+        "acc_astra_image_quota_replacement",
+    ]
+
+    async with SessionLocal() as session:
+        repo = StickySessionsRepository(session)
+        session_lookup = await repo.get_account_id_and_abandonment(
+            session_id,
+            kind=StickySessionKind.CODEX_SESSION,
+            continuity_source="session_header",
+        )
+        turn_lookup = await repo.get_account_id_and_abandonment(
+            session_id,
+            kind=StickySessionKind.CODEX_SESSION,
+            continuity_source="turn_state",
+        )
+        replacement = await session.get(Account, replacement_id)
+        assert replacement is not None
+
+    assert session_lookup.account_id is None
+    assert session_lookup.continuity_abandoned is True
+    assert session_lookup.abandoned_account_id == owner_id
+    assert turn_lookup.account_id == owner_id
+    assert turn_lookup.continuity_abandoned is False
+
+
+@pytest.mark.asyncio
 async def test_stream_code_less_429_retries_same_account_then_succeeds(async_client, monkeypatch):
     """Code-less 429 (upstream burst) on an owner-bound payload backs off and retries the owner.
 

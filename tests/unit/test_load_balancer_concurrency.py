@@ -501,6 +501,7 @@ class _RetiringStaleOwnerStickySessionsRepository(_StubStickySessionsRepository)
         super().__init__()
         self.account_ids_by_key = {raw_key: owner_account_id}
         self.tombstones: list[tuple[str, str]] = []
+        self.proven_unavailable_calls: list[bool] = []
 
     async def abandon_legacy_session_header_owner_if_unavailable(
         self,
@@ -508,7 +509,9 @@ class _RetiringStaleOwnerStickySessionsRepository(_StubStickySessionsRepository)
         *,
         kind: StickySessionKind,
         expected_account_id: str,
+        proven_unavailable: bool = False,
     ) -> bool:
+        self.proven_unavailable_calls.append(proven_unavailable)
         assert kind == StickySessionKind.CODEX_SESSION
         assert self.account_ids_by_key is not None
         if self.account_ids_by_key.get(key) != expected_account_id:
@@ -534,7 +537,9 @@ class _LosingRetirementRaceStickySessionsRepository(_RetiringStaleOwnerStickySes
         *,
         kind: StickySessionKind,
         expected_account_id: str,
+        proven_unavailable: bool = False,
     ) -> bool:
+        self.proven_unavailable_calls.append(proven_unavailable)
         assert kind == StickySessionKind.CODEX_SESSION
         assert self.account_ids_by_key is not None
         assert self.account_ids_by_key.get(key) == expected_account_id
@@ -4227,6 +4232,62 @@ async def test_goal_restart_with_thread_header_retires_unavailable_legacy_owner(
         thread_key: replacement.id,
     }
     assert all(account_id != stale_owner.id for _, account_id, _ in sticky_repo.upserts)
+    await balancer.release_account_lease(selected.lease)
+
+
+@pytest.mark.asyncio
+async def test_proven_usage_limit_retires_active_legacy_owner_before_durable_health_write() -> None:
+    """Request-local quota proof may precede the deferred account status write.
+
+    The raw owner is deliberately still ACTIVE in this selection snapshot. A
+    caller that carries authoritative pre-visible usage-limit evidence for that
+    exact owner may source-scope tombstone the raw session row and select the
+    healthy replacement without waiting for keyed usage settlement to persist
+    RATE_LIMITED. Ordinary callers never receive this proof field.
+    """
+
+    now_epoch = int(datetime.now(tz=timezone.utc).timestamp())
+    owner = _make_account("quota-proof-active-owner")
+    replacement = _make_account("quota-proof-replacement")
+    raw_session = "quota-proof-active-owner-session"
+    selection_key = _codex_session_selection_key(raw_session)
+    sticky_repo = _RetiringStaleOwnerStickySessionsRepository(
+        raw_key=raw_session,
+        owner_account_id=owner.id,
+    )
+    balancer = LoadBalancer(
+        lambda: _repo_factory(
+            _StubAccountsRepository([owner, replacement]),
+            _StubUsageRepository(
+                {
+                    owner.id: _usage_row(321, owner.id, window="primary", reset_at=now_epoch + 300),
+                    replacement.id: _usage_row(322, replacement.id, window="primary", reset_at=now_epoch + 300),
+                },
+                {},
+            ),
+            sticky_repo,
+        )
+    )
+
+    selected = await balancer.select_account(
+        sticky_key=selection_key,
+        sticky_kind=StickySessionKind.CODEX_SESSION,
+        sticky_source="session_header",
+        legacy_sticky_key=raw_session,
+        abandon_unavailable_legacy_owner=True,
+        proven_unavailable_legacy_owner_account_id=owner.id,
+        exclude_account_ids={owner.id},
+        lease_kind="stream",
+    )
+
+    assert selected.account is not None
+    assert selected.account.id == replacement.id
+    assert sticky_repo.proven_unavailable_calls == [True]
+    assert sticky_repo.tombstones == [(raw_session, owner.id)]
+    assert sticky_repo.account_ids_by_key == {
+        raw_session: owner.id,
+        selection_key: replacement.id,
+    }
     await balancer.release_account_lease(selected.lease)
 
 
