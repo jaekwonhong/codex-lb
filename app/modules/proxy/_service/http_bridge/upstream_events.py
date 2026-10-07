@@ -3609,6 +3609,23 @@ class _HTTPBridgeUpstreamEventsMixin:
                         status_request_state.affinity_policy,
                         reallocate_sticky=True,
                     )
+                    # The shared relocation verdict has replaced the anchored
+                    # body with a verified account-neutral fresh replay. The
+                    # bridge-level hard-anchor bit described the body that just
+                    # failed on the exhausted owner; retaining it would force
+                    # the reconnect back onto that owner even after the anchor
+                    # and owner pin have been removed.
+                    status_request_state.hard_continuity_anchor = False
+                    if (
+                        status_request_state.operation_id is not None
+                        and status_request_state.operation_fingerprint is not None
+                    ):
+                        # The definitive usage-limit terminal completed the
+                        # owner's durable operation before this in-place replay
+                        # was authorized. Preserve its dedupe identity, but
+                        # require the send boundary to re-fence that exact
+                        # operation on the replacement owner before dispatch.
+                        status_request_state.operation_rebind_required = True
                     status_request_state.request_text = safe_request_text
                     async with session.pending_lock:
                         if status_request_state not in session.pending_requests:

@@ -35,3 +35,35 @@ Before moving a qualified turn, the proxy MUST revalidate the same local session
 - **WHEN** its alias, owner, stored input anchor, or pending-tool manifest changes before the quota failure is handled
 - **THEN** the proxy MUST NOT cross accounts under the stale proof
 - **AND** hard turn-state continuity remains authoritative
+
+### Requirement: Definitive owner-quota relocation has one transport-independent policy boundary
+
+Any direct HTTP stream or HTTP-bridge path that would move a continuity-owned request to another account after definitive owner quota exhaustion MUST obtain a movable verdict from the shared relocation policy before clearing the owner requirement, excluding the owner, or dispatching on a replacement account. A locally verified fresh body alone MUST NOT authorize cross-account movement. Generic configured required-account routing that is not an ownership or continuity constraint MUST retain its existing non-continuity selection and degraded-mode semantics.
+
+#### Scenario: Selection-time owner quota uses the shared verdict
+
+- **GIVEN** a direct HTTP continuation has locally verified account-neutral full-resend material
+- **AND** required-owner admission proves the continuity owner is definitively quota-exhausted before any upstream dispatch
+- **WHEN** another account is eligible
+- **THEN** the proxy MUST consult the shared relocation verdict before releasing the owner pin
+- **AND** it MAY dispatch on the replacement only when that verdict is movable
+
+#### Scenario: Generic required account is not continuity provenance
+
+- **GIVEN** routing is configured with a required account for non-continuity reasons
+- **WHEN** that account is unavailable or quota-exhausted
+- **THEN** selection MUST preserve the existing generic required-account error and degraded-mode semantics
+- **AND** it MUST NOT fabricate definitive continuity-owner quota provenance
+
+### Requirement: HTTP-bridge owner-quota relocation re-fences durable continuity on the replacement
+
+When an HTTP-bridge continuation receives a pre-visible definitive `usage_limit_reached` from its owner and the shared relocation verdict authorizes an account-neutral full resend, the retry MUST clear the exhausted request's hard anchor and owner pin, exclude the exhausted owner, and re-bind the existing durable operation dedupe identity to the replacement owner before the retry is dispatched. The reallocation authority MUST be request-local and MUST NOT weaken later ordinary reconnects. A subsequent continuation anchored to the replacement response MUST remain on that replacement account.
+
+#### Scenario: Full resend relocates and the following turn stays on the replacement
+
+- **GIVEN** account A owns a completed Astra turn and the client sends a verified complete full resend for the next turn
+- **WHEN** account A returns pre-visible `usage_limit_reached`
+- **AND** account B is eligible and the shared relocation verdict is movable
+- **THEN** the proxy retries the account-neutral full resend on account B without the exhausted `previous_response_id`
+- **AND** the durable operation is re-fenced on account B before dispatch
+- **AND** a following request anchored to account B's response continues on account B rather than reconnecting to account A

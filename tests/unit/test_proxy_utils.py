@@ -41460,6 +41460,98 @@ async def test_stream_verified_fresh_replay_moves_off_owner_after_pre_dispatch_q
 
 
 @pytest.mark.asyncio
+async def test_stream_selection_time_owner_quota_uses_shared_relocation_verdict(monkeypatch):
+    """A required owner rejected by admission must not bypass decide_relocation.
+
+    The owner can become definitively quota-exhausted before direct HTTP opens
+    an upstream stream. A locally verified full resend is still eligible to
+    move, but selection-time failover must honor the same ownership/body policy
+    as an upstream usage-limit rejection instead of clearing the owner pin
+    directly.
+    """
+
+    settings = _make_proxy_settings()
+    request_logs = _RequestLogsRecorder()
+    service = proxy_service.ProxyService(_repo_factory(request_logs))
+    owner_account = _make_account("acc_stream_selection_quota_owner")
+    replacement_account = _make_account("acc_stream_selection_quota_replacement")
+    session_id = "sid_stream_selection_quota"
+    previous_response_id = "resp_stream_selection_quota_owner"
+    request_logs.response_owner_by_id[(previous_response_id, None, session_id)] = owner_account.id
+    initial_input: list[JsonValue] = [{"role": "user", "content": "first turn"}]
+    full_input: list[JsonValue] = [
+        *initial_input,
+        {"role": "user", "content": "continue from the full local history"},
+    ]
+    service._websocket_continuity_index[(session_id, None)] = proxy_service._WebSocketContinuityState(
+        last_completed_response_id=previous_response_id,
+        last_completed_input_count=len(initial_input),
+        last_completed_input_prefix_fingerprint=proxy_service._fingerprint_input_items(initial_input),
+    )
+    selection_calls: list[dict[str, object]] = []
+    streamed_payloads: list[ResponsesRequest] = []
+    relocation_inputs: list[Any] = []
+    real_decide_relocation = streaming_retry_module.decide_relocation
+
+    def capture_relocation_verdict(inputs: Any) -> Any:
+        relocation_inputs.append(inputs)
+        return real_decide_relocation(inputs)
+
+    async def fake_select_account(**kwargs):
+        selection_calls.append(dict(kwargs))
+        if kwargs.get("required_account_id") == owner_account.id:
+            assert kwargs.get("required_account_id") == owner_account.id
+            return AccountSelection(
+                account=None,
+                error_message="Required owner quota exhausted",
+                error_code="hard_affinity_saturated",
+                hard_affinity_owner_usage_exhausted=True,
+            )
+        assert kwargs.get("required_account_id") is None
+        assert kwargs.get("exclude_account_ids") == {owner_account.id}
+        assert kwargs.get("reallocate_sticky") is True
+        return AccountSelection(account=replacement_account, error_message=None)
+
+    async def fake_stream(payload, headers, access_token, account_id, base_url=None, raise_for_status=False, **kwargs):
+        del headers, access_token, base_url, raise_for_status, kwargs
+        assert account_id == replacement_account.chatgpt_account_id
+        streamed_payloads.append(payload)
+        yield (
+            'data: {"type":"response.completed","response":{"id":"resp_selection_quota_recovered",'
+            '"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n'
+        )
+
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(service._load_balancer, "select_account", AsyncMock(side_effect=fake_select_account))
+    monkeypatch.setattr(service._load_balancer, "record_success", AsyncMock())
+    monkeypatch.setattr(service, "_ensure_fresh", AsyncMock(side_effect=lambda account, **kwargs: account))
+    monkeypatch.setattr(service, "_settle_stream_api_key_usage", AsyncMock(return_value=True))
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+    monkeypatch.setattr(streaming_retry_module, "decide_relocation", capture_relocation_verdict)
+
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-5.6-sol",
+            "instructions": "test selection-time owner quota relocation",
+            "input": full_input,
+            "previous_response_id": previous_response_id,
+            "stream": True,
+        }
+    )
+
+    chunks = [chunk async for chunk in service.stream_responses(payload, {"session_id": session_id})]
+
+    assert json.loads(chunks[-1].split("data: ", 1)[1])["type"] == "response.completed"
+    assert len(streamed_payloads) == 1
+    assert streamed_payloads[0].previous_response_id is None
+    assert streamed_payloads[0].input == full_input
+    assert len(relocation_inputs) == 1
+    assert relocation_inputs[0].transport == "http_stream"
+    assert relocation_inputs[0].evidence == "definitive"
+
+
+@pytest.mark.asyncio
 async def test_stream_account_neutral_image_quota_response_event_does_not_retire_legacy_owner(monkeypatch):
     """A quota response event proves upstream execution and keeps the raw owner bound.
 

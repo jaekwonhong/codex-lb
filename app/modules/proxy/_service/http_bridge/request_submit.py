@@ -4033,10 +4033,13 @@ class _HTTPBridgeRequestSubmitMixin:
                     else request_state.request_text
                 )
                 # The send boundary decorates durable operations with
-                # codex_lb_operation_id after selection. Keep that operation
-                # identity on its owner unless a dedicated rebind path has
-                # already replaced the operation ID.
-                candidate_portable = request_state.operation_id is None and (
+                # codex_lb_operation_id after selection. Keep an ordinary
+                # operation on its owner, but a definitive relocation may mark
+                # the existing dedupe identity for an explicit re-fence on the
+                # replacement owner before the retry is sent.
+                candidate_portable = (
+                    request_state.operation_id is None or request_state.operation_rebind_required
+                ) and (
                     _websocket_request_text_is_account_neutral_fresh_replay(candidate_text)
                 )
                 request_text = _prepare_websocket_request_state_for_visible_output_replay(request_state)
@@ -4151,11 +4154,35 @@ class _HTTPBridgeRequestSubmitMixin:
                     **reconnect_reader_kwargs,
                 )
             else:
+                # A definitive owner-quota relocation converts an anchored
+                # hard-session request into an account-neutral fresh replay,
+                # excludes the exhausted owner, and marks only this request's
+                # affinity as reallocatable. Reconnect selection must consume
+                # that request-local authority instead of consulting the stale
+                # session affinity, or the old hard CODEX_SESSION row selects
+                # the exhausted owner again (or collapses to
+                # hard_affinity_saturated). Do not persist the authority
+                # after selection: the sticky mutation has already rebound the
+                # row, while future ordinary reconnects still require their own
+                # relocation evidence.
+                relocation_selection_affinity = (
+                    request_state.affinity_policy
+                    if fresh_hard_request_account_switch_allowed
+                    and request_state.affinity_policy.reallocate_sticky
+                    else None
+                )
                 await self._reconnect_http_bridge_session(
                     session,
                     request_state=request_state,
+                    **(
+                        {"selection_affinity": relocation_selection_affinity}
+                        if relocation_selection_affinity is not None
+                        else {}
+                    ),
                     **reconnect_reader_kwargs,
                 )
+                if relocation_selection_affinity is not None:
+                    session.affinity = replace(session.affinity, reallocate_sticky=False)
             if request_state.account_response_create_lease is None:
                 current_settings = await _service_get_settings_cache().get()
                 request_state.account_response_create_lease = (

@@ -868,14 +868,15 @@ async def test_stream_connect_phase_429_usage_limit_transparent_failover(async_c
 
 
 @pytest.mark.asyncio
-async def test_astra_inline_image_hard_session_owner_usage_limit_recovers_on_replacement(async_client, monkeypatch):
-    """Regression for the PC1 Beta Astra ``No available accounts`` failure.
+async def test_astra_inline_image_usage_limit_response_event_stays_owner_bound(async_client, monkeypatch):
+    """A quota response-id is execution evidence and must not cross accounts.
 
     A raw legacy CODEX_SESSION row pins the turn to A. The inline image forces
-    the direct streaming path (HTTP bridge bypass), A reports account-wide
-    usage exhaustion before visible output, and B must serve the same
-    account-neutral turn instead of the retry collapsing into
-    ``hard_affinity_saturated``.
+    the direct streaming path (HTTP bridge bypass). If A's quota rejection is a
+    ``response.failed`` carrying an upstream response id, the shared relocation
+    policy treats that id as observed upstream execution. The request therefore
+    fails closed on A instead of replaying on B; response-id-free definitive
+    quota failures are covered separately by the transparent failover tests.
     """
 
     from app.db.models import StickySessionKind
@@ -944,12 +945,9 @@ async def test_astra_inline_image_hard_session_owner_usage_limit_recovers_on_rep
 
     events = _extract_events(lines)
     assert [event["type"] for event in events if event.get("type") in {"response.failed", "response.completed"}] == [
-        "response.completed"
+        "response.failed"
     ]
-    assert seen_account_ids == [
-        "acc_astra_image_quota_owner",
-        "acc_astra_image_quota_replacement",
-    ]
+    assert seen_account_ids == ["acc_astra_image_quota_owner"]
 
     async with SessionLocal() as session:
         repo = StickySessionsRepository(session)
@@ -965,12 +963,14 @@ async def test_astra_inline_image_hard_session_owner_usage_limit_recovers_on_rep
         )
         replacement = await session.get(Account, replacement_id)
         assert replacement is not None
+        owner = await session.get(Account, owner_id)
+        assert owner is not None
 
-    assert session_lookup.account_id is None
-    assert session_lookup.continuity_abandoned is True
-    assert session_lookup.abandoned_account_id == owner_id
+    assert session_lookup.account_id == owner_id
+    assert session_lookup.continuity_abandoned is False
     assert turn_lookup.account_id == owner_id
     assert turn_lookup.continuity_abandoned is False
+    assert owner.status == AccountStatus.RATE_LIMITED
 
 
 @pytest.mark.asyncio

@@ -15,9 +15,13 @@ API-key streams defer the account-health write until usage settlement, so waitin
 - Strip the exhausted turn-state token before replacement dispatch and fall back to ordinary thread/session affinity only after that proof succeeds.
 - Keep previous-response, conversation, unverified or concurrently advanced turn-state, file/image owner pins, unresolved tool state, single-account routing, downstream-visible failures, generic rate limits, local caps, and transient transport failures fail-closed.
 - Preserve API-key usage settlement before the deferred account-health write.
+- Route direct-HTTP selection-time owner failover and HTTP-bridge owner-quota replay through the same transport-independent relocation verdict; no transport may clear an owner pin merely because a locally verified fresh body exists.
+- When a definitive HTTP-bridge owner quota relocates an account-neutral full resend, clear the exhausted hard-anchor state, re-fence the same durable operation identity on the replacement owner before dispatch, and keep the next anchored turn on that replacement.
+- Treat quota provenance as an ownership/continuity property: generic configured `required_account_id` routing retains its existing non-continuity error/degraded-mode semantics.
 
 ## Impact
 
 - PC1 Beta Astra turns with self-contained inline images can move to a healthy account after the hard owner exhausts quota instead of collapsing into `No available accounts`.
 - Hard continuity remains unchanged for owner-dependent or unverified requests; a registered turn-state is movable only with locally verified full-resend evidence and an unchanged alias anchor.
 - The raw owner is retired only for `session_header` interpretation; an explicit `turn_state` lookup using the same text remains owner-bound to the retained account.
+- HTTP stream and HTTP bridge now share the same relocation-policy boundary for definitive owner quota, including selection-time failures that occur before upstream dispatch.

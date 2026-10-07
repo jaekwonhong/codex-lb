@@ -1988,17 +1988,16 @@ class _StreamingRetryMixin:
                         and preferred_account_id is not None
                         and verified_fresh_replay_payload is not None
                     ):
-                        excluded_account_ids.add(preferred_account_id)
-                        payload = verified_fresh_replay_payload
-                        verified_fresh_replay_payload = None
-                        preferred_account_id = None
-                        require_preferred_account = False
-                        affinity = replace(affinity, reallocate_sticky=True)
-                        logger.info(
-                            "cross_transport_verified_fresh_replay request_id=%s outcome=owner_unavailable",
-                            request_id,
-                        )
-                        continue
+                        if _move_verified_fresh_replay_from_owner(
+                            account_id=preferred_account_id,
+                            outcome="owner_unavailable",
+                            # Selection failed before any upstream dispatch.
+                            # Moving the request is therefore a first attempt,
+                            # but it still owes the same transport-independent
+                            # ownership/body verdict as every other relocation.
+                            relocation_evidence="definitive",
+                        ):
+                            continue
                     await _drain_pending_post_refresh_penalty_on_terminal(settlement)
                     if propagate_http_errors and last_transient_exc is not None:
                         raise last_transient_exc
@@ -2175,17 +2174,17 @@ class _StreamingRetryMixin:
                     and account.id != preferred_account_id
                 ):
                     if verified_fresh_replay_payload is not None:
-                        payload = verified_fresh_replay_payload
-                        verified_fresh_replay_payload = None
-                        excluded_account_ids.add(preferred_account_id)
-                        preferred_account_id = None
-                        require_preferred_account = False
-                        affinity = replace(affinity, reallocate_sticky=True)
-                        logger.info(
-                            "cross_transport_verified_fresh_replay request_id=%s outcome=alternate_selected",
-                            request_id,
+                        moved = _move_verified_fresh_replay_from_owner(
+                            account_id=preferred_account_id,
+                            outcome="alternate_selected",
+                            # The selector chose the alternate before this
+                            # request was dispatched, so execution evidence is
+                            # definitive-none while ownership gates still apply.
+                            relocation_evidence="definitive",
                         )
                     else:
+                        moved = False
+                    if not moved:
                         error_code = "previous_response_owner_unavailable"
                         message = "Previous response owner account is unavailable; retry later."
                         reason = "owner_account_unavailable"
