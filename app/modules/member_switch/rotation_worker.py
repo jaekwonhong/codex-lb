@@ -95,6 +95,8 @@ class RotationWorker:
         )
 
     async def require_plan(self, plan: CanaryPlan) -> None:
+        if get_settings().workspace_membership_writer != "legacy":
+            raise ValueError("workspace_membership_writer_moved")
         task = asyncio.current_task()
         if task is not None and task.cancelling():
             raise asyncio.CancelledError

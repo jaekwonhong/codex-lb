@@ -32,6 +32,8 @@ class RotationScheduler:
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
 
     async def tick(self) -> None:
+        if get_settings().workspace_membership_writer != "legacy":
+            return
         # Reading the local plan is the sole work while OFF. Even leader election
         # would use the database, so do not acquire it before checking the plan.
         initial = read_canary_plan(self.directory)

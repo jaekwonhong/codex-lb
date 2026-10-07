@@ -336,6 +336,7 @@ class Settings(BaseSettings):
     oauth_callback_host: str = _default_oauth_callback_host()
     oauth_import_dir: Path | None = None
     companion_account_pool_url: str | None = None
+    workspace_membership_writer: Literal["legacy", "wmc"] = "legacy"
     runtime_enabled_model_source_ids: str = ""
     # T3 → dashboard (deprecated env alias, remove next minor)
     auth_guardian_enabled: bool = True

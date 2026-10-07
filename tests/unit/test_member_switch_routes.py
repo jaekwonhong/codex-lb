@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
@@ -106,3 +107,37 @@ async def test_write_access_is_required_before_control_or_companion_calls(contex
         assert (await client.post("/api/member-switch-runs/catalog/refresh")).status_code == 403
         assert (await client.post("/api/member-switch-runs", json={})).status_code == 403
     assert context[2].calls == [] and context[3].calls == []
+
+
+async def test_wmc_writer_mode_fences_legacy_switch_writes_but_keeps_reads(context, monkeypatch):
+    monkeypatch.setattr(
+        "app.modules.member_switch.api.get_settings",
+        lambda: SimpleNamespace(workspace_membership_writer="wmc"),
+    )
+    app = make_app(context)
+    _, _, companion, auth, _ = context
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        assert (await client.get("/api/member-switch-runs/active")).status_code == 200
+        assert (await client.get("/api/member-switch-runs/catalog")).status_code == 200
+        refresh = await client.post("/api/member-switch-runs/catalog/refresh")
+        assert refresh.status_code == 200
+        blocked_create = await client.post(
+            "/api/member-switch-runs",
+            json={
+                "runId": str(uuid4()),
+                "workspaceId": "cdp-1",
+                "presetId": "target",
+                "catalogFingerprint": "a" * 64,
+            },
+        )
+        blocked_command = await client.post(
+            f"/api/member-switch-runs/{uuid4()}/commands",
+            json={"commandId": str(uuid4()), "expectedRevision": 0, "action": "start"},
+        )
+
+    assert blocked_create.status_code == 409
+    assert blocked_create.json()["error"]["code"] == "workspace_membership_writer_moved"
+    assert blocked_command.status_code == 409
+    assert blocked_command.json()["error"]["code"] == "workspace_membership_writer_moved"
+    assert "start" not in companion.calls
+    assert auth.calls == []

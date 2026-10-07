@@ -11,6 +11,7 @@ from app.core.auth.dependencies import (
     set_dashboard_error_format,
     validate_dashboard_session,
 )
+from app.core.config.settings import get_settings
 from app.core.errors import dashboard_error
 from app.dependencies import (
     get_member_auth_enrollment_command_service,
@@ -149,6 +150,8 @@ async def get_run(
 async def create_run(
     request: CreateRunRequest, service: MemberSwitchService = Depends(get_member_switch_service)
 ) -> RunView:
+    if get_settings().workspace_membership_writer != "legacy":
+        raise ControlConflict("workspace_membership_writer_moved")
     return await service.create(request)
 
 
@@ -156,4 +159,6 @@ async def create_run(
 async def command(
     run_id: UUID, request: CommandRequest, service: MemberSwitchService = Depends(get_member_switch_service)
 ) -> RunView:
+    if get_settings().workspace_membership_writer != "legacy":
+        raise ControlConflict("workspace_membership_writer_moved")
     return await service.command(str(run_id), request)

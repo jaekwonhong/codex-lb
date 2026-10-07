@@ -9,6 +9,7 @@ from app.core.auth.dependencies import (
     set_dashboard_error_format,
     validate_dashboard_session,
 )
+from app.core.config.settings import get_settings
 from app.core.exceptions import DashboardConflictError, DashboardNotFoundError
 from app.db.session import get_session
 from app.modules.member_rotation_operator.adapter import get_rotation_operator_snapshot_adapter
@@ -59,6 +60,11 @@ async def update_operator_intent(
     payload: RotationIntentUpdateRequest,
     service: MemberRotationOperatorService = Depends(get_member_rotation_operator_service),
 ) -> RotationIntentView:
+    if get_settings().workspace_membership_writer != "legacy":
+        raise DashboardConflictError(
+            "Workspace membership writes are owned by the standalone Controller",
+            code="workspace_membership_writer_moved",
+        )
     try:
         return await service.update_intent(
             workspace_id=workspace_id,

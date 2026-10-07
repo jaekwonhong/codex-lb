@@ -73,6 +73,21 @@ async def test_default_off_does_not_even_elect_leader(tmp_path):
     assert scheduler._task is None
 
 
+async def test_wmc_writer_mode_makes_scheduler_inert_even_with_valid_plan(tmp_path, monkeypatch):
+    selected = plan()
+    (tmp_path / "canary-plan.json").write_text(selected.model_dump_json())
+
+    async def unexpected(*_):
+        pytest.fail("WMC writer mode must not elect leader or execute a legacy plan")
+
+    monkeypatch.setattr(
+        "app.modules.member_switch.rotation_scheduler.get_settings",
+        lambda: SimpleNamespace(workspace_membership_writer="wmc"),
+    )
+    scheduler = RotationScheduler(tmp_path, unexpected, leader=unexpected, clock=lambda: NOW)
+    await scheduler.tick()
+
+
 async def test_stop_cancels_and_awaits_active_worker(tmp_path):
     entered, cancelled = asyncio.Event(), asyncio.Event()
     (tmp_path / "canary-plan.json").write_text(plan().model_dump_json())
@@ -183,6 +198,25 @@ async def test_full_scheduler_path_and_restart_do_not_repeat_reset_or_start(work
     await restarted.run(selected)
     assert state.resets == 1 and companion.start_calls == 1
     assert await controls.get(SCHEDULE_BINDING_ID) is not None
+
+
+async def test_wmc_writer_mode_fences_direct_legacy_worker_before_effect(worker_context, monkeypatch):
+    worker, selected, state, companion, controls, _ = worker_context
+    monkeypatch.setattr(
+        "app.modules.member_switch.rotation_worker.get_settings",
+        lambda: SimpleNamespace(
+            workspace_membership_writer="wmc",
+            companion_account_pool_url=None,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="workspace_membership_writer_moved"):
+        await worker.run(selected)
+
+    assert state.fetches == 0
+    assert state.resets == 0
+    assert companion.start_calls == 0
+    assert await controls.get(SCHEDULE_BINDING_ID) is None
 
 
 async def test_recovery_consumes_no_membership_or_quota(worker_context):
