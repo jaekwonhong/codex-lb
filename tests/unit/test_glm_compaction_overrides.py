@@ -12,13 +12,13 @@ def _headers(request_kind: str) -> dict[str, str]:
     return {"x-codex-turn-metadata": json.dumps({"request_kind": request_kind})}
 
 
-def test_glm_compaction_adds_output_floor_and_medium_reasoning() -> None:
+def test_glm_compaction_adds_output_floor_and_low_reasoning() -> None:
     payload = {"model": "glm5.3-flash", "reasoning": {"effort": "high", "summary": "auto"}}
 
     _apply_glm_compaction_request_overrides(payload, _headers("compaction"))
 
     assert payload["max_output_tokens"] == _GLM_COMPACTION_OUTPUT_TOKENS
-    assert payload["reasoning"] == {"effort": "medium", "summary": "auto"}
+    assert payload["reasoning"] == {"effort": "low", "summary": "auto"}
 
 
 def test_glm_compaction_raises_too_small_client_budget_to_floor() -> None:
@@ -27,7 +27,7 @@ def test_glm_compaction_raises_too_small_client_budget_to_floor() -> None:
     _apply_glm_compaction_request_overrides(payload, _headers("compaction"))
 
     assert payload["max_output_tokens"] == _GLM_COMPACTION_OUTPUT_TOKENS
-    assert payload["reasoning"] == {"effort": "medium"}
+    assert payload["reasoning"] == {"effort": "low"}
 
 
 def test_glm_compaction_pins_client_budget_to_serving_ceiling() -> None:
@@ -36,7 +36,7 @@ def test_glm_compaction_pins_client_budget_to_serving_ceiling() -> None:
     _apply_glm_compaction_request_overrides(payload, _headers("compaction"))
 
     assert payload["max_output_tokens"] == _GLM_COMPACTION_OUTPUT_TOKENS
-    assert payload["reasoning"] == {"effort": "medium"}
+    assert payload["reasoning"] == {"effort": "low"}
 
 
 def test_glm_normal_turn_is_unchanged() -> None:

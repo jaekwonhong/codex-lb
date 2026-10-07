@@ -5289,7 +5289,8 @@ def _apply_glm_compaction_request_overrides(
     as a disconnected stream.
 
     Use the TensorFold serving ceiling for the compaction generation budget and
-    medium reasoning only for the summary turn. The user's reasoning setting
+    low reasoning only for the summary turn so the summary has materially more
+    room inside GLM's shared reasoning/output budget. The user's reasoning setting
     remains untouched for every ordinary model request.
     """
 
@@ -5302,9 +5303,9 @@ def _apply_glm_compaction_request_overrides(
 
     reasoning = source_payload.get("reasoning")
     if is_json_mapping(reasoning):
-        source_payload["reasoning"] = {**reasoning, "effort": "medium"}
+        source_payload["reasoning"] = {**reasoning, "effort": "low"}
     else:
-        source_payload["reasoning"] = {"effort": "medium"}
+        source_payload["reasoning"] = {"effort": "low"}
 
 
 async def _source_responses_response(
