@@ -749,28 +749,31 @@ def _fresh_unsent_turn_groups_are_bounded(input_items: list[JsonValue]) -> bool:
         if not isinstance(raw_item, dict):
             return False
         turn_id = _fresh_message_turn_id(raw_item)
-        if turn_id is None:
-            return False
         if raw_item.get("role") == "developer" and _source_developer_hook_message_is_transparent(raw_item):
             if user_seen:
-                if current_turn_id is None:
-                    return False
-                completed_turn_ids.add(current_turn_id)
+                if current_turn_id is not None:
+                    completed_turn_ids.add(current_turn_id)
                 completed_groups += 1
-                if turn_id in completed_turn_ids:
+                if turn_id is not None and turn_id in completed_turn_ids:
                     return False
                 current_turn_id = turn_id
                 developer_count = 0
                 user_seen = False
+            elif developer_count == 0:
+                current_turn_id = turn_id
+            elif turn_id is not None and current_turn_id is not None and turn_id != current_turn_id:
+                return False
             elif current_turn_id is None:
                 current_turn_id = turn_id
-            elif turn_id != current_turn_id:
-                return False
             developer_count += 1
             continue
         if raw_item.get("role") == "user" and _is_fresh_followup_input(raw_item):
-            if current_turn_id is None or turn_id != current_turn_id or developer_count <= 0 or user_seen:
+            if developer_count <= 0 or user_seen:
                 return False
+            if turn_id is not None and current_turn_id is not None and turn_id != current_turn_id:
+                return False
+            if current_turn_id is None:
+                current_turn_id = turn_id
             user_seen = True
             continue
         return False

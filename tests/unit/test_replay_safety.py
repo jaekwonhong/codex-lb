@@ -1806,6 +1806,39 @@ def test_full_resend_retained_output_accepts_codex_developer_hook_before_user() 
     assert responses_payload_is_account_neutral_fresh_replay({"input": replay_projection.input_items})
 
 
+def test_full_resend_retained_output_accepts_untagged_multiple_fresh_groups() -> None:
+    stored_input: list[JsonValue] = [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "root"}]}
+    ]
+    full_resend: list[JsonValue] = [
+        *stored_input,
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "prior answer"}],
+        },
+        {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "hook one"}]},
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "question one"}]},
+        {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "skills"}]},
+        {"type": "message", "role": "developer", "content": [{"type": "input_text", "text": "hook two"}]},
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "question two"}]},
+    ]
+
+    projection = project_responses_input_for_account_neutral_fresh_replay(
+        full_resend,
+        stored_count=len(stored_input),
+        preserve_developer_message_ids=True,
+    )
+    assert projection is not None
+    assert responses_input_suffix_retains_prior_output(
+        projection.input_items,
+        stored_count=projection.stored_prefix_count,
+        canonical_lite_developer_index=projection.canonical_lite_developer_index,
+        canonical_lite_developer_indexes=projection.canonical_lite_developer_indexes,
+    )
+
+
 @pytest.mark.parametrize(
     "developer_item,prior_phase,suffix_tail",
     [
