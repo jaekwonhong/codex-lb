@@ -1549,11 +1549,56 @@ def _account_neutral_replay_items(input_items: list[JsonValue]) -> list[JsonValu
         projected_item = _project_account_neutral_replay_item(item, preserve_developer_message_ids=False)
         if projected_item is None:
             continue
-        without_annotations = _content_without_portable_annotations(projected_item)
+        without_response_bookkeeping = _without_response_owned_message_bookkeeping(projected_item)
+        if without_response_bookkeeping is None:
+            return None
+        without_annotations = _content_without_portable_annotations(without_response_bookkeeping)
         if without_annotations is None:
             return None
         projected_items.append(without_annotations)
     return projected_items
+
+
+def _without_response_owned_message_bookkeeping(item: JsonValue) -> JsonValue | None:
+    """Strip response-side fields from a stored assistant message, narrowly.
+
+    ChatGPT's live WebSocket response currently repeats ``turn_id`` in a top-level
+    ``metadata`` object and adds ``create_time`` beside it in
+    ``internal_chat_message_metadata_passthrough``. Neither field is part of the
+    assistant's answer, and neither is accepted by the account-neutral fresh-input
+    predicate. The durable rebuild owns this historical response item, so it may
+    remove that bookkeeping -- but only in the exact shape observed. Unknown
+    metadata remains fail-closed instead of being silently discarded.
+    """
+
+    if not isinstance(item, dict) or item.get("role") != "assistant" or item.get("type") not in (None, "message"):
+        return item
+    projected = dict(item)
+    internal_metadata = projected.get(_INTERNAL_CHAT_MESSAGE_METADATA_FIELD)
+    if isinstance(internal_metadata, dict) and "create_time" in internal_metadata:
+        if (
+            set(internal_metadata) != {"create_time", "turn_id"}
+            or not _is_nonblank_string(internal_metadata.get("turn_id"))
+            or not isinstance(internal_metadata.get("create_time"), (int, float))
+            or isinstance(internal_metadata.get("create_time"), bool)
+        ):
+            return None
+        projected[_INTERNAL_CHAT_MESSAGE_METADATA_FIELD] = {"turn_id": internal_metadata["turn_id"]}
+    response_metadata = projected.get("metadata")
+    if response_metadata is not None:
+        if (
+            not isinstance(response_metadata, dict)
+            or set(response_metadata) != {"turn_id"}
+            or not _is_nonblank_string(response_metadata.get("turn_id"))
+        ):
+            return None
+        normalized_internal_metadata = projected.get(_INTERNAL_CHAT_MESSAGE_METADATA_FIELD)
+        if isinstance(normalized_internal_metadata, dict) and normalized_internal_metadata.get(
+            "turn_id"
+        ) != response_metadata.get("turn_id"):
+            return None
+        projected.pop("metadata")
+    return projected
 
 
 def _content_without_portable_annotations(item: JsonValue) -> JsonValue | None:
@@ -1561,12 +1606,18 @@ def _content_without_portable_annotations(item: JsonValue) -> JsonValue | None:
         return item
     parts: list[JsonValue] = []
     for part in cast(list[JsonValue], item["content"]):
-        if not isinstance(part, dict) or _ANNOTATIONS_FIELD not in part:
+        if not isinstance(part, dict):
             parts.append(part)
             continue
-        if part[_ANNOTATIONS_FIELD] != []:
+        normalized_part = dict(part)
+        if _ANNOTATIONS_FIELD in normalized_part and normalized_part[_ANNOTATIONS_FIELD] != []:
             return None
-        parts.append({key: value for key, value in part.items() if key != _ANNOTATIONS_FIELD})
+        normalized_part.pop(_ANNOTATIONS_FIELD, None)
+        if "logprobs" in normalized_part:
+            if normalized_part.get("type") != "output_text" or normalized_part["logprobs"] != []:
+                return None
+            normalized_part.pop("logprobs")
+        parts.append(cast(JsonValue, normalized_part))
     return {**item, "content": cast(JsonValue, parts)}
 
 
@@ -1636,12 +1687,13 @@ def _terminal_response_output_items(events: object) -> list[JsonValue] | None:
     ``response.created``. Either marker starts the accumulation over, so the
     abandoned generation cannot be reported as part of this turn's answer.
 
-    Some upstream versions omit ``response.output`` from a ``response.incomplete``
-    terminal while still emitting every ``response.output_item.done`` frame; the
-    accumulated items are complete enough to preserve that turn's context. A
-    terminal carrying no response object at all proves nothing about either, and
-    an answer that is empty is not an answer, so both fail closed as a missing
-    terminal does.
+    Some upstream versions omit ``response.output`` from a terminal while still
+    emitting every ``response.output_item.done`` frame. ChatGPT's live WebSocket
+    also emits ``response.completed.response.output=[]`` after those completed
+    item frames. In both cases the accumulated items are complete enough to
+    preserve that turn's context. A terminal carrying no response object at all
+    proves nothing about either, and an answer that is empty in both sources is
+    not an answer, so both fail closed as a missing terminal does.
 
     The spool stores each frame as the upstream wrote it, so the shared SSE field
     parser reads it: only CR, LF and CRLF end a line, and a multi-line ``data:``
@@ -1667,7 +1719,7 @@ def _terminal_response_output_items(events: object) -> list[JsonValue] | None:
             if not isinstance(response, dict):
                 return None
             output = response.get("output")
-            settled_items = cast(list[JsonValue], output) if isinstance(output, list) else completed_items
+            settled_items = cast(list[JsonValue], output) if isinstance(output, list) and output else completed_items
             return settled_items or None
         if event_type == _ATTEMPT_START_EVENT_TYPE or event_type in _ABANDONED_TERMINAL_EVENT_TYPES:
             completed_items.clear()
