@@ -16123,6 +16123,81 @@ def test_verified_durable_full_resend_proof_is_sealed_immutable_and_request_boun
     assert http_bridge_streaming_module._verify_durable_full_resend(incomplete_payload, durable_lookup) is None
 
 
+def test_verified_durable_full_resend_accepts_codex_per_turn_developer_hooks() -> None:
+    def message(role: str, text: str, *, item_id: str, phase: str | None = None) -> proxy_service.JsonValue:
+        content_type = "output_text" if role == "assistant" else "input_text"
+        item: dict[str, proxy_service.JsonValue] = {
+            "type": "message",
+            "id": item_id,
+            "role": role,
+            "content": [{"type": content_type, "text": text}],
+        }
+        if phase is not None:
+            item["phase"] = phase
+        return item
+
+    stored_input: list[proxy_service.JsonValue] = [
+        {
+            "type": "additional_tools",
+            "id": "at_codex_bundle",
+            "role": "developer",
+            "tools": [{"type": "custom", "name": "shell", "description": "run"}],
+        },
+        message("developer", "base instructions", item_id="msg_base_dev"),
+        message("user", "root question", item_id="msg_root_user"),
+        message("developer", "root turn hook", item_id="msg_root_hook"),
+        message("user", "root user turn", item_id="msg_root_turn_user"),
+        message("assistant", "root answer", item_id="msg_root_answer", phase="final_answer"),
+        message("developer", "continuation hook", item_id="msg_cont_hook"),
+        message("user", "continuation question", item_id="msg_cont_user"),
+    ]
+    full_input: list[proxy_service.JsonValue] = [
+        *stored_input,
+        message("assistant", "continuation answer", item_id="msg_cont_answer", phase="final_answer"),
+        message("developer", "current hook", item_id="msg_current_hook"),
+        message("user", "current question", item_id="msg_current_user"),
+    ]
+    payload = proxy_service.ResponsesRequest.model_validate(
+        {
+            "model": "gpt-6-astra",
+            "instructions": "continue",
+            "input": full_input,
+        }
+    )
+    durable_lookup = proxy_service.DurableBridgeLookup(
+        session_id="sess-codex-hooks-proof",
+        canonical_kind="thread_header",
+        canonical_key="thread-codex-hooks-proof",
+        api_key_scope="__anonymous__",
+        account_id="acc-owner",
+        owner_instance_id=None,
+        owner_epoch=7,
+        lease_expires_at=None,
+        state=HttpBridgeSessionState.CLOSED,
+        latest_turn_state=None,
+        latest_response_id="resp-continuation-answer",
+        latest_input_item_count=len(stored_input),
+        latest_input_full_fingerprint=proxy_service._fingerprint_input_items(stored_input),
+        model="gpt-6-astra",
+    )
+
+    proof = http_bridge_streaming_module._verify_durable_full_resend(payload, durable_lookup)
+
+    assert proof is not None
+    assert proof.matches(payload, durable_lookup)
+    changed_payload = payload.model_copy(
+        update={
+            "input": [
+                *stored_input,
+                message("assistant", "different answer", item_id="msg_cont_answer", phase="final_answer"),
+                message("developer", "current hook", item_id="msg_current_hook"),
+                message("user", "current question", item_id="msg_current_user"),
+            ]
+        }
+    )
+    assert not proof.matches(changed_payload, durable_lookup)
+
+
 def test_verified_durable_full_resend_accepts_response_bound_pending_tool_calls() -> None:
     stored_input_items: list[proxy_service.JsonValue] = [
         {"role": "user", "content": "look that up"},
