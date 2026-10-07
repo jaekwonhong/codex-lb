@@ -49,6 +49,23 @@ bound OpenCodex account. A shadow with zero bindings does not exercise that
 endpoint, so `bindingCount=0` by itself is not evidence that this secret mount is
 correct.
 
+### Exact-account reconciliation fence
+
+For every retained binding, current readiness performs two consecutive exact
+OpenCodex account-state reads. The binding is reconciled only when both reads
+name the same account and have the same credential/main generation plus the same
+opaque `stateRevision`; the accepted second projection must also be no older
+than 30 seconds.
+
+Readiness does **not** require the bound account to be selectable. A stable
+paused, reauth-required, quota-exhausted, or otherwise excluded account remains
+a valid durable binding. OpenCodex continues to own inference eligibility and
+routing; WMC interprets those states only inside membership-rotation policy.
+
+An unstable or stale bound-account projection must make readiness fail closed.
+Do not repair that failure by changing the binding to another account unless an
+independent, qualified exact-identity binding workflow authorizes the change.
+
 ## Health checks
 
 ```sh
