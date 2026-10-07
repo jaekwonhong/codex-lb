@@ -262,6 +262,83 @@ def test_an_anchored_full_resend_dispatches_the_body_the_client_sent(transport: 
     assert verdict.body["input"] == [_user("hello"), _assistant("hi there"), _user("and now?")]
 
 
+def test_http_bridge_prepared_full_resend_drops_only_transient_codex_client_metadata() -> None:
+    prepared_payload: dict[str, JsonValue] = {
+        "model": "gpt-6-astra",
+        "input": [_user("hello")],
+        "reasoning": {"effort": "high", "context": "all_turns"},
+        "client_metadata": {
+            "session_id": "session-1",
+            "thread_id": "thread-1",
+            "turn_id": "turn-1",
+            "root_turn_id": "root-1",
+            "ws_request_header_x_openai_internal_codex_responses_lite": "true",
+            "x-codex-installation-id": "installation-1",
+            "x-codex-turn-metadata": '{"turn_id":"turn-1"}',
+            "x-codex-window-id": "thread-1:0",
+        },
+    }
+
+    verdict = decide_relocation(
+        RelocationInputs(
+            transport="http_bridge",
+            payload=prepared_payload,
+            current_request_text=_frame(prepared_payload),
+            evidence="definitive",
+        )
+    )
+
+    assert verdict.movable is True
+    assert verdict.source == "client_input"
+    assert verdict.body is not None
+    assert verdict.body["reasoning"] == {"effort": "high", "context": "all_turns"}
+    assert verdict.body["client_metadata"] == {
+        "ws_request_header_x_openai_internal_codex_responses_lite": "true",
+        "x-codex-installation-id": "installation-1",
+        "x-codex-turn-metadata": '{"turn_id":"turn-1"}',
+        "x-codex-window-id": "thread-1:0",
+    }
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_reason"),
+    [
+        pytest.param(
+            {"client_metadata": {"thread_id": 123}},
+            "no_account_neutral_body",
+            id="malformed-transient-thread-id",
+        ),
+        pytest.param(
+            {"reasoning": {"effort": "high", "context": "future_context"}},
+            "no_account_neutral_body",
+            id="unknown-reasoning-context",
+        ),
+        pytest.param(
+            {"client_metadata": {"future_account_handle": "acct-owner"}},
+            "no_account_neutral_body",
+            id="unknown-client-metadata-remains-fail-closed",
+        ),
+    ],
+)
+def test_http_bridge_prepared_full_resend_still_rejects_unbounded_transport_metadata(
+    mutation: dict[str, JsonValue],
+    expected_reason: RelocationDeclineReason,
+) -> None:
+    prepared_payload: dict[str, JsonValue] = {"model": "gpt-6-astra", "input": [_user("hello")], **mutation}
+
+    verdict = decide_relocation(
+        RelocationInputs(
+            transport="http_bridge",
+            payload=prepared_payload,
+            current_request_text=_frame(prepared_payload),
+            evidence="definitive",
+        )
+    )
+
+    assert verdict.movable is False
+    assert verdict.decline_reason == expected_reason
+
+
 @pytest.mark.parametrize("transport", _TRANSPORTS)
 def test_a_chain_turn_that_restated_the_conversation_replaces_what_it_restates(
     transport: RelocationTransport,
