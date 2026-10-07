@@ -392,6 +392,8 @@ def responses_input_suffix_retains_prior_output(
         return False
     pending_suffix_calls, seen_suffix_call_ids = prefix_state
     suffix = input_items[stored_count:]
+    if not pending_suffix_calls and _fresh_unsent_turn_groups_are_bounded(suffix):
+        return True
     if _fresh_developer_before_user_is_bounded(suffix):
         suffix = [suffix[0], suffix[2]]
     retained_output_seen = False
@@ -718,6 +720,61 @@ def _fresh_developer_before_user_is_bounded(input_items: list[JsonValue]) -> boo
         and fresh_input.get("role") == "user"
         and _is_fresh_followup_input(fresh_input)
     )
+
+
+def _fresh_message_turn_id(item: Mapping[str, JsonValue]) -> str | None:
+    metadata = item.get(_INTERNAL_CHAT_MESSAGE_METADATA_FIELD)
+    if not isinstance(metadata, dict):
+        return None
+    turn_id = metadata.get("turn_id")
+    return cast(str, turn_id) if _is_nonblank_string(turn_id) else None
+
+
+def _fresh_unsent_turn_groups_are_bounded(input_items: list[JsonValue]) -> bool:
+    if len(input_items) < 4:
+        return False
+    retained_output = input_items[0]
+    if (
+        not isinstance(retained_output, dict)
+        or not _is_retained_response_message(retained_output)
+        or retained_output.get("phase") != "final_answer"
+    ):
+        return False
+    current_turn_id: str | None = None
+    developer_count = 0
+    user_seen = False
+    completed_turn_ids: set[str] = set()
+    completed_groups = 0
+    for raw_item in input_items[1:]:
+        if not isinstance(raw_item, dict):
+            return False
+        turn_id = _fresh_message_turn_id(raw_item)
+        if turn_id is None:
+            return False
+        if raw_item.get("role") == "developer" and _source_developer_hook_message_is_transparent(raw_item):
+            if user_seen:
+                if current_turn_id is None:
+                    return False
+                completed_turn_ids.add(current_turn_id)
+                completed_groups += 1
+                if turn_id in completed_turn_ids:
+                    return False
+                current_turn_id = turn_id
+                developer_count = 0
+                user_seen = False
+            elif current_turn_id is None:
+                current_turn_id = turn_id
+            elif turn_id != current_turn_id:
+                return False
+            developer_count += 1
+            continue
+        if raw_item.get("role") == "user" and _is_fresh_followup_input(raw_item):
+            if current_turn_id is None or turn_id != current_turn_id or developer_count <= 0 or user_seen:
+                return False
+            user_seen = True
+            continue
+        return False
+    return user_seen and developer_count > 0 and completed_groups >= 1
 
 
 def _fresh_developer_interleave_is_bounded(
