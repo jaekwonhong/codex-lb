@@ -6,4 +6,4 @@
 - [x] Preserve the existing GLM encrypted-reasoning compatibility scrub.
 - [x] Add helper and externally routed regression coverage.
 - [x] Validate model-source incomplete-terminal forwarding and Compact regressions.
-- [ ] Deploy the exact candidate commit to Beta and run live GLM Compact validation.
+- [x] Deploy the exact candidate runtime to Beta and run live GLM Compact validation.
