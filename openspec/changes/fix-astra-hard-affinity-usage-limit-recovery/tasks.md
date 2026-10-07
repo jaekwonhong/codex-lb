@@ -12,3 +12,6 @@
 - [x] Add load-balancer coverage for retirement while the durable account row is still active.
 - [x] Add repository coverage proving source-qualified tombstone semantics and explicit-turn-state preservation.
 - [x] Run focused and broad proxy/sticky regression suites, Ruff, ty, diff checks, and strict OpenSpec validation.
+- [x] Close direct-HTTP selection-time owner-quota failover through the shared relocation verdict and add a regression that proves the verdict is invoked.
+- [x] Add an end-to-end HTTP-bridge regression for owner `usage_limit_reached` -> account-neutral full-resend relocation -> next-turn continuity on the replacement account, including durable-operation re-fencing.
+- [x] Preserve generic configured required-account semantics while retaining definitive quota provenance only for ownership/continuity-constrained selection.

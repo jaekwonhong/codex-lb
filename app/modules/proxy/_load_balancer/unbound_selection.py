@@ -66,6 +66,7 @@ class UnboundSelectionRequest(Generic[SelectionInputsT]):
     relative_availability_power: float
     relative_availability_top_k: int
     required_account_id: str | None
+    required_account_is_ownership_constraint: bool
     require_unambiguous_account: bool
     budget_threshold_pct: float
     secondary_budget_threshold_pct: float
@@ -532,9 +533,11 @@ async def run_unbound_selection_path(
 
         break
 
-    required_owner_usage_exhausted = _owner_has_definitive_usage_exhaustion(
-        owner_account_id=required_account_id,
-        states=states,
+    required_owner_usage_exhausted = request.required_account_is_ownership_constraint and (
+        _owner_has_definitive_usage_exhaustion(
+            owner_account_id=required_account_id,
+            states=states,
+        )
     )
     if (
         selected_snapshot is None

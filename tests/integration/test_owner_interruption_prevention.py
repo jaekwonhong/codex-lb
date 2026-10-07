@@ -22,7 +22,10 @@ from app.dependencies import get_proxy_service_for_app
 from app.modules.api_keys.service import ApiKeyUsageReservationData
 from app.modules.proxy import api as proxy_api
 from app.modules.proxy._service.http_bridge import streaming as bridge_streaming
-from app.modules.proxy._service.http_bridge.helpers import _local_history_recovery_required_error
+from app.modules.proxy._service.http_bridge.helpers import (
+    _http_bridge_previous_response_owner_unavailable_error,
+    _local_history_recovery_required_error,
+)
 from app.modules.proxy.account_cache import get_account_selection_cache
 from app.modules.proxy.durable_bridge_coordinator import DurableBridgeLookup
 from app.modules.proxy.durable_bridge_runtime import http_bridge_owner_process_epoch
@@ -284,7 +287,10 @@ async def test_fresh_reattach_delta_route_requires_local_history_and_logs_prefli
         latest_response_id="resp_owner_anchor",
         model="gpt-5.1",
     )
-    get_or_create = AsyncMock(side_effect=AssertionError("local-history refusal must precede upstream creation"))
+    definitive_owner_quota = _http_bridge_previous_response_owner_unavailable_error(
+        definitive_usage_exhaustion=True
+    )
+    get_or_create = AsyncMock(side_effect=definitive_owner_quota)
     retire_owner = AsyncMock(return_value=True)
     advice_calls = 0
     if admission_case != "early":
@@ -363,11 +369,9 @@ async def test_fresh_reattach_delta_route_requires_local_history_and_logs_prefli
     else:
         assert response.headers.get("x-should-retry") != "false"
     retire_owner.assert_not_awaited()
-    if admission_case == "early":
-        get_or_create.assert_not_awaited()
-    else:
-        get_or_create.assert_awaited_once()
-        assert get_or_create.await_args.kwargs["previous_response_id"] == "resp_owner_anchor"
+    get_or_create.assert_awaited_once()
+    assert get_or_create.await_args is not None
+    assert get_or_create.await_args.kwargs["previous_response_id"] == "resp_owner_anchor"
 
     async with SessionLocal() as session:
         rows = list(
@@ -665,7 +669,7 @@ async def pressured_continuation(async_client, app_instance, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_31_second_owner_hold_transfers_without_waiting_or_rejecting_upstream(
+async def test_31_second_owner_hold_defers_to_authoritative_owner_without_waiting(
     pressured_continuation, monkeypatch
 ):
     case = pressured_continuation
@@ -678,17 +682,17 @@ async def test_31_second_owner_hold_transfers_without_waiting_or_rejecting_upstr
     events = await _collect_sse_events(
         case.client, "/backend-api/codex/responses", json_body=case.body, headers=case.headers
     )
-    assert events[-1]["response"]["id"] == "resp_guard_alternate_1"
-    assert len(case.original.sent_text) == 1
-    sent = json.loads(case.replacement.sent_text[0])
-    assert sent["input"] == case.body["input"]
+    assert events[-1]["response"]["id"] == "resp_guard_owner_2"
+    assert len(case.original.sent_text) == 2
+    assert case.replacement.sent_text == []
+    sent = json.loads(case.original.sent_text[1])
     assert sent["model"] == case.body["model"]
     assert sent["reasoning"] == case.body["reasoning"]
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("constraint", ["explicit_anchor", "missing_output", "file_owner", "no_alternate"])
-async def test_blocked_unmovable_turn_never_dispatches_to_either_account(
+async def test_advisory_pressure_never_moves_owner_bound_turn_cross_account(
     pressured_continuation, monkeypatch, constraint
 ):
     case = pressured_continuation
@@ -709,23 +713,34 @@ async def test_blocked_unmovable_turn_never_dispatches_to_either_account(
             )
             await session.commit()
         get_account_selection_cache().invalidate()
-    response = await case.client.post("/backend-api/codex/responses", json=case.body, headers=case.headers)
-    assert response.status_code == 502
-    error = response.json()["error"]
-    assert error["code"] == "previous_response_owner_unavailable"
-    assert error["resets_at"] == case.now + 31
-    assert len(case.original.sent_text) == 1
+    events = await _collect_sse_events(
+        case.client, "/backend-api/codex/responses", json_body=case.body, headers=case.headers
+    )
+    assert events[-1]["response"]["id"] == "resp_guard_owner_2"
+    assert len(case.original.sent_text) == 2
     assert case.replacement.sent_text == []
     assert all(runtime.inflight_response_creates == 0 for runtime in case.service._load_balancer._runtime.values())
 
 
 @pytest.mark.asyncio
-async def test_native_desktop_explicit_anchor_owner_pressure_requires_local_history(
+async def test_native_desktop_explicit_anchor_definitive_quota_without_transcript_requires_local_history(
     pressured_continuation,
+    monkeypatch,
 ):
     case = pressured_continuation
     case.body["previous_response_id"] = case.first["id"]
     case.body["input"] = [case.body["input"][-1]]
+    get_or_create = AsyncMock(
+        side_effect=_http_bridge_previous_response_owner_unavailable_error(
+            definitive_usage_exhaustion=True
+        )
+    )
+    monkeypatch.setattr(
+        case.service._durable_bridge,
+        "get_replayable_transcript",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(case.service, "_get_or_create_http_bridge_session", get_or_create)
     response = await case.client.post(
         "/backend-api/codex/responses",
         json=case.body,
@@ -744,6 +759,7 @@ async def test_native_desktop_explicit_anchor_owner_pressure_requires_local_hist
     assert "retry-after" not in response.headers
     assert len(case.original.sent_text) == 1
     assert case.replacement.sent_text == []
+    get_or_create.assert_awaited_once()
     assert all(runtime.inflight_response_creates == 0 for runtime in case.service._load_balancer._runtime.values())
 
 
@@ -800,7 +816,9 @@ async def test_native_explicit_owner_failure_after_advice_preserves_anchor_and_r
 
 
 @pytest.mark.asyncio
-async def test_alternate_is_revalidated_after_advisory_selection_race(pressured_continuation, monkeypatch):
+async def test_advisory_alternate_race_does_not_authorize_cross_account_switch(
+    pressured_continuation, monkeypatch
+):
     case = pressured_continuation
     assess = bridge_streaming.assess_owner_recovery
 
@@ -817,8 +835,8 @@ async def test_alternate_is_revalidated_after_advisory_selection_race(pressured_
 
     monkeypatch.setattr(bridge_streaming, "assess_owner_recovery", stale_advice)
     response = await case.client.post("/backend-api/codex/responses", json=case.body, headers=case.headers)
-    assert response.status_code in (502, 503)
-    assert len(case.original.sent_text) == 1
+    assert response.status_code == 200
+    assert len(case.original.sent_text) == 2
     assert case.replacement.sent_text == []
     assert all(runtime.inflight_response_creates == 0 for runtime in case.service._load_balancer._runtime.values())
 

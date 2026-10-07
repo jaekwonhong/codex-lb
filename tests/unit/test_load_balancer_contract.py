@@ -344,7 +344,8 @@ async def test_required_continuity_owner_miss_does_not_mark_healthy_pool_degrade
 
     assert selection.account is None
     assert selection.error_message == "No available accounts"
-    assert selection.error_code == load_balancer_module.CONTINUITY_OWNER_UNAVAILABLE
+    assert selection.error_code == "hard_affinity_saturated"
+    assert selection.hard_affinity_owner_usage_exhausted is True
     assert degraded_reasons == []
     assert normal_calls == []
 
@@ -401,7 +402,8 @@ async def test_opportunistic_required_owner_miss_preserves_continuity_classifica
 
     assert selection.account is None
     assert selection.error_message == "No available accounts"
-    assert selection.error_code == load_balancer_module.CONTINUITY_OWNER_UNAVAILABLE
+    assert selection.error_code == "hard_affinity_saturated"
+    assert selection.hard_affinity_owner_usage_exhausted is True
     assert degraded_reasons == []
     assert normal_calls == []
 
@@ -594,6 +596,7 @@ async def test_required_continuity_owner_preserves_transient_hard_affinity_satur
             # This caller excluded nothing, so the saturation is a transient
             # owner outage and keeps its recovery wait (#2163).
             hard_affinity_owner_excluded=False,
+            hard_affinity_owner_usage_exhausted=False,
         )
 
     monkeypatch.setattr(load_balancer_module, "run_sticky_selection_path", saturated_selection)

@@ -2756,6 +2756,19 @@ class _HTTPBridgeStreamingMixin:
                     cache_key_family=bridge_session_key.affinity_kind,
                     model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
                 )
+                # Advisory quota/headroom never authorizes recovery. This
+                # branch is reached only after authoritative owner admission
+                # supplied definitive quota provenance and the shared
+                # relocation policy refused the cross-account move. Native
+                # Codex cannot make an injected-anchor delta portable by
+                # retrying the same request, so surface its explicit
+                # local-history recovery contract after (not instead of) the
+                # shared policy verdict. Non-native callers retain the
+                # previous-response-owner-unavailable failure below.
+                if native_explicit_anchor_requires_local_recovery() or native_delta_requires_owner():
+                    raise local_history_recovery_refusal(
+                        f"definitive_owner_quota:{verdict.decline_reason or 'unrelocatable'}"
+                    )
                 return False
             try:
                 relocated_payload = ResponsesRequest.model_validate(dict(verdict.body))
