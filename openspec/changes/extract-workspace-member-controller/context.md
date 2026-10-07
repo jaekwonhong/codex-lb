@@ -116,6 +116,20 @@ The later qualified q2 forward was started exactly once after both exact account
 
 Slice 11-3 therefore adds a separate partial-effect recovery contract rather than weakening rollback admission. Companion canary.5 remains on the same q2 epoch and recognizes only the exact failed q2 parent shape. Recovery is a one-child purpose bound to that parent; fresh recovery admission requires zero non-owner members plus the exact retained target invite id. Cleanup and original-member restoration have separate durable effect claims, and the first recovery child upgrades the receipt store to schema 4 so canary.4 rejects the evolved evidence. The WMC persists a schema-2 recovery attempt before calling the recovery endpoint, keeps the original forward receipt `outcome_unknown`, and releases Controller scope only after Companion recovery finalization plus a fresh authoritative observation of the original member. Prepared-but-unobserved child starts are never automatically replayed; a finalized child can resume only the missing Controller completion.
 
+Task 4.4 transfers production workspace-membership orchestration to the
+standalone Controller. The production WMC runs mutation-enabled on loopback 2461
+with a dedicated least-privilege PostgreSQL writer role and exposes only the
+bearer-authenticated, already-qualified `switch` mutation path plus observational
+reconciliation. Stable and Beta Codex-LB remain temporarily in the inference
+path but now run with `CODEX_LB_WORKSPACE_MEMBERSHIP_WRITER=wmc`; legacy manual
+member-switch writes, rotation-intent writes, scheduler plans and direct legacy
+rotation workers therefore fail closed while read/status and OAuth-enrollment
+surfaces remain for rollback and the later account-ownership migration. The
+cutover itself executed no workspace membership effect. Pre-cutover WMC, Stable
+and Beta containers are retained stopped as rollback artifacts. OpenCodex remains
+the sole inference-account routing/quota/failover authority throughout this
+control-plane ownership change.
+
 ## Extraction strategy
 
 The current member-management implementation is not treated as a cleanly separable package. It still imports Codex-LB database models, account repositories, OAuth/auth-handoff services, proxy account cache, usage observations, reset-credit facilities, and scheduler/runtime support. Those dependencies will be inventoried before an extraction boundary is finalized.

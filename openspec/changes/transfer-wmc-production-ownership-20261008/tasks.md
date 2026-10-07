@@ -13,7 +13,7 @@
 
 - [x] Add focused tests for production effect protocol, auth/action gating,
   writable/read-only startup, legacy writer fencing and scheduler disablement.
-- [ ] Run WMC/member-switch regression and static/OpenSpec gates.
+- [x] Run WMC/member-switch regression and static/OpenSpec gates.
 - [x] Create a dedicated WMC database writer principal with least-required table
   privileges and retain the previous read-only deployment for rollback.
 - [x] Promote mutation-enabled WMC without executing a membership effect; prove

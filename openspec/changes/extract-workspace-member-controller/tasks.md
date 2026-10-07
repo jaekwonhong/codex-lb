@@ -34,6 +34,6 @@
   - [x] 4.3.2 Preserve the q2 confirmed-removal + pending-invite partial effect as outcome-unknown rather than replaying or normalizing it.
   - [x] 4.3.3 Implement and mechanically qualify a purpose-bound partial-effect recovery contract with schema-4 downgrade rejection and Controller two-phase release evidence.
   - [x] 4.3.4 Deploy the exact qualified recovery candidate, pass recovery preflight, restore the original member once, and retain final restoration evidence before declaring the canary qualification complete.
-- [ ] 4.4 Transfer production workspace-membership control-plane ownership to the standalone Controller.
+- [x] 4.4 Transfer production workspace-membership control-plane ownership to the standalone Controller.
 - [ ] 4.5 Make OpenCodex the direct ChatGPT/Codex account-pool owner for PC1/PC2/Mac and retire the Codex-LB inference/data-plane path.
 - [ ] 4.6 Remove superseded routing artifacts only after final rollback snapshots and operational evidence are retained.

@@ -30,6 +30,15 @@ Static gates:
 - `ruff check`: PASS
 - `ty check` on the WMC production-writer boundary and affected tests: PASS
 - `git diff --check`: PASS
+- OpenSpec CLI `@fission-ai/openspec@1.10.0` at exact commit `50e8e5f72`:
+  - `transfer-wmc-production-ownership-20261008 --strict`: PASS
+  - `extract-workspace-member-controller --strict`: PASS
+  - all active changes strict: `95 passed, 0 failed`
+
+The PC1 DevSpace connector was temporarily unavailable for the final strict
+gate, so the same repository-recorded OpenSpec CLI version was executed directly
+against the exact Mac commit instead. No project or runtime state was changed by
+that validation.
 
 Coverage includes normal `/operations` production effect routing without canary
 flags, observational reconciliation without resend, WMC bearer/auth and
