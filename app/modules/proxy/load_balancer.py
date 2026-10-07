@@ -631,8 +631,7 @@ class LoadBalancer:
         hard_affinity_owner_usage_exhausted = False
         owner_restricted_selection = required_account_is_ownership_constraint or required_continuity_owner
         sticky_selection_may_resolve_owner = sticky_key is not None and sticky_kind == StickySessionKind.CODEX_SESSION
-        # C2-3 resilience toggles: resolved from the caller's dashboard snapshot
-        # (the same one that produced ``concurrency_caps``), never re-read here.
+        # C2-3 resilience toggles: use the caller's dashboard snapshot; never re-read here.
         resilience = resolve_resilience_toggles(dashboard_settings)
 
         async def load_unresolved_selection_inputs() -> _SelectionInputs:
@@ -818,9 +817,8 @@ class LoadBalancer:
                         # Raw rows may be historical turn-state ownership. The
                         # bounded thread TTL must never age out that hard evidence.
                         max_age_seconds=None,
-                        # Process-session raw text is session_header even when
-                        # request locality is thread_header. Thread-only raw keys
-                        # keep thread_header so a session_header tombstone cannot
+                        # Process-session raw text is session_header even when request locality is thread_header.
+                        # Thread-only raw keys keep thread_header so a session_header tombstone cannot
                         # hide a distinct thread owner.
                         continuity_source=legacy_continuity_source or "session_header",
                     )

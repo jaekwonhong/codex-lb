@@ -4068,9 +4068,7 @@ class _HTTPBridgeRequestSubmitMixin:
                 # replacement owner before the retry is sent.
                 candidate_portable = (
                     request_state.operation_id is None or request_state.operation_rebind_required
-                ) and (
-                    _websocket_request_text_is_account_neutral_fresh_replay(candidate_text)
-                )
+                ) and (_websocket_request_text_is_account_neutral_fresh_replay(candidate_text))
                 request_text = _prepare_websocket_request_state_for_visible_output_replay(request_state)
                 if request_text is None or request_text != candidate_text:
                     return False
@@ -4196,8 +4194,7 @@ class _HTTPBridgeRequestSubmitMixin:
                 # relocation evidence.
                 relocation_selection_affinity = (
                     request_state.affinity_policy
-                    if fresh_hard_request_account_switch_allowed
-                    and request_state.affinity_policy.reallocate_sticky
+                    if fresh_hard_request_account_switch_allowed and request_state.affinity_policy.reallocate_sticky
                     else None
                 )
                 await self._reconnect_http_bridge_session(

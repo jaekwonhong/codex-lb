@@ -287,9 +287,7 @@ async def test_fresh_reattach_delta_route_requires_local_history_and_logs_prefli
         latest_response_id="resp_owner_anchor",
         model="gpt-5.1",
     )
-    definitive_owner_quota = _http_bridge_previous_response_owner_unavailable_error(
-        definitive_usage_exhaustion=True
-    )
+    definitive_owner_quota = _http_bridge_previous_response_owner_unavailable_error(definitive_usage_exhaustion=True)
     get_or_create = AsyncMock(side_effect=definitive_owner_quota)
     retire_owner = AsyncMock(return_value=True)
     advice_calls = 0
@@ -669,9 +667,7 @@ async def pressured_continuation(async_client, app_instance, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_31_second_owner_hold_defers_to_authoritative_owner_without_waiting(
-    pressured_continuation, monkeypatch
-):
+async def test_31_second_owner_hold_defers_to_authoritative_owner_without_waiting(pressured_continuation, monkeypatch):
     case = pressured_continuation
 
     async def unexpected_wait(**kwargs):
@@ -731,9 +727,7 @@ async def test_native_desktop_explicit_anchor_definitive_quota_without_transcrip
     case.body["previous_response_id"] = case.first["id"]
     case.body["input"] = [case.body["input"][-1]]
     get_or_create = AsyncMock(
-        side_effect=_http_bridge_previous_response_owner_unavailable_error(
-            definitive_usage_exhaustion=True
-        )
+        side_effect=_http_bridge_previous_response_owner_unavailable_error(definitive_usage_exhaustion=True)
     )
     monkeypatch.setattr(
         case.service._durable_bridge,
@@ -816,9 +810,7 @@ async def test_native_explicit_owner_failure_after_advice_preserves_anchor_and_r
 
 
 @pytest.mark.asyncio
-async def test_advisory_alternate_race_does_not_authorize_cross_account_switch(
-    pressured_continuation, monkeypatch
-):
+async def test_advisory_alternate_race_does_not_authorize_cross_account_switch(pressured_continuation, monkeypatch):
     case = pressured_continuation
     assess = bridge_streaming.assess_owner_recovery
 
