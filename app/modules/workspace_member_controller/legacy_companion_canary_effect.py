@@ -39,6 +39,17 @@ CANARY_REQUIRED_CAPABILITIES = frozenset(
         "durable_participant_commands_v1",
     }
 )
+PRODUCTION_REQUIRED_CAPABILITIES = frozenset(
+    {
+        EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY,
+        OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY,
+        OWNER_MEMBERSHIP_MUTATION_CAPABILITY,
+        RECIPIENT_MEMBERSHIP_LIFECYCLE_CAPABILITY,
+        _REMOVE_TELEMETRY_CAPABILITY,
+        "durable_client_flow",
+        "durable_participant_commands_v1",
+    }
+)
 _UNSAFE_CAPTURE_STATES = frozenset(
     {
         "json_parse_failure",
@@ -68,9 +79,16 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
         poll_interval_seconds: float = 2.0,
         canary_purpose: Literal["forward", "rollback"] = "forward",
         canary_parent_client_flow_id: str | None = None,
+        _mode: Literal["canary", "production"] = "canary",
     ) -> None:
+        if _mode not in {"canary", "production"}:
+            raise ValueError("membership_effect_mode_invalid")
         if canary_purpose not in {"forward", "rollback"}:
             raise ValueError("canary_purpose_invalid")
+        if _mode == "production" and (
+            canary_purpose != "forward" or canary_parent_client_flow_id is not None
+        ):
+            raise ValueError("production_canary_fields_forbidden")
         if canary_purpose == "forward" and canary_parent_client_flow_id is not None:
             raise ValueError("canary_forward_parent_forbidden")
         if canary_purpose == "rollback" and not canary_parent_client_flow_id:
@@ -87,6 +105,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
         self._poll_interval_seconds = poll_interval_seconds
         self._canary_purpose = canary_purpose
         self._canary_parent_client_flow_id = canary_parent_client_flow_id
+        self._mode = _mode
 
     async def execute(self, command: MembershipMutationCommand) -> MembershipMutationReceipt:
         mutation = command.mutation
@@ -97,7 +116,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                 request_fingerprint=command.fingerprint(),
                 mutation=mutation,
                 outcome="authoritative_non_effect",
-                code="canary_switch_action_required",
+                code=self._code("switch_action_required"),
                 non_effect=True,
             )
 
@@ -105,7 +124,9 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
         if (
             not catalog.enabled
             or catalog.catalog_fingerprint != mutation.catalog_fingerprint
-            or not CANARY_REQUIRED_CAPABILITIES.issubset(catalog.capabilities)
+            or not (
+                CANARY_REQUIRED_CAPABILITIES if self._mode == "canary" else PRODUCTION_REQUIRED_CAPABILITIES
+            ).issubset(catalog.capabilities)
         ):
             return self._receipt(
                 operation_id=str(command.operation_id),
@@ -113,7 +134,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                 request_fingerprint=command.fingerprint(),
                 mutation=mutation,
                 outcome="authoritative_non_effect",
-                code="canary_catalog_not_qualified",
+                code=self._code("catalog_not_qualified"),
                 non_effect=True,
             )
         workspaces = [
@@ -123,7 +144,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
             and workspace.workspace_account_id == mutation.workspace_account_id
         ]
         if len(workspaces) != 1:
-            return self._local_non_effect(command, "canary_workspace_identity_mismatch")
+            return self._local_non_effect(command, self._code("workspace_identity_mismatch"))
         workspace = workspaces[0]
         incoming = [
             member
@@ -133,11 +154,11 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
             and member.user_id == mutation.incoming.user_id
         ]
         if len(incoming) != 1:
-            return self._local_non_effect(command, "canary_incoming_identity_mismatch")
+            return self._local_non_effect(command, self._code("incoming_identity_mismatch"))
 
         admission = await self._companion.admission()
         if not admission.can_start:
-            return self._local_non_effect(command, f"canary_companion_not_idle:{admission.code}")
+            return self._local_non_effect(command, f"{self._code('companion_not_idle')}:{admission.code}")
 
         from app.modules.member_switch.schemas import PreviewRequest
 
@@ -154,16 +175,16 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
             or preview.expires_at is None
             or preview.expires_at <= self._clock()
         ):
-            return self._local_non_effect(command, f"canary_preview_not_ready:{preview.code}")
+            return self._local_non_effect(command, f"{self._code('preview_not_ready')}:{preview.code}")
         if (
             preview.target_email is None
             or preview.remove_email is None
             or preview.target_email.casefold() != mutation.incoming.email.casefold()
             or preview.remove_email.casefold() != mutation.outgoing.email.casefold()
         ):
-            return self._local_non_effect(command, "canary_preview_identity_mismatch")
+            return self._local_non_effect(command, self._code("preview_identity_mismatch"))
 
-        receipt = await self._companion.start(
+        start_request = (
             StartRequest(
                 preview_token=preview.preview_token,
                 client_flow_id=str(command.operation_id),
@@ -171,13 +192,20 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                 canary_purpose=self._canary_purpose,
                 canary_parent_client_flow_id=self._canary_parent_client_flow_id,
             )
+            if self._mode == "canary"
+            else StartRequest(
+                preview_token=preview.preview_token,
+                client_flow_id=str(command.operation_id),
+                canary=False,
+            )
         )
+        receipt = await self._companion.start(start_request)
         if not receipt.accepted:
             if receipt.operation_id is not None:
-                return self._unknown(command, "canary_start_receipt_invalid")
-            return self._local_non_effect(command, f"canary_start_non_effect:{receipt.code}")
+                return self._unknown(command, self._code("start_receipt_invalid"))
+            return self._local_non_effect(command, f"{self._code('start_non_effect')}:{receipt.code}")
         if not receipt.operation_id:
-            return self._unknown(command, "canary_start_receipt_invalid")
+            return self._unknown(command, self._code("start_receipt_invalid"))
         return await self._settle(
             operation_id=receipt.operation_id,
             command_operation_id=str(command.operation_id),
@@ -205,7 +233,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                     request_fingerprint=request_fingerprint,
                     mutation=mutation,
                     outcome="outcome_unknown",
-                    code="canary_reconcile_start_invalid",
+                    code=self._code("reconcile_start_invalid"),
                 )
             return self._receipt(
                 operation_id=operation_id,
@@ -213,7 +241,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                 request_fingerprint=request_fingerprint,
                 mutation=mutation,
                 outcome="authoritative_non_effect",
-                code=f"canary_start_non_effect:{start.code}",
+                code=f"{self._code('start_non_effect')}:{start.code}",
                 non_effect=True,
             )
         if not start.operation_id:
@@ -223,7 +251,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                 request_fingerprint=request_fingerprint,
                 mutation=mutation,
                 outcome="outcome_unknown",
-                code="canary_reconcile_start_invalid",
+                code=self._code("reconcile_start_invalid"),
             )
         return await self._settle(
             operation_id=start.operation_id,
@@ -251,7 +279,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                 request_fingerprint=request_fingerprint,
                 mutation=mutation,
                 outcome="authoritative_non_effect",
-                code="canary_switch_identity_missing",
+                code=self._code("switch_identity_missing"),
                 non_effect=True,
             )
         deadline = asyncio.get_running_loop().time() + self._settle_timeout_seconds
@@ -271,7 +299,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                     request_fingerprint=request_fingerprint,
                     mutation=mutation,
                     outcome="outcome_unknown",
-                    code="canary_operation_identity_mismatch",
+                    code=self._code("operation_identity_mismatch"),
                 )
 
             if pre_membership_failure_confirmed(operation):
@@ -283,7 +311,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                         request_fingerprint=request_fingerprint,
                         mutation=mutation,
                         outcome="outcome_unknown",
-                        code="canary_finalize_pending",
+                        code=self._code("finalize_pending"),
                     )
                 return self._receipt(
                     operation_id=command_operation_id,
@@ -291,7 +319,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                     request_fingerprint=request_fingerprint,
                     mutation=mutation,
                     outcome="authoritative_non_effect",
-                    code=f"canary_pre_membership_non_effect:{operation.code}",
+                    code=f"{self._code('pre_membership_non_effect')}:{operation.code}",
                     non_effect=True,
                 )
 
@@ -329,7 +357,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                         request_fingerprint=request_fingerprint,
                         mutation=mutation,
                         outcome="outcome_unknown",
-                        code="canary_finalize_pending",
+                        code=self._code("finalize_pending"),
                     )
                 return self._receipt(
                     operation_id=command_operation_id,
@@ -337,7 +365,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                     request_fingerprint=request_fingerprint,
                     mutation=mutation,
                     outcome="completed",
-                    code="canary_switch_completed",
+                    code=self._code("switch_completed"),
                     confirmed=True,
                 )
             if operation.stage in {"failed", "needs_attention"} or unsafe_capture:
@@ -347,7 +375,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                     request_fingerprint=request_fingerprint,
                     mutation=mutation,
                     outcome="outcome_unknown",
-                    code=f"canary_effect_unresolved:{operation.code}",
+                    code=f"{self._code('effect_unresolved')}:{operation.code}",
                 )
             if asyncio.get_running_loop().time() >= deadline:
                 return self._receipt(
@@ -356,7 +384,7 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
                     request_fingerprint=request_fingerprint,
                     mutation=mutation,
                     outcome="outcome_unknown",
-                    code="canary_settlement_timeout",
+                    code=self._code("settlement_timeout"),
                 )
             await self._sleep(self._poll_interval_seconds)
 
@@ -412,4 +440,29 @@ class LegacyCompanionCanarySwitchEffect(MembershipMutationEffectPort):
             remove_effect=remove_effect,
             add_effect=add_effect,
             final_membership_confirmed=confirmed,
+        )
+
+    def _code(self, suffix: str) -> str:
+        return f"{'canary' if self._mode == 'canary' else 'membership'}_{suffix}"
+
+
+class LegacyCompanionProductionSwitchEffect(LegacyCompanionCanarySwitchEffect):
+    """Production switch adapter over the normal Companion `/operations` path."""
+
+    def __init__(
+        self,
+        companion: CompanionPort,
+        *,
+        clock: Callable[[], datetime] | None = None,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+        settle_timeout_seconds: float = 190.0,
+        poll_interval_seconds: float = 2.0,
+    ) -> None:
+        super().__init__(
+            companion,
+            clock=clock,
+            sleep=sleep,
+            settle_timeout_seconds=settle_timeout_seconds,
+            poll_interval_seconds=poll_interval_seconds,
+            _mode="production",
         )

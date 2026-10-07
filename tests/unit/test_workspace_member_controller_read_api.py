@@ -199,6 +199,7 @@ def test_entire_controller_core_has_no_codex_lb_data_plane_imports():
         "legacy_companion_canary_effect.py",
         "legacy_partial_recovery_runner.py",
         "legacy_persistence.py",
+        "legacy_production_runtime.py",
         "legacy_mutation_journal.py",
         "legacy_rotation_budget.py",
     }

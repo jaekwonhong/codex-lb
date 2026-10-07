@@ -23,6 +23,7 @@ class StandaloneSettings(BaseSettings):
     opencodex_admin_token: SecretStr | None = None
     opencodex_admin_token_file: Path | None = None
     allow_non_loopback_bind: bool = False
+    mutations_enabled: bool = False
 
     @model_validator(mode="after")
     def validate_security_boundary(self) -> StandaloneSettings:

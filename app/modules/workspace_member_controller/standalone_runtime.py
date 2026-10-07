@@ -3,8 +3,10 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import httpx
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from app.modules.workspace_member_controller.account_state import (
@@ -24,6 +26,9 @@ from app.modules.workspace_member_controller.sql_read_persistence import (
     validate_controller_schema,
 )
 from app.modules.workspace_member_controller.standalone_settings import StandaloneSettings
+
+if TYPE_CHECKING:
+    from app.modules.workspace_member_controller.mutation_service import WorkspaceMembershipMutationService
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +53,7 @@ class ControllerStandaloneRuntime:
         reads: CompanionHttpReadAdapter,
         account_states: OpenCodexHttpAccountStateAdapter,
         read_service: WorkspaceMemberControllerReadService,
+        mutation_service: WorkspaceMembershipMutationService | None = None,
         now_ms: Callable[[], int] | None = None,
     ) -> None:
         self.settings = settings
@@ -57,6 +63,7 @@ class ControllerStandaloneRuntime:
         self.reads = reads
         self.account_states = account_states
         self.read_service = read_service
+        self.mutation_service = mutation_service
         self._now_ms = now_ms or (lambda: time.time_ns() // 1_000_000)
         self._startup_report: ReadinessReport | None = None
 
@@ -79,6 +86,17 @@ class ControllerStandaloneRuntime:
             SqlWorkspaceIntentReader(sessions),
             SqlMembershipOperationJournalReader(sessions),
         )
+        mutation_service = None
+        if settings.mutations_enabled:
+            from app.modules.workspace_member_controller.legacy_production_runtime import (
+                build_legacy_production_mutation_service,
+            )
+
+            mutation_service = build_legacy_production_mutation_service(
+                settings=settings,
+                sessions=sessions,
+                reads=reads,
+            )
         return cls(
             settings=settings,
             engine=engine,
@@ -87,6 +105,7 @@ class ControllerStandaloneRuntime:
             reads=reads,
             account_states=account_states,
             read_service=read_service,
+            mutation_service=mutation_service,
         )
 
     async def startup(self) -> ReadinessReport:
@@ -95,6 +114,8 @@ class ControllerStandaloneRuntime:
 
     async def validate(self) -> ReadinessReport:
         await validate_controller_schema(self.engine)
+        if self.settings.mutations_enabled:
+            await self._validate_mutation_writer()
         catalog = await self.reads.catalog()
         await self._validate_opencodex_ready()
         snapshot = self.bindings.snapshot()
@@ -119,6 +140,33 @@ class ControllerStandaloneRuntime:
             binding_count=len(snapshot.bindings),
             opencodex_account_count=len(account_ids),
         )
+
+    async def _validate_mutation_writer(self) -> None:
+        async with self.engine.connect() as connection:
+            dialect = connection.dialect.name
+            if dialect == "postgresql":
+                read_only = str((await connection.execute(text("SHOW transaction_read_only"))).scalar_one())
+                if read_only.casefold() != "off":
+                    raise RuntimeError("startup_mutation_database_read_only")
+                privileges = (
+                    await connection.execute(
+                        text(
+                            "SELECT "
+                            "has_table_privilege(current_user, 'member_switch_control_records', "
+                            "'SELECT,INSERT,UPDATE'), "
+                            "has_table_privilege(current_user, 'member_switch_command_receipts', 'SELECT,INSERT')"
+                        )
+                    )
+                ).one()
+                if not all(bool(value) for value in privileges):
+                    raise RuntimeError("startup_mutation_database_privileges_missing")
+                return
+            if dialect == "sqlite":
+                query_only = int((await connection.execute(text("PRAGMA query_only"))).scalar_one())
+                if query_only != 0:
+                    raise RuntimeError("startup_mutation_database_read_only")
+                return
+            raise RuntimeError("startup_mutation_database_dialect_unsupported")
 
     async def _validate_opencodex_ready(self) -> None:
         try:

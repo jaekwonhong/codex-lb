@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.modules.workspace_member_controller.api import build_read_only_router
+from app.modules.workspace_member_controller.mutation_api import build_mutation_router
 from app.modules.workspace_member_controller.standalone_runtime import ControllerStandaloneRuntime
 from app.modules.workspace_member_controller.standalone_settings import StandaloneSettings
 
@@ -76,6 +77,14 @@ def create_standalone_app(
         build_read_only_router(lambda: runtime.read_service),
         dependencies=[Depends(require_admin)],
     )
+    if settings.mutations_enabled:
+        mutation_service = runtime.mutation_service
+        if mutation_service is None:
+            raise RuntimeError("mutation_service_unavailable")
+        app.include_router(
+            build_mutation_router(lambda: mutation_service),
+            dependencies=[Depends(require_admin)],
+        )
     return app
 
 

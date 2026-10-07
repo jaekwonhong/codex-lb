@@ -10,13 +10,20 @@ import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr, ValidationError
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.modules.workspace_member_controller.binding_repository import (
     FileWorkspaceMemberAccountBindingRepository,
 )
 from app.modules.workspace_member_controller.companion_read_adapter import CompanionHttpReadAdapter
+from app.modules.workspace_member_controller.mutation_models import (
+    MembershipMutationAction,
+    MembershipMutationCommand,
+    MembershipMutationSpec,
+    MembershipMutationView,
+    MembershipSubject,
+)
 from app.modules.workspace_member_controller.opencodex_adapter import OpenCodexHttpAccountStateAdapter
 from app.modules.workspace_member_controller.read_service import WorkspaceMemberControllerReadService
 from app.modules.workspace_member_controller.sql_read_persistence import (
@@ -37,13 +44,19 @@ pytestmark = pytest.mark.unit
 NOW = datetime(2026, 10, 6, 11, 0, tzinfo=timezone.utc)
 
 
-def settings(tmp_path: Path, *, host: str = "127.0.0.1") -> StandaloneSettings:
+def settings(
+    tmp_path: Path,
+    *,
+    host: str = "127.0.0.1",
+    mutations_enabled: bool = False,
+) -> StandaloneSettings:
     return StandaloneSettings(
         host=host,
         database_url=SecretStr(f"sqlite+aiosqlite:///{tmp_path / 'controller.sqlite3'}"),
         account_bindings_path=tmp_path / "bindings.json",
         admin_token=SecretStr("a" * 48),
         opencodex_admin_token=SecretStr("o" * 48),
+        mutations_enabled=mutations_enabled,
     )
 
 
@@ -213,9 +226,11 @@ async def build_runtime(
     tmp_path: Path,
     *,
     account_states: list[dict] | None = None,
+    mutations_enabled: bool = False,
+    mutation_service=None,
 ) -> ControllerStandaloneRuntime:
     tmp_path.mkdir(parents=True, exist_ok=True)
-    configured = settings(tmp_path)
+    configured = settings(tmp_path, mutations_enabled=mutations_enabled)
     write_bindings(configured.account_bindings_path)
     engine = create_async_engine(configured.resolved_database_url())
     await create_controller_tables(engine)
@@ -241,8 +256,63 @@ async def build_runtime(
         reads=reads,
         account_states=states,
         read_service=service,
+        mutation_service=mutation_service,
         now_ms=lambda: int(NOW.timestamp() * 1000),
     )
+
+
+def mutation_command(action: MembershipMutationAction = "switch") -> MembershipMutationCommand:
+    incoming = MembershipSubject(
+        preset_id="member-1",
+        email="member@example.com",
+        user_id="user-Member1",
+    )
+    outgoing = MembershipSubject(
+        preset_id="member-old",
+        email="old@example.com",
+        user_id="user-Old",
+    )
+    return MembershipMutationCommand(
+        operation_id="11111111-1111-4111-8111-111111111111",
+        command_id="22222222-2222-4222-8222-222222222222",
+        expected_revision=0,
+        mutation=MembershipMutationSpec(
+            action=action,
+            workspace_id="workspace-1",
+            workspace_account_id="workspace-account-1",
+            catalog_fingerprint="c" * 64,
+            incoming=incoming if action in {"add", "switch"} else None,
+            outgoing=outgoing if action in {"remove", "switch"} else None,
+        ),
+    )
+
+
+class FakeMutationService:
+    def __init__(self):
+        self.calls: list[tuple[str, object]] = []
+
+    @staticmethod
+    def view(command: MembershipMutationCommand) -> MembershipMutationView:
+        return MembershipMutationView(
+            operation_id=str(command.operation_id),
+            revision=0,
+            mutation=command.mutation,
+            phase="ready",
+            last_code="mutation_ready",
+            updated_at=NOW,
+        )
+
+    async def submit(self, command: MembershipMutationCommand) -> MembershipMutationView:
+        self.calls.append(("submit", command))
+        return self.view(command)
+
+    async def get(self, operation_id: str) -> MembershipMutationView | None:
+        self.calls.append(("get", operation_id))
+        return self.view(mutation_command())
+
+    async def reconcile(self, operation_id: str) -> MembershipMutationView:
+        self.calls.append(("reconcile", operation_id))
+        return self.view(mutation_command())
 
 
 def test_settings_require_secret_sources_and_loopback_listener(tmp_path):
@@ -470,6 +540,65 @@ async def test_standalone_http_surface_has_public_health_admin_read_only_v1_and_
         if getattr(route, "path", "").startswith("/v1")
     }
     assert methods <= {"GET", "HEAD"}
+
+
+async def test_mutation_enabled_surface_is_admin_only_and_switch_only(tmp_path):
+    mutations = FakeMutationService()
+    runtime = await build_runtime(
+        tmp_path,
+        mutations_enabled=True,
+        mutation_service=mutations,
+    )
+    app = create_standalone_app(runtime.settings, runtime)
+    headers = {"Authorization": "Bearer " + "a" * 48}
+    async with app.router.lifespan_context(app):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://controller") as client:
+            denied = await client.post("/v1/mutations", json=mutation_command().model_dump(mode="json", by_alias=True))
+            unsupported = await client.post(
+                "/v1/mutations",
+                headers=headers,
+                json=mutation_command("add").model_dump(mode="json", by_alias=True),
+            )
+            submitted = await client.post(
+                "/v1/mutations",
+                headers=headers,
+                json=mutation_command().model_dump(mode="json", by_alias=True),
+            )
+            fetched = await client.get(
+                "/v1/mutations/11111111-1111-4111-8111-111111111111",
+                headers=headers,
+            )
+            reconciled = await client.post(
+                "/v1/mutations/11111111-1111-4111-8111-111111111111/reconcile",
+                headers=headers,
+            )
+
+    assert denied.status_code == 401
+    assert unsupported.status_code == 409
+    assert unsupported.json()["detail"]["code"] == "mutation_action_not_qualified"
+    assert submitted.status_code == 200
+    assert fetched.status_code == 200
+    assert reconciled.status_code == 200
+    assert [kind for kind, _ in mutations.calls] == ["submit", "get", "reconcile"]
+
+
+async def test_mutation_enabled_runtime_rejects_read_only_database(tmp_path):
+    runtime = await build_runtime(
+        tmp_path,
+        mutations_enabled=True,
+        mutation_service=FakeMutationService(),
+    )
+
+    @event.listens_for(runtime.engine.sync_engine, "connect")
+    def _read_only(dbapi_connection, _connection_record):
+        dbapi_connection.execute("PRAGMA query_only = 1")
+
+    await runtime.engine.dispose()
+    try:
+        with pytest.raises(RuntimeError, match="startup_mutation_database_read_only"):
+            await runtime.startup()
+    finally:
+        await runtime.close()
 
 
 async def test_runtime_startup_rejects_binding_that_no_longer_matches_catalog(tmp_path):

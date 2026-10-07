@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import cast
 from uuid import UUID
 
 import pytest
 
+from app.modules.member_switch.companion import CompanionPort
 from app.modules.member_switch.schemas import (
     Catalog,
     FinalizeReceipt,
@@ -14,10 +16,12 @@ from app.modules.member_switch.schemas import (
     OperationTraceEntry,
     Preview,
     StartReceipt,
+    StartRequest,
     Workspace,
 )
 from app.modules.workspace_member_controller.legacy_companion_canary_effect import (
     LegacyCompanionCanarySwitchEffect,
+    LegacyCompanionProductionSwitchEffect,
 )
 from app.modules.workspace_member_controller.mutation_models import (
     MembershipMutationCommand,
@@ -126,10 +130,11 @@ class Companion:
         self.start_calls = 0
         self.finalize_calls = 0
         self.operation_value = completed_operation()
-        self.last_start_request = None
+        self.last_start_request: StartRequest | None = None
+        self.catalog_value = catalog()
 
     async def catalog(self):
-        return catalog()
+        return self.catalog_value
 
     async def admission(self):
         from app.modules.member_switch.schemas import CompanionAdmission
@@ -151,7 +156,6 @@ class Companion:
 
     async def start(self, request):
         self.start_calls += 1
-        assert request.canary is True
         self.last_start_request = request
         return StartReceipt(accepted=True, code="accepted", operation_id="effect-1")
 
@@ -168,7 +172,9 @@ class Companion:
 
 async def test_canary_switch_requires_qualified_evidence_and_finalizes_once():
     companion = Companion()
-    effect = LegacyCompanionCanarySwitchEffect(companion, clock=lambda: NOW, settle_timeout_seconds=0)
+    effect = LegacyCompanionCanarySwitchEffect(
+        cast(CompanionPort, companion), clock=lambda: NOW, settle_timeout_seconds=0
+    )
     result = await effect.execute(command())
     assert result.outcome == "completed"
     assert result.remove_effect == "confirmed"
@@ -176,13 +182,17 @@ async def test_canary_switch_requires_qualified_evidence_and_finalizes_once():
     assert result.final_membership_confirmed is True
     assert companion.start_calls == 1
     assert companion.finalize_calls == 1
+    assert companion.last_start_request is not None
+    assert companion.last_start_request.canary is True
     assert companion.last_start_request.canary_purpose == "forward"
     assert companion.last_start_request.canary_parent_client_flow_id is None
 
 
 async def test_reconcile_never_resends_canary_start():
     companion = Companion()
-    effect = LegacyCompanionCanarySwitchEffect(companion, clock=lambda: NOW, settle_timeout_seconds=0)
+    effect = LegacyCompanionCanarySwitchEffect(
+        cast(CompanionPort, companion), clock=lambda: NOW, settle_timeout_seconds=0
+    )
     cmd = command()
     result = await effect.reconcile(
         operation_id=str(cmd.operation_id),
@@ -198,7 +208,9 @@ async def test_reconcile_never_resends_canary_start():
 async def test_missing_removal_trace_remains_outcome_unknown_and_is_not_finalized():
     companion = Companion()
     companion.operation_value = completed_operation().model_copy(update={"trace": []})
-    effect = LegacyCompanionCanarySwitchEffect(companion, clock=lambda: NOW, settle_timeout_seconds=0)
+    effect = LegacyCompanionCanarySwitchEffect(
+        cast(CompanionPort, companion), clock=lambda: NOW, settle_timeout_seconds=0
+    )
     result = await effect.execute(command())
     assert result.outcome == "outcome_unknown"
     assert companion.start_calls == 1
@@ -209,7 +221,7 @@ async def test_rollback_canary_is_bound_to_forward_client_flow():
     companion = Companion()
     parent = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
     effect = LegacyCompanionCanarySwitchEffect(
-        companion,
+        cast(CompanionPort, companion),
         clock=lambda: NOW,
         settle_timeout_seconds=0,
         canary_purpose="rollback",
@@ -219,6 +231,7 @@ async def test_rollback_canary_is_bound_to_forward_client_flow():
     result = await effect.execute(command())
 
     assert result.outcome == "completed"
+    assert companion.last_start_request is not None
     assert companion.last_start_request.canary_purpose == "rollback"
     assert companion.last_start_request.canary_parent_client_flow_id == parent
 
@@ -226,10 +239,74 @@ async def test_rollback_canary_is_bound_to_forward_client_flow():
 def test_rollback_canary_requires_valid_parent_client_flow():
     companion = Companion()
     with pytest.raises(ValueError, match="canary_rollback_parent_required"):
-        LegacyCompanionCanarySwitchEffect(companion, canary_purpose="rollback")
+        LegacyCompanionCanarySwitchEffect(cast(CompanionPort, companion), canary_purpose="rollback")
     with pytest.raises(ValueError, match="canary_parent_client_flow_invalid"):
         LegacyCompanionCanarySwitchEffect(
-            companion,
+            cast(CompanionPort, companion),
             canary_purpose="rollback",
             canary_parent_client_flow_id="not-a-uuid",
         )
+
+
+async def test_production_switch_uses_normal_operation_path_without_canary_gates():
+    companion = Companion()
+    companion.catalog_value = catalog().model_copy(
+        update={
+            "capabilities": [
+                capability
+                for capability in catalog().capabilities
+                if capability
+                not in {
+                    "member_rotation_canary_effect_gate_v1",
+                    "member_rotation_canary_rollback_binding_v1",
+                }
+            ]
+        }
+    )
+    effect = LegacyCompanionProductionSwitchEffect(
+        cast(CompanionPort, companion),
+        clock=lambda: NOW,
+        settle_timeout_seconds=0,
+    )
+
+    result = await effect.execute(command())
+
+    assert result.outcome == "completed"
+    assert result.code == "membership_switch_completed"
+    assert companion.start_calls == 1
+    assert companion.finalize_calls == 1
+    assert companion.last_start_request is not None
+    assert companion.last_start_request.canary is False
+    assert companion.last_start_request.canary_purpose is None
+    assert companion.last_start_request.canary_parent_client_flow_id is None
+
+
+async def test_production_reconcile_never_resends_start():
+    companion = Companion()
+    companion.catalog_value = catalog().model_copy(
+        update={
+            "capabilities": [
+                capability
+                for capability in catalog().capabilities
+                if not capability.startswith("member_rotation_canary_")
+            ]
+        }
+    )
+    effect = LegacyCompanionProductionSwitchEffect(
+        cast(CompanionPort, companion),
+        clock=lambda: NOW,
+        settle_timeout_seconds=0,
+    )
+    cmd = command()
+
+    result = await effect.reconcile(
+        operation_id=str(cmd.operation_id),
+        command_id=str(cmd.command_id),
+        request_fingerprint=cmd.fingerprint(),
+        mutation=cmd.mutation,
+    )
+
+    assert result is not None and result.outcome == "completed"
+    assert result.code == "membership_switch_completed"
+    assert companion.start_calls == 0
+    assert companion.finalize_calls == 1
