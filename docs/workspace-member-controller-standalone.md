@@ -23,6 +23,7 @@ WMC_PORT=2461
 WMC_COMPANION_BASE_URL=http://127.0.0.1:53418/member-switch/v1
 WMC_OPENCODEX_MANAGEMENT_BASE_URL=http://127.0.0.1:10101
 WMC_ALLOW_NON_LOOPBACK_BIND=false
+WMC_MUTATIONS_ENABLED=false
 ```
 
 The Controller listener defaults to loopback-only. A container may explicitly set `WMC_ALLOW_NON_LOOPBACK_BIND=true` and bind `0.0.0.0` only when its outer publish/network boundary restricts exposure (the qualified shadow deployment publishes `127.0.0.1:2461` on the Mac host). Do not expose its bearer admin surface directly to the LAN.
@@ -69,7 +70,26 @@ GET /v1/status
 GET /v1/workspaces/{workspace_id}/observation
 ```
 
-No membership mutation HTTP route is exposed by this package yet. Mutation activation is reserved for the separately qualified canary/cutover stages.
+When `WMC_MUTATIONS_ENABLED=false` (the default), no membership mutation HTTP
+route is exposed and a read-only database principal remains valid.
+
+After the qualified production ownership cutover, `WMC_MUTATIONS_ENABLED=true`
+adds the bearer-protected production mutation surface:
+
+```text
+POST /v1/mutations
+GET  /v1/mutations/{operation_id}
+POST /v1/mutations/{operation_id}/reconcile
+```
+
+Task 4.4 activates only the already-qualified `switch` action. `add` and
+`remove` requests fail before durable effect ownership. Reconciliation is
+observational and never resends an external membership effect.
+
+Mutation-enabled startup requires a writable database transaction and explicit
+permissions for the shared Controller membership journal. The production
+deployment uses the dedicated `workspace_member_controller_writer` PostgreSQL
+role rather than the Codex-LB application role.
 
 ## Run
 
@@ -78,3 +98,7 @@ workspace-member-controller
 ```
 
 The process runs one Uvicorn worker on `127.0.0.1:2461` by default. It does not import or start Codex-LB's proxy, usage schedulers, account-pool workers, dashboard authentication stack, or inference request handlers.
+
+The production container remains outside the inference request path. OpenCodex
+continues to own account-pool routing, quota/cooldown, request failover and
+thread/account affinity even while WMC owns workspace membership effects.
