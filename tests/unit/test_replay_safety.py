@@ -4835,6 +4835,112 @@ def test_durable_rebuild_falls_back_to_item_events_when_an_incomplete_terminal_o
     assert rebuilt["input"] == [_user_item("first"), _replayed_assistant_item("partial"), _user_item("second")]
 
 
+def test_durable_rebuild_accepts_the_live_websocket_empty_terminal_output_shape() -> None:
+    # Production ChatGPT WebSocket turns finish with response.output=[] even
+    # though the complete answer arrived immediately beforehand in
+    # response.output_item.done. The item also carries response-side bookkeeping
+    # that is not valid fresh input on another account. Rebuild from the completed
+    # item, but strip only the exact observed bookkeeping shape.
+    completed_item: dict[str, JsonValue] = {
+        "id": "msg_owner",
+        "type": "message",
+        "status": "completed",
+        "content": [
+            {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "answer",
+            }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+            "create_time": 1791332591.342649,
+            "turn_id": "turn-owner",
+        },
+        "metadata": {"turn_id": "turn-owner"},
+        "phase": "final_answer",
+        "role": "assistant",
+    }
+    events = (
+        _sse_block({"type": "response.output_item.done", "item": cast(JsonValue, completed_item)}),
+        _sse_block({"type": "response.completed", "response": {"id": "resp_1", "output": []}}),
+    )
+    transcript = (
+        _TranscriptTurn(
+            operation=_TranscriptOperation(
+                request_text=_request_frame({"model": "gpt-5.4", "input": [_user_item("first")]}),
+            ),
+            events=events,
+        ),
+    )
+
+    assert _terminal_response_output_items(events) == [completed_item]
+    rebuilt = _rebuild(transcript, [_user_item("second")])
+
+    assert rebuilt is not None
+    assert rebuilt["input"] == [
+        _user_item("first"),
+        {
+            "type": "message",
+            "status": "completed",
+            "content": [{"type": "output_text", "text": "answer"}],
+            "internal_chat_message_metadata_passthrough": {"turn_id": "turn-owner"},
+            "phase": "final_answer",
+            "role": "assistant",
+        },
+        _user_item("second"),
+    ]
+
+
+@pytest.mark.parametrize("unexpected_bookkeeping", ["metadata", "internal_metadata", "logprobs"])
+def test_durable_rebuild_still_refuses_unknown_live_websocket_response_bookkeeping(
+    unexpected_bookkeeping: str,
+) -> None:
+    completed_item: dict[str, JsonValue] = {
+        "id": "msg_owner",
+        "type": "message",
+        "status": "completed",
+        "content": [
+            {
+                "type": "output_text",
+                "annotations": [],
+                "logprobs": [],
+                "text": "answer",
+            }
+        ],
+        "internal_chat_message_metadata_passthrough": {
+            "create_time": 1791332591.342649,
+            "turn_id": "turn-owner",
+        },
+        "metadata": {"turn_id": "turn-owner"},
+        "phase": "final_answer",
+        "role": "assistant",
+    }
+    if unexpected_bookkeeping == "metadata":
+        completed_item["metadata"] = {"account_id": "acc-owner", "turn_id": "turn-owner"}
+    elif unexpected_bookkeeping == "internal_metadata":
+        completed_item["internal_chat_message_metadata_passthrough"] = {
+            "account_id": "acc-owner",
+            "create_time": 1791332591.342649,
+            "turn_id": "turn-owner",
+        }
+    else:
+        cast(dict[str, JsonValue], completed_item["content"][0])["logprobs"] = [{"token": "owner-only"}]
+    transcript = (
+        _TranscriptTurn(
+            operation=_TranscriptOperation(
+                request_text=_request_frame({"model": "gpt-5.4", "input": [_user_item("first")]}),
+            ),
+            events=(
+                _sse_block({"type": "response.output_item.done", "item": cast(JsonValue, completed_item)}),
+                _sse_block({"type": "response.completed", "response": {"id": "resp_1", "output": []}}),
+            ),
+        ),
+    )
+
+    assert _rebuild(transcript, [_user_item("second")]) is None
+
+
 def test_durable_rebuild_prefers_the_terminal_output_over_accumulated_items() -> None:
     transcript = (
         _transcript_turn(
