@@ -382,13 +382,16 @@ def responses_input_suffix_retains_prior_output(
     if prefix_state is None:
         return False
     pending_suffix_calls, seen_suffix_call_ids = prefix_state
+    suffix = input_items[stored_count:]
+    if _fresh_developer_before_user_is_bounded(suffix):
+        suffix = [suffix[0], suffix[2]]
     retained_output_seen = False
     retained_output_is_final_answer = False
     fresh_followup_seen = False
     fresh_followup_count = 0
     fresh_followup_is_user_message = False
     fresh_developer_followup_seen = False
-    for item in input_items[stored_count:]:
+    for item in suffix:
         if fresh_developer_followup_seen or not isinstance(item, dict):
             return False
         item_type_value = item.get("type")
@@ -550,6 +553,12 @@ def _direct_tool_call_prefix_state(
             if developer_message_is_transparent and historical_interleave_is_bounded:
                 pending_window_developer_seen = True
                 continue
+            historical_turn_hook_is_bounded = not pending_calls and _historical_developer_before_user_is_bounded(
+                input_items,
+                index=index,
+            )
+            if historical_turn_hook_is_bounded:
+                continue
             return None
         if item_type in _TOOL_CALL_TYPES:
             if item.get("status") not in (None, "completed"):
@@ -612,6 +621,93 @@ def _historical_pending_developer_message_is_transparent(
         and _internal_chat_message_metadata_is_account_neutral(item.get(_INTERNAL_CHAT_MESSAGE_METADATA_FIELD))
         and _input_item_has_only_known_fields(item, item_type)
         and _message_has_valid_account_neutral_content(item)
+    )
+
+
+def _source_developer_hook_message_is_transparent(
+    item: Mapping[str, JsonValue],
+) -> bool:
+    """Return whether one client-authored developer hook is portable.
+
+    Codex gives these current-turn hooks source ids, but the body is a single
+    plain ``input_text`` message.  Admit exactly that narrow shape for
+    full-resend classification; the replay projection removes the source id
+    before an account switch.
+    """
+
+    item_type_value = item.get("type")
+    item_type = item_type_value if isinstance(item_type_value, str) else None
+    metadata = item.get(_INTERNAL_CHAT_MESSAGE_METADATA_FIELD)
+    content = item.get("content")
+    return (
+        ("type" not in item or _is_nonblank_string(item_type_value))
+        and item_type in (None, "message")
+        and item.get("role") == "developer"
+        and (item.get("id") is None or _is_nonblank_string(item.get("id")))
+        and item.get("phase") is None
+        and item.get("status") in (None, "completed")
+        and _internal_chat_message_metadata_is_account_neutral(metadata)
+        and _input_item_has_only_known_fields(item, item_type)
+        and isinstance(content, list)
+        and len(content) == 1
+        and isinstance(content[0], dict)
+        and content[0].get("type") == "input_text"
+        and _input_content_part_is_self_contained(
+            cast(dict[str, JsonValue], content[0]),
+            allow_output=False,
+        )
+    )
+
+
+def _historical_developer_before_user_is_bounded(
+    input_items: list[JsonValue],
+    *,
+    index: int,
+) -> bool:
+    if index <= 0 or index + 1 >= len(input_items):
+        return False
+    previous_item = input_items[index - 1]
+    developer_item = input_items[index]
+    following_item = input_items[index + 1]
+    if (
+        not isinstance(previous_item, dict)
+        or not isinstance(developer_item, dict)
+        or not isinstance(following_item, dict)
+    ):
+        return False
+    previous_is_turn_boundary = (previous_item.get("role") == "user" and _is_fresh_followup_input(previous_item)) or (
+        previous_item.get("role") == "assistant" and _is_retained_response_message(previous_item)
+    )
+    following_is_user = following_item.get("role") == "user" and _is_fresh_followup_input(following_item)
+    return (
+        previous_is_turn_boundary
+        and _source_developer_hook_message_is_transparent(developer_item)
+        and following_is_user
+    )
+
+
+def _fresh_developer_before_user_is_bounded(input_items: list[JsonValue]) -> bool:
+    """Recognize Codex's one fresh developer hook between prior output and user input.
+
+    The full-resend caller has already proved that everything before this suffix
+    is the durable prefix. Current Codex builds the next suffix as exactly
+    ``[prior final answer, developer hook, user message]``. The hook can carry a
+    client-minted source id, so classification permits that id here, but only
+    for this exact three-item boundary and only when its content is otherwise
+    account-neutral. The replay projection still strips the id before dispatch.
+    """
+
+    if len(input_items) != 3:
+        return False
+    prior_output, developer_item, fresh_input = input_items
+    if not isinstance(prior_output, dict) or not isinstance(developer_item, dict) or not isinstance(fresh_input, dict):
+        return False
+    return (
+        _is_retained_response_message(prior_output)
+        and prior_output.get("phase") == "final_answer"
+        and _source_developer_hook_message_is_transparent(developer_item)
+        and fresh_input.get("role") == "user"
+        and _is_fresh_followup_input(fresh_input)
     )
 
 

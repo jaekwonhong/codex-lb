@@ -1740,6 +1740,140 @@ def test_full_resend_retained_output_tolerates_fresh_developer_after_user() -> N
     )
 
 
+def test_full_resend_retained_output_accepts_codex_developer_hook_before_user() -> None:
+    stored_input: list[JsonValue] = [
+        {
+            "type": "additional_tools",
+            "id": "at_client_bundle",
+            "role": "developer",
+            "tools": [{"type": "custom", "name": "shell", "description": "run"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_dev_stored",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "stored control"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_user_stored",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "first question"}],
+        },
+    ]
+    full_resend: list[JsonValue] = [
+        *stored_input,
+        {
+            "type": "message",
+            "id": "msg_prior_answer",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "prior answer"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_fresh_hook",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "fresh hook"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_fresh_user",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "next question"}],
+        },
+    ]
+
+    classification_projection = project_responses_input_for_account_neutral_fresh_replay(
+        full_resend,
+        stored_count=len(stored_input),
+        preserve_developer_message_ids=True,
+    )
+    assert classification_projection is not None
+    assert responses_input_suffix_retains_prior_output(
+        classification_projection.input_items,
+        stored_count=classification_projection.stored_prefix_count,
+        canonical_lite_developer_index=classification_projection.canonical_lite_developer_index,
+        canonical_lite_developer_indexes=classification_projection.canonical_lite_developer_indexes,
+    )
+
+    replay_projection = project_responses_input_for_account_neutral_fresh_replay(
+        full_resend,
+        stored_count=len(stored_input),
+    )
+    assert replay_projection is not None
+    assert all(not isinstance(item, dict) or "id" not in item for item in replay_projection.input_items)
+    assert responses_payload_is_account_neutral_fresh_replay({"input": replay_projection.input_items})
+
+
+@pytest.mark.parametrize(
+    "developer_item,prior_phase,suffix_tail",
+    [
+        pytest.param(
+            {
+                "type": "message",
+                "id": "msg_hook",
+                "role": "developer",
+                "content": [{"type": "input_file", "file_id": "file_owner"}],
+            },
+            "final_answer",
+            [],
+            id="account-bound-developer-hook",
+        ),
+        pytest.param(
+            {
+                "type": "message",
+                "id": "msg_hook",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": "fresh hook"}],
+            },
+            "commentary",
+            [],
+            id="prior-output-not-final",
+        ),
+        pytest.param(
+            {
+                "type": "message",
+                "id": "msg_hook",
+                "role": "developer",
+                "content": [{"type": "input_text", "text": "fresh hook"}],
+            },
+            "final_answer",
+            [{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "extra"}]}],
+            id="not-exactly-three-item-suffix",
+        ),
+    ],
+)
+def test_full_resend_retained_output_rejects_unbounded_developer_hook_before_user(
+    developer_item: JsonValue,
+    prior_phase: str,
+    suffix_tail: list[JsonValue],
+) -> None:
+    stored_input: list[JsonValue] = [{"role": "user", "content": "first question"}]
+    suffix: list[JsonValue] = [
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": prior_phase,
+            "content": [{"type": "output_text", "text": "prior answer"}],
+        },
+        developer_item,
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "next"}]},
+        *suffix_tail,
+    ]
+
+    projection = project_responses_input_for_account_neutral_fresh_replay(
+        [*stored_input, *suffix],
+        stored_count=len(stored_input),
+        preserve_developer_message_ids=True,
+    )
+    assert projection is not None
+    assert not responses_input_suffix_retains_prior_output(
+        projection.input_items,
+        stored_count=projection.stored_prefix_count,
+    )
+
+
 def test_full_resend_accepts_captured_lite_multi_developer_prefix_with_source_ids() -> None:
     stored_input: list[JsonValue] = [
         {
