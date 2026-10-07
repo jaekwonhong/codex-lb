@@ -9,6 +9,7 @@ from app.db.models import ModelSource, ModelSourceModel
 from app.modules.model_sources.catalog import (
     DEFAULT_SOURCE_CONTEXT_WINDOW,
     source_model_audio_cost_usd,
+    source_model_max_output_tokens,
     source_model_reasoning_levels,
     source_model_request_overrides,
     source_model_supported_tool_types,
@@ -87,6 +88,23 @@ def test_source_models_to_upstream_models_preserves_source_identity() -> None:
     assert model.raw["max_output_tokens"] == 4096
     assert model.supports_parallel_tool_calls is True
     assert model.prefer_websockets is False
+
+
+def test_source_model_max_output_tokens_reads_enabled_model_ceiling() -> None:
+    source = ModelSource(
+        id="src_glm",
+        name="GLM",
+        kind=MODEL_SOURCE_KIND_OPENAI_COMPATIBLE,
+        base_url="http://127.0.0.1:8000/v1",
+        is_enabled=True,
+        models=[
+            ModelSourceModel(model="glm5.3-flash", max_output_tokens=32_768, is_enabled=True),
+            ModelSourceModel(model="disabled", max_output_tokens=1_024, is_enabled=False),
+        ],
+    )
+
+    assert source_model_max_output_tokens(source, "glm5.3-flash") == 32_768
+    assert source_model_max_output_tokens(source, "disabled") is None
 
 
 def test_source_models_to_upstream_models_defaults_missing_context_window() -> None:

@@ -220,6 +220,7 @@ from app.modules.firewall.service import FirewallRepositoryPort, FirewallService
 from app.modules.model_sources.catalog import (
     source_model_audio_cost_usd,
     source_model_cost_usd,
+    source_model_max_output_tokens,
     source_model_request_overrides,
     source_model_supported_tool_types,
     source_model_supports_reasoning,
@@ -5278,6 +5279,10 @@ def _codex_turn_request_kind(headers: Mapping[str, str]) -> str:
 def _apply_glm_compaction_request_overrides(
     source_payload: dict[str, JsonValue],
     headers: Mapping[str, str],
+    *,
+    source_max_output_tokens: int | None = None,
+    source_override_max_output_tokens: int | None = None,
+    preserve_reasoning_policy: bool = False,
 ) -> None:
     """Keep GLM local compaction bounded and complete without changing normal turns.
 
@@ -5299,7 +5304,18 @@ def _apply_glm_compaction_request_overrides(
     if _codex_turn_request_kind(headers) != "compaction":
         return
 
-    source_payload["max_output_tokens"] = _GLM_COMPACTION_OUTPUT_TOKENS
+    output_budget = _GLM_COMPACTION_OUTPUT_TOKENS
+    if source_max_output_tokens is not None and source_max_output_tokens > 0:
+        output_budget = min(output_budget, source_max_output_tokens)
+    if source_override_max_output_tokens is not None and source_override_max_output_tokens > 0:
+        output_budget = min(output_budget, source_override_max_output_tokens)
+    source_payload["max_output_tokens"] = output_budget
+
+    # API-key enforcement/allowlist policy is evaluated before source shaping
+    # and remains authoritative. Compaction's low-effort profile is only the
+    # default when no such policy is active.
+    if preserve_reasoning_policy:
+        return
 
     reasoning = source_payload.get("reasoning")
     if is_json_mapping(reasoning):
@@ -5379,7 +5395,23 @@ async def _source_responses_response(
         raise
     try:
         source_payload = _shape_source_responses_payload(payload, source, api_key=api_key)
-        _apply_glm_compaction_request_overrides(source_payload, request.headers)
+        source_request_overrides = source_model_request_overrides(source, payload.model)
+        raw_override_max_output_tokens = source_request_overrides.get("max_output_tokens")
+        override_max_output_tokens = (
+            raw_override_max_output_tokens
+            if isinstance(raw_override_max_output_tokens, int)
+            and not isinstance(raw_override_max_output_tokens, bool)
+            and raw_override_max_output_tokens > 0
+            else None
+        )
+        _apply_glm_compaction_request_overrides(
+            source_payload,
+            request.headers,
+            source_max_output_tokens=source_model_max_output_tokens(source, payload.model),
+            source_override_max_output_tokens=override_max_output_tokens,
+            preserve_reasoning_policy=api_key is not None
+            and (api_key.enforced_reasoning_effort is not None or api_key.allowed_reasoning_efforts is not None),
+        )
         forwarded_reasoning = source_payload.get("reasoning")
         forwarded_effort = forwarded_reasoning.get("effort") if is_json_mapping(forwarded_reasoning) else None
         owner.reasoning_effort = forwarded_effort if isinstance(forwarded_effort, str) else None

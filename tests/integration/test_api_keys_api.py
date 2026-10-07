@@ -118,12 +118,13 @@ async def _create_model_source(
     model: str,
     supports_responses: bool = False,
     raw_metadata_json: str | None = None,
+    max_output_tokens: int = 1024,
 ) -> str:
     model_entry = {
         "model": model,
         "displayName": model,
         "contextWindow": 8192,
-        "maxOutputTokens": 1024,
+        "maxOutputTokens": max_output_tokens,
         "supportsStreaming": True,
         "supportsTools": True,
     }
@@ -1435,6 +1436,269 @@ async def test_backend_codex_responses_routes_responses_capable_model_source(asy
     assert forwarded_payload["stream"] is True
     assert "tools" not in forwarded_payload
     assert any("resp_source" in line for line in lines)
+
+
+@pytest.mark.asyncio
+async def test_backend_codex_glm_compaction_applies_low_and_32768(async_client, monkeypatch):
+    model = "glm5.3-flash"
+    await _create_model_source(
+        async_client,
+        name="glm-compaction-profile",
+        model=model,
+        supports_responses=True,
+        raw_metadata_json='{"supports_reasoning":true,"supported_reasoning_levels":["low","medium","high"]}',
+        max_output_tokens=32_768,
+    )
+    observed: dict[str, object] = {}
+
+    async def fake_stream(source, payload, **_kwargs):
+        observed["payload"] = dict(payload)
+        usage_holder = SourceUsageHolder()
+
+        async def body():
+            usage_holder.usage = SourceUsage(input_tokens=2, output_tokens=1, cached_input_tokens=0)
+            yield (
+                b'data: {"type":"response.completed","response":{"id":"resp_glm_compact",'
+                b'"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}\n\n'
+            )
+
+        return SourceResponsesStream(body=body(), usage_holder=usage_holder, upstream_status_code=200)
+
+    monkeypatch.setattr(proxy_api, "stream_source_responses", fake_stream)
+
+    async with async_client.stream(
+        "POST",
+        "/backend-api/codex/responses",
+        headers={"x-codex-turn-metadata": json.dumps({"request_kind": "compaction"})},
+        json={
+            "model": model,
+            "instructions": "compact",
+            "input": [],
+            "reasoning": {"effort": "high"},
+        },
+    ) as response:
+        assert response.status_code == 200
+        [line async for line in response.aiter_lines() if line]
+
+    forwarded_payload = cast("dict[str, object]", observed["payload"])
+    assert forwarded_payload["max_output_tokens"] == 32_768
+    assert forwarded_payload["reasoning"] == {"effort": "low"}
+
+
+@pytest.mark.asyncio
+async def test_backend_codex_glm_compaction_respects_operator_output_override(async_client, monkeypatch):
+    model = "glm5.3-flash"
+    await _create_model_source(
+        async_client,
+        name="glm-compaction-operator-cap",
+        model=model,
+        supports_responses=True,
+        raw_metadata_json=(
+            '{"supports_reasoning":true,"supported_reasoning_levels":["low","medium","high"],'
+            '"source_request_overrides":{"max_output_tokens":8192}}'
+        ),
+        max_output_tokens=65_536,
+    )
+    observed: dict[str, object] = {}
+
+    async def fake_stream(source, payload, **_kwargs):
+        observed["payload"] = dict(payload)
+        usage_holder = SourceUsageHolder()
+
+        async def body():
+            usage_holder.usage = SourceUsage(input_tokens=2, output_tokens=1, cached_input_tokens=0)
+            yield (
+                b'data: {"type":"response.completed","response":{"id":"resp_glm_operator_cap",'
+                b'"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}\n\n'
+            )
+
+        return SourceResponsesStream(body=body(), usage_holder=usage_holder, upstream_status_code=200)
+
+    monkeypatch.setattr(proxy_api, "stream_source_responses", fake_stream)
+
+    async with async_client.stream(
+        "POST",
+        "/backend-api/codex/responses",
+        headers={"x-codex-turn-metadata": json.dumps({"request_kind": "compaction"})},
+        json={"model": model, "instructions": "compact", "input": [], "reasoning": {"effort": "high"}},
+    ) as response:
+        assert response.status_code == 200
+        [line async for line in response.aiter_lines() if line]
+
+    forwarded_payload = cast("dict[str, object]", observed["payload"])
+    assert forwarded_payload["max_output_tokens"] == 8_192
+    assert forwarded_payload["reasoning"] == {"effort": "low"}
+
+
+@pytest.mark.asyncio
+async def test_backend_codex_glm_compaction_preserves_enforced_reasoning(async_client, monkeypatch):
+    settings = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert settings.status_code == 200
+    model = "glm5.3-flash"
+    source_id = await _create_model_source(
+        async_client,
+        name="glm-compaction-policy",
+        model=model,
+        supports_responses=True,
+        raw_metadata_json='{"supports_reasoning":true,"supported_reasoning_levels":["low","medium","high"]}',
+        max_output_tokens=32_768,
+    )
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "glm compact policy key",
+            "enforcedReasoningEffort": "high",
+            "sourceAssignmentScopeEnabled": True,
+            "assignedSourceIds": [source_id],
+        },
+    )
+    assert created.status_code == 200
+    key = created.json()["key"]
+    observed: dict[str, object] = {}
+
+    async def fake_stream(source, payload, **_kwargs):
+        observed["payload"] = dict(payload)
+        usage_holder = SourceUsageHolder()
+
+        async def body():
+            usage_holder.usage = SourceUsage(input_tokens=2, output_tokens=1, cached_input_tokens=0)
+            yield (
+                b'data: {"type":"response.completed","response":{"id":"resp_glm_policy",'
+                b'"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}\n\n'
+            )
+
+        return SourceResponsesStream(body=body(), usage_holder=usage_holder, upstream_status_code=200)
+
+    monkeypatch.setattr(proxy_api, "stream_source_responses", fake_stream)
+
+    async with async_client.stream(
+        "POST",
+        "/backend-api/codex/responses",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "x-codex-turn-metadata": json.dumps({"request_kind": "compaction"}),
+        },
+        json={"model": model, "instructions": "compact", "input": [], "reasoning": {"effort": "low"}},
+    ) as response:
+        assert response.status_code == 200
+        [line async for line in response.aiter_lines() if line]
+
+    forwarded_payload = cast("dict[str, object]", observed["payload"])
+    assert forwarded_payload["max_output_tokens"] == 32_768
+    assert forwarded_payload["reasoning"] == {"effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_backend_codex_glm_compaction_preserves_allowlist_omitted_effort(async_client, monkeypatch):
+    settings = await async_client.put(
+        "/api/settings",
+        json={
+            "stickyThreadsEnabled": False,
+            "preferEarlierResetAccounts": False,
+            "totpRequiredOnLogin": False,
+            "apiKeyAuthEnabled": True,
+        },
+    )
+    assert settings.status_code == 200
+    model = "glm5.3-flash"
+    source_id = await _create_model_source(
+        async_client,
+        name="glm-compaction-allowlist",
+        model=model,
+        supports_responses=True,
+        raw_metadata_json='{"supports_reasoning":true,"supported_reasoning_levels":["low","medium","high"]}',
+        max_output_tokens=32_768,
+    )
+    created = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "glm compact allowlist key",
+            "allowedReasoningEfforts": ["low"],
+            "sourceAssignmentScopeEnabled": True,
+            "assignedSourceIds": [source_id],
+        },
+    )
+    assert created.status_code == 200
+    key = created.json()["key"]
+    observed: dict[str, object] = {}
+
+    async def fake_stream(source, payload, **_kwargs):
+        observed["payload"] = dict(payload)
+        usage_holder = SourceUsageHolder()
+
+        async def body():
+            usage_holder.usage = SourceUsage(input_tokens=2, output_tokens=1, cached_input_tokens=0)
+            yield (
+                b'data: {"type":"response.completed","response":{"id":"resp_glm_allowlist",'
+                b'"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}\n\n'
+            )
+
+        return SourceResponsesStream(body=body(), usage_holder=usage_holder, upstream_status_code=200)
+
+    monkeypatch.setattr(proxy_api, "stream_source_responses", fake_stream)
+
+    async with async_client.stream(
+        "POST",
+        "/backend-api/codex/responses",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "x-codex-turn-metadata": json.dumps({"request_kind": "compaction"}),
+        },
+        json={"model": model, "instructions": "compact", "input": []},
+    ) as response:
+        assert response.status_code == 200
+        [line async for line in response.aiter_lines() if line]
+
+    forwarded_payload = cast("dict[str, object]", observed["payload"])
+    assert forwarded_payload["max_output_tokens"] == 32_768
+    assert "reasoning" not in forwarded_payload
+
+
+@pytest.mark.asyncio
+async def test_backend_codex_glm_compaction_preserves_upstream_incomplete_terminal(async_client, monkeypatch):
+    model = "glm5.3-flash"
+    await _create_model_source(
+        async_client,
+        name="glm-compaction-incomplete-terminal",
+        model=model,
+        supports_responses=True,
+        raw_metadata_json='{"supports_reasoning":true,"supported_reasoning_levels":["low","medium","high"]}',
+        max_output_tokens=32_768,
+    )
+
+    async def fake_stream(source, payload, **_kwargs):
+        usage_holder = SourceUsageHolder()
+
+        async def body():
+            yield (
+                b'data: {"type":"response.incomplete","response":{"id":"resp_glm_incomplete",'
+                b'"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},'
+                b'"usage":{"input_tokens":2,"output_tokens":32768,"total_tokens":32770}}}\n\n'
+            )
+
+        return SourceResponsesStream(body=body(), usage_holder=usage_holder, upstream_status_code=200)
+
+    monkeypatch.setattr(proxy_api, "stream_source_responses", fake_stream)
+
+    async with async_client.stream(
+        "POST",
+        "/backend-api/codex/responses",
+        headers={"x-codex-turn-metadata": json.dumps({"request_kind": "compaction"})},
+        json={"model": model, "instructions": "compact", "input": []},
+    ) as response:
+        assert response.status_code == 200
+        lines = [line async for line in response.aiter_lines() if line.startswith("data: ")]
+
+    assert any('"type":"response.incomplete"' in line for line in lines)
+    assert any('"reason":"max_output_tokens"' in line for line in lines)
 
 
 @pytest.mark.asyncio

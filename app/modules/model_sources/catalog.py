@@ -221,6 +221,16 @@ def source_model_request_overrides(source: ModelSource, model: str) -> dict[str,
     return dict(value)
 
 
+def source_model_max_output_tokens(source: ModelSource, model: str) -> int | None:
+    """Return the enabled source model's configured output ceiling, if any."""
+
+    entry = next(
+        (candidate for candidate in source.models if candidate.model == model and candidate.is_enabled),
+        None,
+    )
+    return entry.max_output_tokens if entry is not None else None
+
+
 def source_model_supported_tool_types(source: ModelSource, model: str) -> frozenset[str]:
     """Non-function Responses tool types the source model declares support for.
 
