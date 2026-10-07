@@ -852,7 +852,7 @@ async def test_advisory_timeout_does_not_break_a_healthy_owner(pressured_continu
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status,used", [(AccountStatus.ACTIVE, 96), (AccountStatus.RATE_LIMITED, 100)])
-async def test_existing_socket_moves_complete_next_turn_before_owner_rejection(
+async def test_existing_socket_advisory_pressure_stays_on_owner_until_definitive_rejection(
     async_client,
     app_instance,
     monkeypatch,
@@ -883,7 +883,6 @@ async def test_existing_socket_moves_complete_next_turn_before_owner_rejection(
     )
     first = events[-1]["response"]
     alternate_id = await _import_account(async_client, "pressure_alternate", "pressure-alternate@example.com")
-    alternate = await _get_account(alternate_id)
     now = int(time.time())
     async with SessionLocal() as session:
         if status == AccountStatus.RATE_LIMITED:
@@ -928,14 +927,17 @@ async def test_existing_socket_moves_complete_next_turn_before_owner_rejection(
         async_client, "/backend-api/codex/responses", json_body={**base, "input": second_input}, headers=headers
     )
     second = events[-1]["response"]
-    assert second["id"] == "resp_pressure_replacement_1"
-    assert len(owner_socket.sent_text) == 1  # no failing speculative send to owner
-    assert connected == [owner.chatgpt_account_id, alternate.chatgpt_account_id]
-    sent = json.loads(replacement_socket.sent_text[0])
-    assert sent["input"] == second_input
+    assert second["id"] == "resp_pressure_owner_2"
+    assert connected == [owner.chatgpt_account_id]
+    assert replacement_socket.sent_text == []
+    sent = json.loads(owner_socket.sent_text[1])
+    assert sent["input"] == [
+        first["output"][0],
+        {"role": "user", "content": [{"type": "input_text", "text": "second turn"}]},
+    ]
     assert sent["reasoning"]["effort"] == "high"
     assert sent["model"] == base["model"]
-    assert "previous_response_id" not in sent
+    assert sent["previous_response_id"] == first["id"]
     third_input = [
         *second_input,
         second["output"][0],
@@ -947,7 +949,8 @@ async def test_existing_socket_moves_complete_next_turn_before_owner_rejection(
         json_body={**base, "input": third_input, "previous_response_id": second["id"]},
         headers=headers,
     )
-    assert third_events[-1]["response"]["id"] == "resp_pressure_replacement_2"
-    assert len(owner_socket.sent_text) == 1
+    assert third_events[-1]["response"]["id"] == "resp_pressure_owner_3"
+    assert len(owner_socket.sent_text) == 3
+    assert replacement_socket.sent_text == []
     service = get_proxy_service_for_app(app_instance)
     assert all(runtime.inflight_response_creates == 0 for runtime in service._load_balancer._runtime.values())
