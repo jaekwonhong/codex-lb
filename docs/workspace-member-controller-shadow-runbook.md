@@ -20,6 +20,35 @@ The qualified outer boundary publishes only host loopback even though the contai
 
 The qualified Companion observation source listens on `127.0.0.1:53418`. During this shadow qualification it was started from the already installed, previously qualified FourSessionLauncher binary because its LaunchAgent was disabled. It is not required by Codex-LB inference traffic.
 
+### OpenCodex management secret invariant
+
+The file mounted at `/run/secrets/opencodex-admin-token` **must** be the
+OpenCodex management `admin-api-token`. Do not mount `service-api-token` at this
+path. The service token is a data-plane admission token and is intentionally
+rejected by the Controller's exact-account management projection.
+
+On this host the qualified source is:
+
+```text
+~/Library/Application Support/codex-lb-opencodex-router/opencodex-home/admin-api-token
+```
+
+The mount remains read-only and the source file must remain owner-only (`0600`).
+Verify the source identity without printing the token:
+
+```sh
+docker inspect workspace-member-controller-shadow \
+  --format '{{json .Mounts}}'
+stat -f '%Sp' \
+  "$HOME/Library/Application Support/codex-lb-opencodex-router/opencodex-home/admin-api-token"
+```
+
+When account bindings are non-empty, readiness is expected to exercise
+`GET /api/codex-auth/controller-account-state?accountId=...` for every distinct
+bound OpenCodex account. A shadow with zero bindings does not exercise that
+endpoint, so `bindingCount=0` by itself is not evidence that this secret mount is
+correct.
+
 ## Health checks
 
 ```sh
@@ -45,6 +74,25 @@ docker exec codex-lb-postgres \
 ```
 
 Expected output is `on`.
+
+## Account-state validation with retained bindings
+
+Before enabling any account-dependent Controller stage, run the standalone
+`--validate` path with a retained, read-only binding snapshot. This is a
+read-only validation: it checks the migration database, Companion catalog,
+binding/member identity, OpenCodex readiness, and each exact OpenCodex account
+projection; it does not execute membership mutation.
+
+The 2026-10-07 follow-up qualification used the retained two-binding canary
+snapshot and completed with:
+
+```text
+workspace-member-controller validation passed: workspaces=3 bindings=2 opencodex_accounts=2
+```
+
+Do not copy those canary bindings into the live shadow merely to make its normal
+readiness non-zero. Use them only in an isolated validation container unless a
+separately authorized stage changes the live binding set.
 
 ## Stop the shadow only
 

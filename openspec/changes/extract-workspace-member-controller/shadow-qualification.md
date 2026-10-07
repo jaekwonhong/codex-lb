@@ -53,6 +53,36 @@ The standalone Controller read path is qualified for continued read-only shadow 
 
 This qualification does **not** qualify account-dependent rotation because the shadow binding set is intentionally empty, and it does **not** qualify any membership effect. Those remain gated by the separately authorized single-workspace mutation canary.
 
+## Follow-up exact-account projection qualification — 2026-10-07
+
+A later read-only follow-up closed one gap in the original shadow evidence
+without enabling mutation. The running shadow had accidentally mounted the
+OpenCodex `service-api-token` at its `WMC_OPENCODEX_ADMIN_TOKEN_FILE` path. That
+mistake was latent because the live shadow still had zero account bindings: its
+readiness checked OpenCodex `/readyz` but had no exact account-state request to
+authorize.
+
+The OpenCodex Controller contract requires the raw management `admin-token`
+principal by design. The shadow mount was corrected to the owner-only
+`admin-api-token` file while preserving the same image, environment, loopback
+port, read-only root filesystem, dropped capabilities, no-new-privileges policy,
+database role, and all other mounts. The previous container was retained as a
+stopped rollback container.
+
+The retained two-binding canary snapshot was then supplied only to a one-shot
+standalone `--validate` container. That validation used the same Companion,
+Controller database, OpenCodex management endpoint, and corrected read-only
+admin-token mount. It completed successfully with:
+
+```text
+workspace-member-controller validation passed: workspaces=3 bindings=2 opencodex_accounts=2
+```
+
+This proves the exact binding -> member/catalog identity -> OpenCodex
+`controller-account-state` read path for two bound accounts. It still does not
+authorize membership mutation, quota/reset-credit mutation, or account-routing
+ownership transfer. The live shadow binding set remains intentionally empty.
+
 ## Retained live shadow state
 
 At qualification close, the shadow service remains running for observation only. Its runtime is intentionally independent of Codex-LB Stable/Beta. Stopping or removing the shadow does not require restarting the existing inference services.
