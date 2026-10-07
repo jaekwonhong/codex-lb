@@ -156,3 +156,31 @@ Codex-LB remains temporarily in the inference path for the next migration task,
 but its legacy workspace-membership writer paths are fenced. OpenCodex continues
 to own inference-account runtime state and routing; this cutover did not move or
 duplicate that authority.
+
+## Integrated-session revalidation
+
+The consolidated 2026-10-08 owner session revalidated the remote canonical
+baseline at `c8be81e59` before beginning task 4.5. The reconciliation closeout
+`6aa3a23bb` and q2 recovery closeout `54a2fd605` are strict ancestors of that
+baseline; no q2 mutation or recovery action was replayed.
+
+Current live checks remained green:
+
+- WMC `WMC_MUTATIONS_ENABLED=true`, ready on loopback port 2461;
+- database user `workspace_member_controller_writer`, transaction read-only
+  `off`, required journal insert/update privileges present, journal delete
+  privileges absent;
+- active membership operations `0`, pending WMC mutations `0`, enabled legacy
+  rotation intents `0`;
+- Stable/Beta both report `CODEX_LB_WORKSPACE_MEMBERSHIP_WRITER=wmc`, matching
+  two-node bridge-ring fingerprint and database-ready status;
+- OpenCodex port 10101 remains ready;
+- retained pre-ownership WMC/Stable/Beta containers remain stopped for rollback.
+
+Source revalidation from the dedicated consolidated worktree produced `431
+passed, 1 skipped` across the WMC/member-switch/member-rotation unit suites. The
+single skip remains the external Companion static-surface provenance test.
+`ruff`, focused `ty`, `git diff --check`, and strict validation of this change
+and `extract-workspace-member-controller` all pass. A test-only typing cleanup
+uses the Python field name for the aliased rotation-intent request and explicitly
+casts an intentionally unreachable fake service; runtime behavior is unchanged.
