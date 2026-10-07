@@ -15,6 +15,7 @@ from app.modules.workspace_member_controller.account_state import (
     OpenCodexAccountState,
     OpenCodexAccountStateError,
     OpenCodexAccountStatePort,
+    read_stable_account_state,
 )
 from app.modules.workspace_member_controller.domain import ControllerModel, MembershipObservation, Workspace
 from app.modules.workspace_member_controller.ports import WorkspaceReadPort
@@ -22,6 +23,7 @@ from app.modules.workspace_member_controller.ports import WorkspaceReadPort
 RotationDecisionState = Literal[
     "account_binding_missing",
     "account_state_unavailable",
+    "account_state_unstable",
     "account_state_stale",
     "account_state_blocked",
     "quota_unknown",
@@ -134,8 +136,18 @@ class WorkspaceMemberRotationDecisionService:
         self._require_binding_identity(binding, request)
 
         try:
-            state = await self._accounts.get(binding.opencodex_account_id)
-        except OpenCodexAccountStateError:
+            state = await read_stable_account_state(self._accounts, binding.opencodex_account_id)
+        except OpenCodexAccountStateError as exc:
+            if exc.code == "opencodex_account_identity_mismatch":
+                raise RotationDecisionError("rotation_account_state_identity_mismatch") from exc
+            if exc.code == "opencodex_account_state_unstable":
+                return self._decision(
+                    request,
+                    "account_state_unstable",
+                    True,
+                    binding=binding,
+                    observed=observed,
+                )
             return self._decision(
                 request,
                 "account_state_unavailable",
@@ -262,7 +274,13 @@ class WorkspaceMemberRotationDecisionService:
 
     async def revalidate_account_evidence(self, evidence: AccountDecisionEvidence) -> OpenCodexAccountState:
         try:
-            state = await self._accounts.get(evidence.account_id)
+            state = await read_stable_account_state(self._accounts, evidence.account_id)
+        except OpenCodexAccountStateError as exc:
+            if exc.code == "opencodex_account_identity_mismatch":
+                raise RotationDecisionError("rotation_account_state_identity_mismatch") from exc
+            if exc.code == "opencodex_account_state_unstable":
+                raise RotationDecisionError("rotation_account_state_unstable") from exc
+            raise RotationDecisionError("rotation_account_state_unavailable") from exc
         except Exception as exc:
             raise RotationDecisionError("rotation_account_state_unavailable") from exc
         now_ms = self._now_ms()

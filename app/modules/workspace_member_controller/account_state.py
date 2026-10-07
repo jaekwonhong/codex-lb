@@ -91,6 +91,25 @@ class OpenCodexAccountStatePort(Protocol):
     async def get(self, account_id: str) -> OpenCodexAccountState: ...
 
 
+async def read_stable_account_state(
+    port: OpenCodexAccountStatePort,
+    account_id: str,
+) -> OpenCodexAccountState:
+    """Read one exact account twice and fail closed across a state transition."""
+
+    first = await port.get(account_id)
+    second = await port.get(account_id)
+    if first.account_id != account_id or second.account_id != account_id:
+        raise OpenCodexAccountStateError("opencodex_account_identity_mismatch")
+    if (
+        first.credential_generation != second.credential_generation
+        or first.main_identity_generation != second.main_identity_generation
+        or first.state_revision != second.state_revision
+    ):
+        raise OpenCodexAccountStateError("opencodex_account_state_unstable")
+    return second
+
+
 class OpenCodexAccountStateError(RuntimeError):
     def __init__(self, code: str, *, status_code: int | None = None) -> None:
         super().__init__(code)

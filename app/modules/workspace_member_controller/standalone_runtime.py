@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from app.modules.workspace_member_controller.account_state import (
+    OpenCodexAccountStateError,
+    read_stable_account_state,
+)
 from app.modules.workspace_member_controller.binding_repository import (
     FileWorkspaceMemberAccountBindingRepository,
 )
@@ -30,6 +36,8 @@ class ReadinessReport:
 
 
 class ControllerStandaloneRuntime:
+    _ACCOUNT_STATE_MAX_AGE_MS = 30_000
+
     def __init__(
         self,
         *,
@@ -40,6 +48,7 @@ class ControllerStandaloneRuntime:
         reads: CompanionHttpReadAdapter,
         account_states: OpenCodexHttpAccountStateAdapter,
         read_service: WorkspaceMemberControllerReadService,
+        now_ms: Callable[[], int] | None = None,
     ) -> None:
         self.settings = settings
         self.engine = engine
@@ -48,6 +57,7 @@ class ControllerStandaloneRuntime:
         self.reads = reads
         self.account_states = account_states
         self.read_service = read_service
+        self._now_ms = now_ms or (lambda: time.time_ns() // 1_000_000)
         self._startup_report: ReadinessReport | None = None
 
     @classmethod
@@ -91,9 +101,17 @@ class ControllerStandaloneRuntime:
         self._validate_binding_catalog(snapshot.bindings, catalog)
         account_ids = sorted({binding.opencodex_account_id for binding in snapshot.bindings})
         for account_id in account_ids:
-            state = await self.account_states.get(account_id)
+            try:
+                state = await read_stable_account_state(self.account_states, account_id)
+            except OpenCodexAccountStateError as exc:
+                raise RuntimeError(f"startup_{exc.code}") from exc
             if state.account_id != account_id:
                 raise RuntimeError("startup_opencodex_account_identity_mismatch")
+            if not state.is_fresh(
+                now_ms=self._now_ms(),
+                max_age_ms=self._ACCOUNT_STATE_MAX_AGE_MS,
+            ):
+                raise RuntimeError("startup_opencodex_account_state_stale")
         return ReadinessReport(
             ready=True,
             catalog_fingerprint=catalog.catalog_fingerprint,

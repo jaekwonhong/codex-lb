@@ -105,7 +105,7 @@ class Reads:
 
 
 def binding(**updates) -> WorkspaceMemberAccountBinding:
-    values = {
+    values: dict[str, object] = {
         "workspace_id": "workspace-1",
         "workspace_account_id": "workspace-account-1",
         "preset_id": "outgoing",
@@ -116,7 +116,7 @@ def binding(**updates) -> WorkspaceMemberAccountBinding:
         "established_at": NOW - timedelta(days=1),
     }
     values.update(updates)
-    return WorkspaceMemberAccountBinding(**values)
+    return WorkspaceMemberAccountBinding.model_validate(values)
 
 
 class Bindings:
@@ -162,15 +162,19 @@ def account_state(**updates) -> OpenCodexAccountState:
 
 
 class Accounts:
-    def __init__(self, value=None, error=None):
+    def __init__(self, value=None, error=None, values=None):
         self.value = account_state() if value is None else value
         self.error = error
+        self.values = list(values or [])
         self.calls = []
 
     async def get(self, account_id: str):
         self.calls.append(account_id)
         if self.error:
             raise self.error
+        if self.values:
+            index = min(len(self.calls) - 1, len(self.values) - 1)
+            return self.values[index]
         return self.value
 
 
@@ -267,6 +271,22 @@ async def test_missing_binding_and_account_state_failure_fail_closed_without_bud
     assert budget.calls == []
 
 
+async def test_rotation_rejects_unstable_account_projection_before_budget_reservation():
+    budget = Budget()
+    accounts = Accounts(
+        values=[
+            account_state(stateRevision="b" * 64),
+            account_state(stateRevision="c" * 64),
+        ]
+    )
+    decision = await service(accounts=accounts, budget=budget).evaluate(request())
+    assert decision.state == "account_state_unstable"
+    assert decision.attention_required is True
+    assert decision.admission_ready is False
+    assert accounts.calls == ["acct-outgoing", "acct-outgoing"]
+    assert budget.calls == []
+
+
 async def test_rotation_uses_exact_binding_not_email_or_selector_fallback():
     wrong = Bindings(binding(opencodex_account_id="acct-other", member_user_id="user-Different"))
     accounts = Accounts()
@@ -321,6 +341,23 @@ async def test_revalidation_requires_same_generation_revision_and_exhausted_no_c
     changed = evidence.model_copy(update={"quota_state": "available"})
     with pytest.raises(RotationDecisionError, match="rotation_account_preconditions_changed"):
         await svc.revalidate_account_evidence(changed)
+
+
+async def test_revalidation_rejects_transition_between_adjacent_projection_reads():
+    stable = account_state(stateRevision="b" * 64)
+    accounts = Accounts(value=stable)
+    svc = service(accounts=accounts)
+    decision = await svc.evaluate(request())
+    evidence = decision.account_evidence
+    assert evidence is not None
+
+    accounts.values = [
+        account_state(stateRevision="b" * 64),
+        account_state(stateRevision="c" * 64),
+    ]
+    accounts.calls.clear()
+    with pytest.raises(RotationDecisionError, match="rotation_account_state_unstable"):
+        await svc.revalidate_account_evidence(evidence)
 
 
 async def test_quota_freshness_is_independent_of_projection_capture_time():

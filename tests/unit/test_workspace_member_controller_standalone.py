@@ -4,6 +4,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
 
 import httpx
 import pytest
@@ -73,8 +74,8 @@ def catalog_payload() -> dict:
     }
 
 
-def account_state_payload() -> dict:
-    return {
+def account_state_payload(**overrides) -> dict:
+    payload = {
         "schemaVersion": 1,
         "provider": "openai",
         "accountId": "acct-member-1",
@@ -93,6 +94,8 @@ def account_state_payload() -> dict:
         "cooldowns": [],
         "stateRevision": "d" * 64,
     }
+    payload.update(overrides)
+    return payload
 
 
 def write_bindings(path: Path, *, account_id: str = "acct-member-1", user_id: str = "user-Member1") -> None:
@@ -180,8 +183,12 @@ async def create_controller_tables(engine) -> None:
             await connection.execute(text(sql))
 
 
-def mock_transport() -> httpx.MockTransport:
+def mock_transport(*, account_states: list[dict] | None = None) -> httpx.MockTransport:
+    projected_states = list(account_states or [account_state_payload()])
+    account_reads = 0
+
     async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal account_reads
         if request.url.host == "127.0.0.1" and request.url.port == 53418:
             assert request.headers["host"] == "127.0.0.1:53418"
             assert request.headers["origin"] == "http://127.0.0.1:2456"
@@ -194,19 +201,26 @@ def mock_transport() -> httpx.MockTransport:
             assert request.headers["authorization"] == "Bearer " + "o" * 48
             if request.url.path == "/api/codex-auth/controller-account-state":
                 assert request.url.params["accountId"] == "acct-member-1"
-                return httpx.Response(200, json=account_state_payload())
+                index = min(account_reads, len(projected_states) - 1)
+                account_reads += 1
+                return httpx.Response(200, json=projected_states[index])
         return httpx.Response(404)
 
     return httpx.MockTransport(handler)
 
 
-async def build_runtime(tmp_path: Path) -> ControllerStandaloneRuntime:
+async def build_runtime(
+    tmp_path: Path,
+    *,
+    account_states: list[dict] | None = None,
+) -> ControllerStandaloneRuntime:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     configured = settings(tmp_path)
     write_bindings(configured.account_bindings_path)
     engine = create_async_engine(configured.resolved_database_url())
     await create_controller_tables(engine)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
-    client = httpx.AsyncClient(transport=mock_transport())
+    client = httpx.AsyncClient(transport=mock_transport(account_states=account_states))
     reads = CompanionHttpReadAdapter(base_url=configured.companion_base_url, client=client)
     states = OpenCodexHttpAccountStateAdapter(
         base_url=configured.opencodex_management_base_url,
@@ -227,6 +241,7 @@ async def build_runtime(tmp_path: Path) -> ControllerStandaloneRuntime:
         reads=reads,
         account_states=states,
         read_service=service,
+        now_ms=lambda: int(NOW.timestamp() * 1000),
     )
 
 
@@ -360,6 +375,55 @@ async def test_standalone_runtime_startup_validates_db_companion_binding_and_ope
         await runtime.close()
 
 
+async def test_standalone_runtime_rejects_unstable_or_stale_bound_account_projection(tmp_path):
+    unstable = await build_runtime(
+        tmp_path / "unstable",
+        account_states=[
+            account_state_payload(stateRevision="d" * 64),
+            account_state_payload(stateRevision="e" * 64),
+        ],
+    )
+    try:
+        with pytest.raises(RuntimeError, match="startup_opencodex_account_state_unstable"):
+            await unstable.startup()
+    finally:
+        await unstable.close()
+
+    stale = await build_runtime(
+        tmp_path / "stale",
+        account_states=[
+            account_state_payload(observedAt=int(NOW.timestamp() * 1000) - 31_000),
+        ],
+    )
+    try:
+        with pytest.raises(RuntimeError, match="startup_opencodex_account_state_stale"):
+            await stale.startup()
+    finally:
+        await stale.close()
+
+
+async def test_standalone_runtime_keeps_stable_excluded_binding_readiness_valid(tmp_path):
+    runtime = await build_runtime(
+        tmp_path,
+        account_states=[
+            account_state_payload(
+                needsReauth=True,
+                paused=True,
+                selectionState="excluded",
+                exclusionReasons=["paused", "needs_reauth"],
+                quotaState="exhausted",
+            )
+        ],
+    )
+    try:
+        report = await runtime.startup()
+        assert report.ready is True
+        assert report.binding_count == 1
+        assert report.opencodex_account_count == 1
+    finally:
+        await runtime.close()
+
+
 async def test_empty_binding_shadow_still_requires_opencodex_ready(tmp_path):
     runtime = await build_runtime(tmp_path)
     write_empty_bindings(runtime.settings.account_bindings_path)
@@ -403,7 +467,7 @@ async def test_standalone_http_surface_has_public_health_admin_read_only_v1_and_
         method
         for route in app.routes
         for method in getattr(route, "methods", set())
-        if route.path.startswith("/v1")
+        if getattr(route, "path", "").startswith("/v1")
     }
     assert methods <= {"GET", "HEAD"}
 
@@ -436,7 +500,7 @@ async def test_app_closes_runtime_when_startup_validation_fails(tmp_path):
             self.closed = True
 
     runtime = FailingRuntime()
-    app = create_standalone_app(configured, runtime)  # type: ignore[arg-type]
+    app = create_standalone_app(configured, cast(ControllerStandaloneRuntime, runtime))
     with pytest.raises(RuntimeError, match="startup_failed"):
         async with app.router.lifespan_context(app):
             pass
