@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "deviceId": "PC1",
+  "observedAt": "2026-10-07T23:19:58.0564623Z",
+  "profile": "opencodex",
+  "endpoint": "https://macmini.tail844b31.ts.net:10101/v1",
+  "expectedBundleName": "pc1-opencodex-api-key.age",
+  "packageVersion": "1.4.19+bfac2e9e0c694340bc4189c91be7d43b36b03bc9",
+  "verifierSha256": "36251ead0f645bdad5ea6d92fc7e98e5ca3af2c603486a27b9041829eb1c498a",
+  "configSha256": "cb0a2e92e0d9ad9a55f48cfec2392906a7937b61ae0ec24ae098cb4b80e0621f",
+  "checks": {
+    "DesktopProcess": "PASS",
+    "ProviderSwitcherMonitorNotResident": "PASS",
+    "LegacyTransactionArtifactsAbsent": "PASS",
+    "PendingProviderTransitionAbsent": "PASS",
+    "ProviderSelection": "PASS",
+    "ExclusiveAuthentication": "PASS",
+    "PersistentCredentialEnvironmentAbsent": "PASS",
+    "CredentialHelperNotResident": "PASS",
+    "LauncherNotResident": "PASS"
+  },
+  "result": "PASS"
+}
