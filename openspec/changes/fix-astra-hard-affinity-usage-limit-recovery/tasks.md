@@ -15,3 +15,10 @@
 - [x] Close direct-HTTP selection-time owner-quota failover through the shared relocation verdict and add a regression that proves the verdict is invoked.
 - [x] Add an end-to-end HTTP-bridge regression for owner `usage_limit_reached` -> account-neutral full-resend relocation -> next-turn continuity on the replacement account, including durable-operation re-fencing.
 - [x] Preserve generic configured required-account semantics while retaining definitive quota provenance only for ownership/continuity-constrained selection.
+
+## 3. Production Beta qualification
+
+- [x] Re-run the focused owner-quota relocation and GLM compaction regressions on the final source head before deployment.
+- [x] Deploy the exact final source head to PC1 Beta on port 2456 with the previous qualified image retained as a stopped rollback container.
+- [x] Verify database readiness, bridge-ring convergence, deployed-source byte identity, and a real `gpt-6-astra` thread plus same-session continuation through the Beta route.
+- [x] Keep Stable unchanged and do not synthesize quota exhaustion against a live production account merely to force a failover event.
