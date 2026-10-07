@@ -108,7 +108,8 @@ _ACCOUNT_NEUTRAL_APPLY_PATCH_OPERATION_FIELDS = {
     "delete_file": frozenset({"path", "type"}),
     "update_file": frozenset({"diff", "path", "type"}),
 }
-_ACCOUNT_NEUTRAL_REASONING_CONFIG_FIELDS = frozenset({"effort", "summary"})
+_ACCOUNT_NEUTRAL_REASONING_CONFIG_FIELDS = frozenset({"context", "effort", "summary"})
+_ACCOUNT_NEUTRAL_REASONING_CONTEXTS = frozenset({"all_turns", "last_turn"})
 _ACCOUNT_NEUTRAL_CLIENT_METADATA_FIELDS = frozenset(
     {
         "ws_request_header_x_openai_internal_codex_responses_lite",
@@ -117,6 +118,14 @@ _ACCOUNT_NEUTRAL_CLIENT_METADATA_FIELDS = frozenset(
         "x-codex-turn-metadata",
         "x-codex-window-id",
         "x-openai-subagent",
+    }
+)
+_ACCOUNT_NEUTRAL_TRANSIENT_CLIENT_METADATA_FIELDS = frozenset(
+    {
+        "root_turn_id",
+        "session_id",
+        "thread_id",
+        "turn_id",
     }
 )
 _ACCOUNT_SCOPED_HOSTED_INPUT_TYPES = frozenset(
@@ -920,11 +929,44 @@ def responses_payload_is_account_neutral_fresh_replay(payload: Mapping[str, Json
 def _reasoning_config_is_account_neutral(reasoning: JsonValue | None) -> bool:
     if reasoning is None:
         return True
-    return (
-        isinstance(reasoning, dict)
-        and all(key in _ACCOUNT_NEUTRAL_REASONING_CONFIG_FIELDS for key in reasoning)
-        and all(value is None or isinstance(value, str) for value in reasoning.values())
-    )
+    if not isinstance(reasoning, dict) or any(key not in _ACCOUNT_NEUTRAL_REASONING_CONFIG_FIELDS for key in reasoning):
+        return False
+    context = reasoning.get("context")
+    if context is not None and not _is_one_of(context, _ACCOUNT_NEUTRAL_REASONING_CONTEXTS):
+        return False
+    return all(value is None or isinstance(value, str) for key, value in reasoning.items() if key != "context")
+
+
+def _without_transient_client_metadata(payload: Mapping[str, JsonValue]) -> dict[str, JsonValue] | None:
+    """Drop Codex transport-local ids before a cross-account fresh replay.
+
+    Native Codex duplicates its logical session/thread/turn ids as raw
+    ``client_metadata`` keys while also carrying the compatibility metadata
+    headers that the proxy already knows how to restamp for a replacement
+    account.  The raw duplicates are neither model input nor durable response
+    state, so they should not block an otherwise verified full resend.  Only the
+    exact observed string fields are removed; malformed values and every unknown
+    metadata key remain fail-closed through the normal strict predicate.
+    """
+
+    projected = dict(payload)
+    raw_metadata = projected.get("client_metadata")
+    if raw_metadata is None:
+        return projected
+    if not isinstance(raw_metadata, dict):
+        return None
+    metadata = dict(raw_metadata)
+    for key in _ACCOUNT_NEUTRAL_TRANSIENT_CLIENT_METADATA_FIELDS:
+        if key not in metadata:
+            continue
+        if not _is_nonblank_string(metadata.get(key)):
+            return None
+        metadata.pop(key)
+    if metadata:
+        projected["client_metadata"] = cast(JsonValue, metadata)
+    else:
+        projected.pop("client_metadata", None)
+    return projected
 
 
 def _text_controls_are_account_neutral(text: JsonValue | None) -> bool:
@@ -1355,7 +1397,9 @@ def project_durable_transcript_for_account_neutral_fresh_replay(
     if expected_parent_response_id != anchor:
         return None
 
-    replay_payload = dict(current_payload)
+    replay_payload = _without_transient_client_metadata(current_payload)
+    if replay_payload is None:
+        return None
     replay_payload.pop("previous_response_id", None)
     carries_durable_items = False
     if isinstance(current_input, list):
