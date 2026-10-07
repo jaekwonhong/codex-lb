@@ -675,26 +675,37 @@ def _historical_developer_before_user_is_bounded(
     *,
     index: int,
 ) -> bool:
-    if index <= 0 or index + 1 >= len(input_items):
+    if index <= 0 or index >= len(input_items):
         return False
-    previous_item = input_items[index - 1]
     developer_item = input_items[index]
-    following_item = input_items[index + 1]
-    if (
-        not isinstance(previous_item, dict)
-        or not isinstance(developer_item, dict)
-        or not isinstance(following_item, dict)
-    ):
+    if not isinstance(developer_item, dict) or not _source_developer_hook_message_is_transparent(developer_item):
+        return False
+
+    run_start = index
+    while run_start > 0:
+        candidate = input_items[run_start - 1]
+        if not isinstance(candidate, dict) or not _source_developer_hook_message_is_transparent(candidate):
+            break
+        run_start -= 1
+
+    run_end = index
+    while run_end + 1 < len(input_items):
+        candidate = input_items[run_end + 1]
+        if not isinstance(candidate, dict) or not _source_developer_hook_message_is_transparent(candidate):
+            break
+        run_end += 1
+
+    if run_start <= 0 or run_end + 1 >= len(input_items):
+        return False
+    previous_item = input_items[run_start - 1]
+    following_item = input_items[run_end + 1]
+    if not isinstance(previous_item, dict) or not isinstance(following_item, dict):
         return False
     previous_is_turn_boundary = (previous_item.get("role") == "user" and _is_fresh_followup_input(previous_item)) or (
         previous_item.get("role") == "assistant" and _is_retained_response_message(previous_item)
     )
     following_is_user = following_item.get("role") == "user" and _is_fresh_followup_input(following_item)
-    return (
-        previous_is_turn_boundary
-        and _source_developer_hook_message_is_transparent(developer_item)
-        and following_is_user
-    )
+    return previous_is_turn_boundary and following_is_user
 
 
 def _fresh_developer_before_user_is_bounded(input_items: list[JsonValue]) -> bool:

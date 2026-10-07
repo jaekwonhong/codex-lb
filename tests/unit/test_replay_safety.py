@@ -1839,6 +1839,124 @@ def test_full_resend_retained_output_accepts_untagged_multiple_fresh_groups() ->
     )
 
 
+def test_full_resend_retained_output_accepts_historical_multi_developer_group() -> None:
+    stored_input: list[JsonValue] = [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "root"}]},
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "root answer"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_skills",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "skills hook"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_control",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "control hook"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_historical_user",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "historical question"}],
+        },
+    ]
+    full_resend: list[JsonValue] = [
+        *stored_input,
+        {
+            "type": "message",
+            "id": "msg_prior_answer",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "prior answer"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_fresh_hook",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "fresh hook"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_fresh_user",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "next question"}],
+        },
+    ]
+
+    projection = project_responses_input_for_account_neutral_fresh_replay(
+        full_resend,
+        stored_count=len(stored_input),
+        preserve_developer_message_ids=True,
+    )
+    assert projection is not None
+    assert responses_input_suffix_retains_prior_output(
+        projection.input_items,
+        stored_count=projection.stored_prefix_count,
+        canonical_lite_developer_index=projection.canonical_lite_developer_index,
+        canonical_lite_developer_indexes=projection.canonical_lite_developer_indexes,
+    )
+
+
+def test_full_resend_retained_output_rejects_account_bound_historical_multi_developer_group() -> None:
+    stored_input: list[JsonValue] = [
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "root"}]},
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "root answer"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_skills",
+            "role": "developer",
+            "content": [{"type": "input_text", "text": "skills hook"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_bound",
+            "role": "developer",
+            "content": [{"type": "input_file", "file_id": "file_owner"}],
+        },
+        {
+            "type": "message",
+            "id": "msg_historical_user",
+            "role": "user",
+            "content": [{"type": "input_text", "text": "historical question"}],
+        },
+    ]
+    full_resend: list[JsonValue] = [
+        *stored_input,
+        {
+            "type": "message",
+            "role": "assistant",
+            "phase": "final_answer",
+            "content": [{"type": "output_text", "text": "prior answer"}],
+        },
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "next"}]},
+    ]
+
+    projection = project_responses_input_for_account_neutral_fresh_replay(
+        full_resend,
+        stored_count=len(stored_input),
+        preserve_developer_message_ids=True,
+    )
+    assert projection is not None
+    assert not responses_input_suffix_retains_prior_output(
+        projection.input_items,
+        stored_count=projection.stored_prefix_count,
+        canonical_lite_developer_index=projection.canonical_lite_developer_index,
+        canonical_lite_developer_indexes=projection.canonical_lite_developer_indexes,
+    )
+
+
 @pytest.mark.parametrize(
     "developer_item,prior_phase,suffix_tail",
     [
