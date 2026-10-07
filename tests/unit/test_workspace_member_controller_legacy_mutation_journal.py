@@ -63,6 +63,23 @@ def receipt(cmd: MembershipMutationCommand) -> MembershipMutationReceipt:
     )
 
 
+def unknown_receipt(cmd: MembershipMutationCommand) -> MembershipMutationReceipt:
+    return MembershipMutationReceipt(
+        operation_id=str(cmd.operation_id),
+        command_id=str(cmd.command_id),
+        request_fingerprint=cmd.fingerprint(),
+        action="switch",
+        workspace_id="workspace-1",
+        workspace_account_id="workspace-account-1",
+        outcome="outcome_unknown",
+        code="canary_effect_unresolved:acceptance_settlement_not_observed",
+        observed_at=NOW,
+        remove_effect="unknown",
+        add_effect="unknown",
+        final_membership_confirmed=False,
+    )
+
+
 class LostReplyEffects:
     def __init__(self):
         self.execute_calls = 0
@@ -202,3 +219,58 @@ async def test_legacy_member_switch_admission_treats_settled_controller_history_
     blocked = await local_admission(Controls(pending))  # type: ignore[arg-type]
     assert blocked.can_create is False
     assert blocked.blockers[0].code == "controller_mutation_retained"
+
+
+async def test_partial_recovery_evidence_is_durable_and_releases_legacy_scope_only_after_completion(tmp_path):
+    database = tmp_path / "controller-recovery.sqlite3"
+    url = f"sqlite+aiosqlite:///{database}"
+    engine = create_async_engine(url)
+    await create_schema(engine)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    cmd = command()
+    effects = RecoveredEffects(unknown_receipt(cmd))
+
+    async def execute(_command):
+        effects.execute_calls += 1
+        return effects.value
+
+    effects.execute = execute  # type: ignore[method-assign]
+    service = WorkspaceMembershipMutationService(
+        LegacyMembershipMutationJournal(MemberSwitchControlRepository(sessions)),
+        Admission(),
+        effects,
+        clock=lambda: NOW,
+    )
+    pending = await service.submit(cmd)
+    assert pending.phase == "outcome_unknown"
+
+    child = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    prepared = await service.prepare_partial_recovery(str(OPERATION_ID), recovery_client_flow_id=child)
+    controls = MemberSwitchControlRepository(sessions)
+    retained = await controls.get(str(OPERATION_ID))
+    assert retained is not None
+    assert retained.active_scope == "member-switch"
+    assert retained.pending_action == "switch"
+    assert prepared.schema_version == 2
+    assert prepared.recovery is not None and prepared.recovery.phase == "prepared"
+
+    recovered = await service.complete_partial_recovery(
+        str(OPERATION_ID),
+        recovery_client_flow_id=child,
+        companion_operation_id="recovery-child",
+        cleanup_confirmed=True,
+        restoration_confirmed=True,
+    )
+    assert recovered.phase == "recovered"
+    assert recovered.receipt is not None and recovered.receipt.outcome == "outcome_unknown"
+
+    durable = await controls.get(str(OPERATION_ID))
+    assert durable is not None
+    assert durable.active_scope is None
+    assert durable.pending_action is None
+    reread = LegacyMembershipMutationJournal(controls)._convert(durable)
+    assert reread.state.schema_version == 2
+    assert reread.state.phase == "recovered"
+    assert reread.state.recovery is not None
+    assert reread.state.recovery.restoration_confirmed is True
+    await engine.dispose()

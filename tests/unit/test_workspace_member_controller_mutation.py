@@ -91,6 +91,23 @@ def completed_receipt(cmd: MembershipMutationCommand) -> MembershipMutationRecei
     )
 
 
+def unknown_receipt(cmd: MembershipMutationCommand) -> MembershipMutationReceipt:
+    return MembershipMutationReceipt(
+        operation_id=str(cmd.operation_id),
+        command_id=str(cmd.command_id),
+        request_fingerprint=cmd.fingerprint(),
+        action=cmd.mutation.action,
+        workspace_id=cmd.mutation.workspace_id,
+        workspace_account_id=cmd.mutation.workspace_account_id,
+        outcome="outcome_unknown",
+        code="canary_effect_unresolved:acceptance_settlement_not_observed",
+        observed_at=NOW,
+        remove_effect="unknown",
+        add_effect="unknown",
+        final_membership_confirmed=False,
+    )
+
+
 class MemoryJournal:
     def __init__(self):
         self.entry = None
@@ -393,6 +410,92 @@ async def test_changed_account_evidence_after_claim_closes_as_authoritative_non_
     assert result.receipt.add_effect == "authoritative_non_effect"
     assert effects.execute_calls == []
     assert journal.entry.active_scope is None
+
+
+async def test_partial_recovery_prepare_is_durable_idempotent_and_keeps_scope_held():
+    journal = MemoryJournal()
+    cmd = command()
+    effects = Effects(response=unknown_receipt(cmd))
+    effects.journal = journal
+    service = WorkspaceMembershipMutationService(journal, PermitAdmission(), effects, clock=lambda: NOW)
+    initial = await service.submit(cmd)
+    assert initial.phase == "outcome_unknown"
+    child = "33333333-3333-4333-8333-333333333333"
+
+    prepared = await service.prepare_partial_recovery(str(OPERATION_ID), recovery_client_flow_id=child)
+    repeated = await service.prepare_partial_recovery(str(OPERATION_ID), recovery_client_flow_id=child)
+
+    assert prepared.schema_version == 2
+    assert prepared.phase == "outcome_unknown"
+    assert prepared.last_code == "partial_recovery_prepared"
+    assert prepared.pending_action == "switch"
+    assert prepared.receipt == initial.receipt
+    assert prepared.recovery is not None
+    assert str(prepared.recovery.client_flow_id) == child
+    assert str(prepared.recovery.parent_client_flow_id) == str(OPERATION_ID)
+    assert prepared.recovery.original == cmd.mutation.outgoing
+    assert prepared.recovery.failed_target == cmd.mutation.incoming
+    assert prepared.recovery.phase == "prepared"
+    assert repeated.recovery == prepared.recovery
+    assert journal.entry.active_scope == "member-switch"
+    assert journal.entry.pending_action == "switch"
+    assert journal.events.count("save_pending") == 3  # effect-pending + unknown receipt + recovery prepare
+
+    with pytest.raises(MembershipMutationError, match="partial_recovery_attempt_conflict"):
+        await service.prepare_partial_recovery(
+            str(OPERATION_ID),
+            recovery_client_flow_id="44444444-4444-4444-8444-444444444444",
+        )
+
+
+async def test_partial_recovery_completion_requires_both_effect_proofs_and_only_then_releases_scope():
+    journal = MemoryJournal()
+    cmd = command()
+    effects = Effects(response=unknown_receipt(cmd))
+    effects.journal = journal
+    service = WorkspaceMembershipMutationService(journal, PermitAdmission(), effects, clock=lambda: NOW)
+    await service.submit(cmd)
+    child = "33333333-3333-4333-8333-333333333333"
+    await service.prepare_partial_recovery(str(OPERATION_ID), recovery_client_flow_id=child)
+
+    with pytest.raises(MembershipMutationError, match="partial_recovery_completion_unconfirmed"):
+        await service.complete_partial_recovery(
+            str(OPERATION_ID),
+            recovery_client_flow_id=child,
+            companion_operation_id="recovery-child",
+            cleanup_confirmed=True,
+            restoration_confirmed=False,
+        )
+    assert journal.entry.active_scope == "member-switch"
+    assert journal.entry.pending_action == "switch"
+
+    recovered = await service.complete_partial_recovery(
+        str(OPERATION_ID),
+        recovery_client_flow_id=child,
+        companion_operation_id="recovery-child",
+        cleanup_confirmed=True,
+        restoration_confirmed=True,
+    )
+
+    assert recovered.schema_version == 2
+    assert recovered.phase == "recovered"
+    assert recovered.last_code == "partial_effect_recovered"
+    assert recovered.pending_action is None
+    assert recovered.receipt is not None and recovered.receipt.outcome == "outcome_unknown"
+    assert recovered.recovery is not None and recovered.recovery.phase == "completed"
+    assert recovered.recovery.cleanup_confirmed is True
+    assert recovered.recovery.restoration_confirmed is True
+    assert recovered.recovery.companion_operation_id == "recovery-child"
+    assert journal.entry.active_scope is None
+
+    repeated = await service.complete_partial_recovery(
+        str(OPERATION_ID),
+        recovery_client_flow_id=child,
+        companion_operation_id="recovery-child",
+        cleanup_confirmed=True,
+        restoration_confirmed=True,
+    )
+    assert repeated.phase == "recovered"
 
 
 def test_mutation_shapes_reject_ambiguous_add_remove_switch_requests():

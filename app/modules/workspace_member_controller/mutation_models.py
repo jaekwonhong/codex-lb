@@ -18,6 +18,7 @@ MembershipMutationPhase = Literal[
     "outcome_unknown",
     "completed",
     "failed",
+    "recovered",
 ]
 MembershipEffectState = Literal[
     "not_attempted",
@@ -26,6 +27,7 @@ MembershipEffectState = Literal[
     "authoritative_non_effect",
 ]
 MembershipMutationOutcome = Literal["completed", "authoritative_non_effect", "outcome_unknown"]
+MembershipRecoveryPhase = Literal["prepared", "completed"]
 
 
 class MembershipSubject(ControllerModel):
@@ -131,10 +133,46 @@ class MembershipMutationAdmissionEvidence(ControllerModel):
     membership_observed_at: datetime
 
 
-class MembershipMutationState(ControllerModel):
+class MembershipRecoveryAttempt(ControllerModel):
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal[1] = 1
+    client_flow_id: UUID
+    parent_client_flow_id: UUID
+    original: MembershipSubject
+    failed_target: MembershipSubject
+    phase: MembershipRecoveryPhase
+    prepared_at: datetime
+    companion_operation_id: str | None = None
+    cleanup_confirmed: bool = False
+    restoration_confirmed: bool = False
+    completed_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_recovery_evidence(self) -> MembershipRecoveryAttempt:
+        if self.phase == "prepared":
+            if (
+                self.companion_operation_id is not None
+                or self.cleanup_confirmed
+                or self.restoration_confirmed
+                or self.completed_at is not None
+            ):
+                raise ValueError("prepared_recovery_contains_completion_evidence")
+        else:
+            if (
+                not self.companion_operation_id
+                or not self.cleanup_confirmed
+                or not self.restoration_confirmed
+                or self.completed_at is None
+            ):
+                raise ValueError("completed_recovery_missing_evidence")
+        return self
+
+
+class MembershipMutationState(ControllerModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1, 2] = 1
     control_protocol: Literal["workspace_membership_mutation_v1"] = "workspace_membership_mutation_v1"
     operation_id: str = Field(min_length=1)
     mutation: MembershipMutationSpec
@@ -146,9 +184,24 @@ class MembershipMutationState(ControllerModel):
     admission: MembershipMutationAdmissionEvidence
     account_decision_evidence: AccountDecisionEvidence | None = None
     receipt: MembershipMutationReceipt | None = None
+    recovery: MembershipRecoveryAttempt | None = None
 
     @model_validator(mode="after")
     def validate_persisted_evidence(self) -> MembershipMutationState:
+        if self.schema_version == 1 and self.recovery is not None:
+            raise ValueError("schema_one_cannot_contain_recovery")
+        if self.schema_version == 2 and self.recovery is None:
+            raise ValueError("schema_two_requires_recovery")
+        if self.recovery is not None:
+            if (
+                self.mutation.action != "switch"
+                or self.mutation.incoming is None
+                or self.mutation.outgoing is None
+                or str(self.recovery.parent_client_flow_id) != self.operation_id
+                or self.recovery.original != self.mutation.outgoing
+                or self.recovery.failed_target != self.mutation.incoming
+            ):
+                raise ValueError("mutation_recovery_identity_mismatch")
         if (
             self.admission.workspace_id != self.mutation.workspace_id
             or self.admission.workspace_account_id != self.mutation.workspace_account_id
@@ -173,11 +226,20 @@ class MembershipMutationState(ControllerModel):
             raise ValueError("pre_settlement_mutation_cannot_have_receipt")
         if self.phase == "outcome_unknown" and self.receipt is not None and self.receipt.outcome != "outcome_unknown":
             raise ValueError("unknown_mutation_receipt_mismatch")
+        if self.phase == "recovered" and (
+            self.receipt is None
+            or self.receipt.outcome != "outcome_unknown"
+            or self.recovery is None
+            or self.recovery.phase != "completed"
+        ):
+            raise ValueError("recovered_mutation_evidence_missing")
+        if self.phase != "recovered" and self.recovery is not None and self.recovery.phase == "completed":
+            raise ValueError("completed_recovery_requires_recovered_phase")
         return self
 
 
 class MembershipMutationView(ControllerModel):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     operation_id: str
     revision: int = Field(ge=0)
     mutation: MembershipMutationSpec
@@ -188,3 +250,4 @@ class MembershipMutationView(ControllerModel):
     command_id: str | None = None
     account_decision_evidence: AccountDecisionEvidence | None = None
     receipt: MembershipMutationReceipt | None = None
+    recovery: MembershipRecoveryAttempt | None = None

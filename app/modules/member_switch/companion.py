@@ -9,6 +9,7 @@ from pydantic import BaseModel, ValidationError
 from app.modules.member_switch.repository import ControlConflict
 from app.modules.member_switch.schemas import (
     CONTROL_PROTOCOL,
+    CanaryRecoveryRequest,
     Catalog,
     CompanionAdmission,
     EgoOAuthBrowserRequest,
@@ -33,6 +34,7 @@ class CompanionPort(WorkspaceReadPort, Protocol):
     async def admission(self) -> CompanionAdmission: ...
     async def preview(self, request: PreviewRequest) -> Preview: ...
     async def start(self, request: StartRequest) -> StartReceipt: ...
+    async def start_canary_recovery(self, request: CanaryRecoveryRequest) -> StartReceipt: ...
     async def lookup(self, client_flow_id: str) -> StartReceipt | None: ...
     async def operation(self, operation_id: str) -> Operation: ...
     async def finalize(self, operation_id: str) -> FinalizeReceipt: ...
@@ -181,6 +183,15 @@ class CompanionClient:
         # of silently ignoring an unknown JSON canary flag on /operations.
         path = "/canary-operations" if request.canary else "/operations"
         return await self._required("POST", path, StartReceipt, request)
+
+    async def start_canary_recovery(self, request: CanaryRecoveryRequest) -> StartReceipt:
+        return await self._required(
+            "POST",
+            "/canary-recovery-operations",
+            StartReceipt,
+            request,
+            interactive=True,
+        )
 
     async def lookup(self, client_flow_id: str) -> StartReceipt | None:
         return await self._request(

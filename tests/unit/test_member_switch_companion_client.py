@@ -4,7 +4,7 @@ import pytest
 
 from app.modules.member_switch.companion import CompanionClient
 from app.modules.member_switch.repository import ControlConflict
-from app.modules.member_switch.schemas import StartRequest
+from app.modules.member_switch.schemas import CanaryRecoveryRequest, StartRequest
 
 pytestmark = pytest.mark.unit
 
@@ -107,6 +107,33 @@ async def test_canary_uses_dedicated_endpoint_without_manual_fallback(monkeypatc
     assert len(posts) == 1
     assert posts[0][1].endswith("/canary-operations")
     assert posts[0][2]["json"]["canary"] is True
+
+
+async def test_partial_recovery_uses_dedicated_endpoint_once_with_interactive_timeout(monkeypatch):
+    calls = intercept(
+        monkeypatch,
+        FakeResponse(202, {"accepted": True, "code": "accepted", "operationId": "recovery-1"}),
+    )
+    client = CompanionClient("http://127.0.0.1:53418/member-switch/v1/account-pool")
+
+    result = await client.start_canary_recovery(
+        CanaryRecoveryRequest(
+            client_flow_id="33333333-3333-4333-8333-333333333333",
+            parent_client_flow_id="11111111-1111-4111-8111-111111111111",
+            workspace_id="workspace-1",
+            workspace_account_id="workspace-account-1",
+            restore_preset_id="outgoing",
+            failed_target_preset_id="incoming",
+            catalog_fingerprint="a" * 64,
+        )
+    )
+
+    assert result.accepted is True
+    posts = [call for call in calls if call[0] == "POST"]
+    assert len(posts) == 1
+    assert posts[0][1].endswith("/canary-recovery-operations")
+    assert posts[0][2]["json"]["parentClientFlowId"] == "11111111-1111-4111-8111-111111111111"
+    assert calls[0][1]["timeout"].total == 190
 
 
 async def test_membership_observation_uses_managed_post_and_interactive_timeout(monkeypatch):

@@ -29,7 +29,11 @@
 
 - [x] 4.1 Package the standalone service with health, admin authentication, configuration, and migration/startup validation.
 - [x] 4.2 Run a read-only shadow deployment and compare workspace/member results with the existing Codex-LB implementation.
-- [ ] 4.3 Qualify one separately authorized workspace mutation canary and rollback without broadening mutation authority.
+- [ ] 4.3 Qualify one separately authorized workspace mutation canary and rollback/recovery without broadening mutation authority.
+  - [x] 4.3.1 Execute q1 and q2 forward budgets at most once each and retain authoritative no-replay evidence.
+  - [x] 4.3.2 Preserve the q2 confirmed-removal + pending-invite partial effect as outcome-unknown rather than replaying or normalizing it.
+  - [x] 4.3.3 Implement and mechanically qualify a purpose-bound partial-effect recovery contract with schema-4 downgrade rejection and Controller two-phase release evidence.
+  - [ ] 4.3.4 Deploy the exact qualified recovery candidate, pass recovery preflight, restore the original member once, and retain final restoration evidence before declaring the canary qualification complete.
 - [ ] 4.4 Transfer production workspace-membership control-plane ownership to the standalone Controller.
 - [ ] 4.5 Make OpenCodex the direct ChatGPT/Codex account-pool owner for PC1/PC2/Mac and retire the Codex-LB inference/data-plane path.
 - [ ] 4.6 Remove superseded routing artifacts only after final rollback snapshots and operational evidence are retained.

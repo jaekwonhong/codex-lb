@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timezone
+from uuid import UUID
 
 from app.modules.workspace_member_controller.mutation_models import (
     MembershipMutationCommand,
     MembershipMutationReceipt,
     MembershipMutationState,
     MembershipMutationView,
+    MembershipRecoveryAttempt,
 )
 from app.modules.workspace_member_controller.mutation_ports import (
     AccountDecisionEvidenceGuard,
@@ -174,6 +176,123 @@ class WorkspaceMembershipMutationService:
             raise MembershipMutationError("mutation_outcome_still_unknown")
         return await self._apply_receipt(entry, receipt)
 
+    async def prepare_partial_recovery(
+        self,
+        operation_id: str,
+        *,
+        recovery_client_flow_id: str,
+    ) -> MembershipMutationView:
+        entry = await self._journal.get_mutation(operation_id)
+        if entry is None:
+            raise MembershipMutationError("mutation_operation_not_found")
+        state = entry.state
+        if (
+            state.phase != "outcome_unknown"
+            or entry.pending_action is None
+            or state.receipt is None
+            or state.receipt.outcome != "outcome_unknown"
+            or state.mutation.action != "switch"
+            or state.mutation.incoming is None
+            or state.mutation.outgoing is None
+        ):
+            raise MembershipMutationError("partial_recovery_parent_not_eligible")
+        try:
+            child_flow = UUID(recovery_client_flow_id)
+            parent_flow = UUID(operation_id)
+        except ValueError as exc:
+            raise MembershipMutationError("partial_recovery_client_flow_invalid") from exc
+        if str(child_flow) == str(parent_flow):
+            raise MembershipMutationError("partial_recovery_client_flow_conflict")
+        if state.recovery is not None:
+            if (
+                str(state.recovery.client_flow_id) != str(child_flow)
+                or str(state.recovery.parent_client_flow_id) != str(parent_flow)
+            ):
+                raise MembershipMutationError("partial_recovery_attempt_conflict")
+            return self._view(entry)
+
+        prepared = MembershipRecoveryAttempt(
+            client_flow_id=child_flow,
+            parent_client_flow_id=parent_flow,
+            original=state.mutation.outgoing,
+            failed_target=state.mutation.incoming,
+            phase="prepared",
+            prepared_at=self._clock(),
+        )
+        next_state = MembershipMutationState.model_validate(
+            state.model_copy(
+                update={
+                    "schema_version": 2,
+                    "recovery": prepared,
+                    "last_code": "partial_recovery_prepared",
+                    "updated_at": self._clock(),
+                }
+            ).model_dump()
+        )
+        try:
+            saved = await self._journal.save_mutation(entry, next_state, complete=False, release=False)
+        except Exception as exc:
+            self._raise_journal_error(exc)
+        return self._view(saved)
+
+    async def complete_partial_recovery(
+        self,
+        operation_id: str,
+        *,
+        recovery_client_flow_id: str,
+        companion_operation_id: str,
+        cleanup_confirmed: bool,
+        restoration_confirmed: bool,
+    ) -> MembershipMutationView:
+        entry = await self._journal.get_mutation(operation_id)
+        if entry is None:
+            raise MembershipMutationError("mutation_operation_not_found")
+        state = entry.state
+        recovery = state.recovery
+        if (
+            state.schema_version != 2
+            or state.phase != "outcome_unknown"
+            or entry.pending_action is None
+            or state.receipt is None
+            or state.receipt.outcome != "outcome_unknown"
+            or recovery is None
+            or recovery.phase != "prepared"
+        ):
+            if state.phase == "recovered" and recovery is not None and recovery.phase == "completed":
+                if str(recovery.client_flow_id) == recovery_client_flow_id:
+                    return self._view(entry)
+            raise MembershipMutationError("partial_recovery_not_prepared")
+        if str(recovery.client_flow_id) != recovery_client_flow_id:
+            raise MembershipMutationError("partial_recovery_attempt_conflict")
+        if not companion_operation_id.strip() or not cleanup_confirmed or not restoration_confirmed:
+            raise MembershipMutationError("partial_recovery_completion_unconfirmed")
+
+        completed_at = self._clock()
+        completed_recovery = recovery.model_copy(
+            update={
+                "phase": "completed",
+                "companion_operation_id": companion_operation_id,
+                "cleanup_confirmed": True,
+                "restoration_confirmed": True,
+                "completed_at": completed_at,
+            }
+        )
+        next_state = MembershipMutationState.model_validate(
+            state.model_copy(
+                update={
+                    "phase": "recovered",
+                    "last_code": "partial_effect_recovered",
+                    "updated_at": completed_at,
+                    "recovery": completed_recovery,
+                }
+            ).model_dump()
+        )
+        try:
+            saved = await self._journal.save_mutation(entry, next_state, complete=True, release=True)
+        except Exception as exc:
+            self._raise_journal_error(exc)
+        return self._view(saved)
+
     async def _apply_receipt(
         self,
         entry: MembershipMutationJournalEntry,
@@ -256,6 +375,7 @@ class WorkspaceMembershipMutationService:
             else entry.state.last_code
         )
         return MembershipMutationView(
+            schema_version=entry.state.schema_version,
             operation_id=entry.operation_id,
             revision=entry.revision,
             mutation=entry.state.mutation,
@@ -266,6 +386,7 @@ class WorkspaceMembershipMutationService:
             command_id=entry.command_id,
             account_decision_evidence=entry.state.account_decision_evidence,
             receipt=entry.state.receipt,
+            recovery=entry.state.recovery,
         )
 
     @staticmethod

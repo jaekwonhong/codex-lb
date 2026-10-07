@@ -36,6 +36,7 @@ CONTROL_PROTOCOL = "managed_member_switch_v1"
 OWNER_MEMBERSHIP_OBSERVATION_CAPABILITY = "ego_lite_owner_membership_observation_v1"
 OWNER_MEMBERSHIP_MUTATION_CAPABILITY = "ego_lite_owner_membership_mutation_v1"
 RECIPIENT_MEMBERSHIP_LIFECYCLE_CAPABILITY = "ego_lite_recipient_membership_lifecycle_v1"
+CANARY_PARTIAL_RECOVERY_CAPABILITY = "member_rotation_canary_partial_recovery_v1"
 EGO_LITE_DEVICE_AUTH_AUTOMATION_CAPABILITY = "ego_lite_device_auth_automation_v1"
 OWNER_OAUTH_ENROLLMENT_CAPABILITY = "ego_lite_owner_oauth_enrollment_v1"
 AUTH_ENROLLMENT_PROTOCOL = "managed_member_auth_enrollment_v2"
@@ -91,6 +92,18 @@ class StartRequest(DashboardModel):
     canary: bool = False
     canary_purpose: Literal["forward", "rollback"] | None = None
     canary_parent_client_flow_id: str | None = None
+
+
+class CanaryRecoveryRequest(DashboardModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_flow_id: str
+    parent_client_flow_id: str
+    workspace_id: str
+    workspace_account_id: str
+    restore_preset_id: str
+    failed_target_preset_id: str
+    catalog_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class StartReceipt(DashboardModel):

@@ -514,7 +514,7 @@ The qualified shadow SHALL NOT expose membership mutation HTTP routes, SHALL rej
 
 ### Requirement: A single-workspace mutation canary requires exact OpenCodex ownership before any membership effect
 
-Before a canary membership switch can acquire effect ownership, both the currently observed workspace member and the selected allowlisted target SHALL have explicit exact `WorkspaceMemberAccountBinding` records. Each binding SHALL resolve the exact `opencodex_account_id` through the OpenCodex Controller account-state projection, and that state SHALL show a credential present, not paused, and not requiring reauthentication. The Controller SHALL NOT infer or repair canary bindings from email, alias, selector, workspace id, or legacy Codex-LB account identity. Missing exact binding or unusable exact account state SHALL fail closed before the mutation journal claim/effect path.
+Before a canary membership switch can acquire effect ownership, both the currently observed workspace member and the selected allowlisted target SHALL have explicit exact `WorkspaceMemberAccountBinding` records. Each binding SHALL resolve the exact `opencodex_account_id` through the OpenCodex Controller account-state projection, and that state SHALL show a credential present, administratively paused for routing isolation, and not requiring reauthentication. The Controller SHALL NOT infer or repair canary bindings from email, alias, selector, workspace id, or legacy Codex-LB account identity. Missing exact binding or unusable/unisolated exact account state SHALL fail closed before the mutation journal claim/effect path.
 
 #### Scenario: Current workspace member is not explicitly bound into OpenCodex
 
@@ -545,3 +545,34 @@ A canary switch SHALL use only the dedicated qualified Companion canary endpoint
 - **WHEN** the operation lacks authoritative evidence that the exact outgoing identity was absent from the workspace
 - **THEN** the canary is not finalized as completed
 - **AND** the Controller retains unknown-effect handling and no-replay recovery semantics
+
+### Requirement: Partial-effect canary recovery is purpose-bound to one exact failed forward
+
+When a qualified canary forward has authoritatively confirmed removal of the outgoing member and issuance of the target invitation but terminates with `acceptance_settlement_not_observed`, the Controller SHALL NOT replay forward and SHALL NOT relabel the original receipt as authoritative non-effect. The normal completed-forward rollback path SHALL remain ineligible. A separately qualified `recovery` purpose MAY be admitted only for the exact same qualification epoch and exact retained forward client-flow when the forward is unreleased, failed with that exact terminal code, contains `outgoing_workspace_absence_observed`, has durable remove/invite claims, has `FinalMembershipConfirmed=false`, and retains one nonempty pending-invitation id.
+
+Before any recovery browser effect, the Companion SHALL freshly prove that the workspace contains zero non-owner members and exactly one pending invitation whose email and invite id match the failed target and the retained parent invitation. The recovery child SHALL be durably bound before cleanup. It SHALL durably claim target-invite cleanup before canceling that invitation, SHALL confirm exact invite absence before any restoration invite, and SHALL durably claim the original-member restoration invite before issuing it. The child target identity SHALL be the parent's exact outgoing/original identity and the child outgoing identity SHALL be the parent's exact failed target identity. Any replacement invite, unexpected member, additional invite, identity drift, cross-epoch parent, second recovery child, or ordinary rollback child SHALL fail closed.
+
+The Controller SHALL persist a separate recovery attempt before the Companion recovery endpoint can be started. The original forward receipt SHALL remain `outcome_unknown`; recovery evidence SHALL be stored separately and SHALL not rewrite the historical effect conclusion. The Controller active scope and original pending action SHALL remain held until the Companion recovery child is completed and finalized, the original membership is freshly observed as authoritative, and the recovery evidence records both cleanup confirmation and restoration confirmation. Only then MAY the Controller move the operation to `recovered` and release its scope. If recovery start/finalize/result becomes ambiguous, the runner SHALL reconcile the same child client-flow and SHALL NOT automatically send another membership recovery effect.
+
+The first qualified recovery child SHALL evolve the Companion receipt store to schema 4 while preserving all pre-existing receipts semantically. A predecessor build that does not understand schema 4 SHALL reject the store rather than silently dropping or replaying recovery evidence.
+
+#### Scenario: Pending invitation was replaced before recovery
+
+- **GIVEN** the failed forward retained one exact target invitation id
+- **WHEN** recovery observes a different invitation id, an additional invitation, or any non-owner member
+- **THEN** recovery is rejected before invite cancellation or restoration invitation
+- **AND** the original Controller scope remains retained
+
+#### Scenario: Controller prepared recovery but no Companion child receipt exists
+
+- **GIVEN** the Controller durably stored the recovery child client-flow before the start response was known
+- **WHEN** a later recovery invocation cannot observe that child at the Companion
+- **THEN** it does not automatically call the recovery-start endpoint again
+- **AND** the operation remains retained for explicit reconciliation
+
+#### Scenario: Companion finalized recovery before Controller completion was saved
+
+- **GIVEN** the same prepared child is already finalized and the original member is authoritatively restored
+- **WHEN** the recovery runner resumes
+- **THEN** it performs no cleanup or membership invitation replay
+- **AND** it may persist only the missing Controller recovery completion and release its scope
