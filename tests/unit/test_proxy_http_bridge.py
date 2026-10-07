@@ -29021,6 +29021,12 @@ async def test_stream_via_http_bridge_projects_plaintext_durable_full_resend_whe
     force_definitive_decline: bool,
 ) -> None:
     service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    # This projection-only fixture fabricates the durable lookup below without
+    # a database. Owner retirement is a separate repository behavior; a missing
+    # accounts table must not mask the replay-proof assertion under test.
+    monkeypatch.setattr(
+        service._durable_bridge, "retire_continuity_owner_if_unavailable", AsyncMock(return_value=False)
+    )
     account_neutral_classifier = Mock(
         wraps=http_bridge_streaming_module._http_bridge_payload_is_account_neutral_fresh_replay
     )
