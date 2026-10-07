@@ -40,3 +40,28 @@ A read-only OpenCodex account-list inspection also showed that the current nativ
 ## 11-1 conclusion
 
 Canary implementation and no-replay preparation are qualified, but the **actual forward canary is blocked** until both selected subjects are onboarded into the OpenCodex native account pool and explicit exact bindings are supplied. The blocker is intentional and fail-closed. Do not bypass it by binding based only on matching email or legacy Codex-LB identity.
+
+## Follow-up closeout — 2026-10-07
+
+The conclusion above is retained as the historical 11-1 preflight result. The
+later 11-2B work supplied the exact OpenCodex bindings and proceeded through the
+one-shot canary boundary.
+
+The q2 forward was executed exactly once. It confirmed removal of the original
+member and issued the target invitation, but final target activation was not
+observed. The forward therefore terminated as
+`acceptance_settlement_not_observed`; it was preserved as partial-effect
+evidence and was **not retried** and was **not normalized into a completed
+forward**.
+
+The separately qualified `partial_recovery` path was then executed exactly once
+for that retained q2 parent. Recovery removed the exact pending failed-target
+invitation, proved its absence, restored the original member, confirmed active
+membership, finalized/released the recovery child, and released the retained q2
+parent without erasing the original forward failure evidence.
+
+Read-only revalidation on 2026-10-08 confirms the workspace is authoritative,
+complete, owner-verified, non-ambiguous, contains the owner plus the restored
+original non-owner member, and contains no failed target member. The Controller
+journal has zero active/pending membership-control rows. The q2 forward budget
+remains permanently spent and MUST NOT be retried.

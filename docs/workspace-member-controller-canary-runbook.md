@@ -72,6 +72,34 @@ Execution uses a new durable recovery child client-flow. The Controller persists
 
 If a prepared child has no observable Companion receipt, do not start it again automatically. If the Companion child is already finalized but WMC completion was lost, a resume may perform only the missing read-only restoration check and Controller completion; it must not replay cleanup or invite effects.
 
+### Qualified q2 recovery result
+
+The q2 partial-effect recovery has already been executed successfully and is no
+longer an executable canary step.
+
+- The failed q2 forward remains retained as terminal
+  `acceptance_settlement_not_observed` evidence with its original partial-effect
+  facts preserved.
+- The single recovery child is `7b1c932ec4ec4ce59e557c2b96834a64` and is
+  terminal `completed / member_added`, active membership confirmed, and
+  released.
+- Recovery cleanup was claimed and confirmed before restoration invitation;
+  the failed-target pending invitation is no longer present.
+- The q2 parent is released only because the recovery child completed; its
+  original failed-forward evidence remains unchanged as historical authority.
+- Fresh workspace observation shows the owner plus the restored original member
+  and no failed target member.
+- The Controller shared membership journal has no active or pending scope.
+
+The durable Companion receipt store SHA-256 after recovery is
+`f35900a6d0d3929fb35cb443df8805820f511819cc5458d43f36c37cb670fd89`.
+The retained recovery-capable Companion executable SHA-256 is
+`d9ca8edb40497fd45e285bc32262b5f3ea7d6a47fee787994ea45e5784b810d0`.
+
+Do not run the q2 forward, normal rollback, or partial recovery again. Future
+work begins from the restored membership state and retained receipts; deleting
+or replacing those receipts does not replenish any canary budget.
+
 ## Routing isolation
 
 The canary deliberately requires both bound OpenCodex pool accounts to remain paused. Membership mutation is executed by the qualified Companion canary path, not by OpenCodex inference routing, so unpausing would add risk without adding evidence. A missing credential or reauthentication-required state still blocks the canary.
