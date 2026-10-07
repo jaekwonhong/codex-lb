@@ -17,6 +17,6 @@
   projections.
 - [x] Run focused WMC adapter/standalone/rotation/mutation tests and static
   checks.
-- [ ] Validate the OpenSpec change strictly.
+- [x] Validate the OpenSpec change strictly.
 - [x] Run retained two-binding read-only validation against live OpenCodex 2.80
   without changing live membership or account routing state.

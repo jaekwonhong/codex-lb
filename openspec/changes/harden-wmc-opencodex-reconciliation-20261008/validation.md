@@ -54,6 +54,8 @@ Static gates:
 - `ruff check` on the WMC module and WMC unit tests: PASS
 - `ty check` on the WMC module and affected tests: PASS
 - `git diff --check`: PASS
+- PC1 OpenSpec CLI strict validation of this change: PASS
+- strict validation of all active OpenSpec changes: `94 passed, 0 failed`
 
 Regression coverage includes:
 
