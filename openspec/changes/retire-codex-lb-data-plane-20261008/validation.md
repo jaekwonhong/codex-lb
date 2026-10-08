@@ -52,6 +52,30 @@ be executed while PC2 remains Pending. The collector/finalizer logic may be
 reused only after the PC2 rollout package is rebuilt/requalified from the
 canonical ProviderSwitcher branch at or after `94fae09f`.
 
+The replacement handoff has now been prepared but **not sent to or executed on
+PC2**. It separates the already qualified product revision from the later
+handoff-control revision:
+
+- product source: `eb8f8e38b06b4aaa819b045dd0498ee4ff9681ea`;
+- handoff controls: `041b5551ddc9fe69fd6926747a3d58a78953a047`;
+- product version:
+  `1.4.19+eb8f8e38b06b4aaa819b045dd0498ee4ff9681ea`;
+- package ZIP SHA-256:
+  `fe7b0eb665ad880d2bc36c3a9a0df1beb8f9a2094aa051148b4c108566951e37`;
+- handoff manifest SHA-256:
+  `8768d510493d0205e4af5bc65f66a00a1eb7320ad233f06cec0c2e8b31dd1505`.
+
+The exact handoff was staged only on PC1 and all manifest entries validate. A
+Windows `-PlanOnly` execution of that runner on PC1, with PC1 host/credential
+pins substituted only for static exercise, returned `PLAN_PASS`: package
+self-test PASS, install PlanOnly PASS, OpenCodex readiness HTTP 200, no
+credential decryption and no config mutation. Evidence SHA-256:
+`4e809a592269ae4daa10500b917427708301c323078a1a54ac7cdb11b85b2099`.
+
+Therefore the remaining PC2 blocker is no longer package preparation. It is the
+explicitly deferred PC2-local human/provider transition and resulting final
+active-session PASS receipt.
+
 The read-only retirement gate is retained in the OpenCodex operations branch at
 `d5838c9a`. Its five unit tests pass. Against the current live runtime and the
 retained PC1 receipt, it reports `BLOCKED_PC2_LOCAL_CUTOVER` with exit 3 while
