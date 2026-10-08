@@ -123,11 +123,25 @@ current config and produced schema `2`, result `PASS`:
 
 PC2 retirement admission now fail-closes unless the PC2 receipt is schema 2 and
 both model canaries pass. A schema-1 PC2 receipt is intentionally invalid even
-if all nine older active-session checks pass.
+if all nine older active-session checks pass. The receipt is additionally bound
+to the exact qualified PC2 product before it can authorize retirement:
+
+- product version must equal
+  `1.4.19+eb8f8e38b06b4aaa819b045dd0498ee4ff9681ea`;
+- packaged `Test-ActiveDesktopSession.ps1` SHA-256 must equal
+  `36251ead0f645bdad5ea6d92fc7e98e5ca3af2c603486a27b9041829eb1c498a`;
+- the final Codex config and both model-canary evidence hashes must be valid
+  SHA-256 values;
+- `observedAt` must be timezone-aware, no more than one hour old, and no more
+  than five minutes ahead of the retirement host clock.
+
+This prevents an older ProviderSwitcher build, a stale previously successful
+PC2 session or malformed canary evidence from opening the data-plane retirement
+gate.
 
 The read-only retirement gate and guarded mutation/rollback runner are isolated
-on `ops/opencodex-retirement-owner-20261008`, currently `5a52d4e9`. The combined
-retirement gate and runner suites pass 17 tests. A live `plan` execution is mutation-free and
+on `ops/opencodex-retirement-owner-20261008`, currently `93935c4a`. The combined
+retirement gate and runner suites pass 27 tests. A live `plan` execution is mutation-free and
 currently reports `BLOCKED_PC2_LOCAL_CUTOVER` with exit 3 while confirming Mac
 direct ingress, PC1 receipt validity, OpenCodex native OpenAI/GLM prerequisites,
 WMC readiness/fences, Stable/Beta running state, zero established 2455/2456
@@ -135,6 +149,26 @@ clients, exact preserved container identities/restart policies and the expected
 2455/2456 Serve targets. The runner requires the literal confirmation token plus
 a valid PC2 receipt before it can stop containers or alter Serve state; partial
 apply failures automatically restore the captured container/Serve snapshot.
+
+The preflight now independently verifies control-plane quiescence instead of
+inferring it from idle inference ports. Authenticated WMC `/v1/status` currently
+reports schema 1, three workspaces, no active membership operation and zero
+enabled workspace rotation intents. Both live Codex-LB containers report no
+`member-rotation-runtime/canary-plan.json`. A read-only query against the shared
+production PostgreSQL state currently reports all zero for:
+
+- retained unsafe member/auth control records;
+- quarantined member-auth accounts;
+- pending legacy OAuth flows;
+- OAuth device-flow slots.
+
+The retained q2 Controller history remains inert evidence: released terminal
+`failed` rows and the released `recovered` row are explicitly accepted as
+history and were not replayed. A retained failed handoff whose completed
+auth-enrollment parent and child both have released scope/pending state is also
+accepted as inert history. Any nonterminal/unknown control kind, pending action,
+quarantined auth, pending OAuth flow, device slot, active WMC operation, enabled
+rotation intent or live canary plan makes retirement fail closed.
 
 The runner now also requires real inference after the structural retirement
 check. It reads the existing Mac command-backed OpenCodex credential only into
