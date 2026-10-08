@@ -222,3 +222,34 @@ qualification and guarded production GLM parity rollout/long-thread
 validation must pass before 4.5 retirement can even be planned READY.
 Neither q2, WMC mutation, Stable/Beta containers, Serve, nor OpenCodex
 10101 was touched by this compatibility qualification.
+
+## 2026-10-08 10101 guarded rollout complete; PC2 evidence still pending
+
+The user subsequently approved **only** the bounded OpenCodex 10101
+restart. Under the user's `XZ-Organization/codex-lb-server` fork,
+`ops/opencodex-retirement-owner-20261008` commit `431ae38e`,
+the guarded runner performed exact-package/config baseline validation,
+preflight real OpenAI/GLM SSE, quiet-window admission, protected
+rollback snapshot, single OpenCodex LaunchAgent stop/restart, and
+postflight encrypted-replay GLM / ordinary GLM / OpenAI SSE canaries.
+The operator receipt reports `SUCCESS` (new PID `64342`); the
+entire installed runtime matches the prequalified candidate digest
+`0f1ded0e8afef22bdbbb911c9472cc8c36c866936dd6757f942c5cee87f8f306`.
+An exact old-package backup is still available and the credential-bearing
+config rollback backup is protected mode 0600.
+
+The live GLM provider now uses **field-only** encrypted reasoning replay
+sanitization (`stripResponsesReasoningEncryptedContent=true`,
+`preserveResponsesReasoningContent=true`,
+`dropResponsesReasoningItems=false`); the bounded effort and compact
+policies remain in effect. Both Mac local/Tailnet and PC1 Windows-to-Mac
+`/readyz` probes returned HTTP 200. Retirement plan requalification
+reports GLM parity and Compact requirements PASS, but
+`BLOCKED_PC2_LOCAL_CUTOVER`, `wouldMutate=false` since **no fresh
+PC2 schema-v2 PASS receipt** exists.
+
+PC2 ProviderSwitcher installation/cutover was not attempted, and
+Stable/Beta/Serve remain in operation. PC1's previously failing long
+Desktop thread has not yet been manually retried; its outcome and
+remaining response-budget exhaustion handling are independent
+operational validations before declaring the user-facing issue closed.
