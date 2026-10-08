@@ -190,3 +190,35 @@ stopped or unpublished until PC2 evidence passes.
 
 No workspace membership mutation, q2 replay, account reauthentication, or
 credential migration was performed while collecting this evidence.
+
+## 2026-10-08 later qualification change: GLM replay parity pending
+
+The earlier `BLOCKED_PC2_LOCAL_CUTOVER` / sole-PC2-blocker evidence above
+remains historical evidence of the **earlier** gate, not the current
+admission result. Subsequent PC1 failures established an independent
+compatibility gap: OpenCodex's initial direct GLM workaround dropped
+whole reasoning replay items, while healthy PC2-labelled requests via
+Codex-LB Beta preserved summaries/plaintext and removed only unsupported
+foreign `encrypted_content` plus its exact `include` selector.
+
+An opt-in GLM parity source patch has been qualified in an **isolated**
+OpenCodex 2.80.0 runtime on port 10102 with separate state directories.
+Real GLM baseline and encrypted-replay requests both completed over
+HTTP/SSE; 43 focused/layout tests, typecheck, structural/privacy checks
+and the documentation build passed. The patch is retained solely on the
+user's fork under `ops/opencodex-retirement-owner-20261008` commit
+`e59ecfb9`; no upstream OpenCodex or Codex-LB PR/push was made.
+
+The production 10101 runtime was **not** restarted or replaced because
+active Docker and Tailnet sessions, including PC2 Beta ingress, would
+be disrupted. The updated retirement gate requires the field-only GLM
+configuration (`stripResponsesReasoningEncryptedContent=true`,
+`preserveResponsesReasoningContent=true`,
+`dropResponsesReasoningItems=false`) and the prior bounded effort
+map. It currently refuses the old lossy production configuration:
+`INVALID_RETIREMENT_PREREQUISITES`, `wouldMutate=false`. The fresh
+real PC2 schema-v2 PASS receipt is still absent. **Both** actual PC2
+qualification and guarded production GLM parity rollout/long-thread
+validation must pass before 4.5 retirement can even be planned READY.
+Neither q2, WMC mutation, Stable/Beta containers, Serve, nor OpenCodex
+10101 was touched by this compatibility qualification.
