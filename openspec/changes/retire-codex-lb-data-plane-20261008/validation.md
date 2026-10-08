@@ -120,8 +120,8 @@ PC2 session or malformed canary evidence from opening the data-plane retirement
 gate.
 
 The read-only retirement gate and guarded mutation/rollback runner are isolated
-on `ops/opencodex-retirement-owner-20261008`, currently `001ca9c6`. The combined
-retirement gate and runner suites pass 28 tests. A live `plan` execution is mutation-free and
+on `ops/opencodex-retirement-owner-20261008`, currently `f2c4960f`. The combined
+retirement gate and runner suites pass 29 tests. A live `plan` execution is mutation-free and
 currently reports `BLOCKED_PC2_LOCAL_CUTOVER` with exit 3 while confirming Mac
 direct ingress, PC1 receipt validity, OpenCodex native OpenAI/GLM prerequisites,
 WMC readiness/fences, Stable/Beta running state, zero established 2455/2456
@@ -170,6 +170,14 @@ and `dgx-glm53/glm5.3-flash` returned `RETIRE_GLM_OK` with response SHA-256
 `849da118ac74bfc8b756361904e5c44686b1812db834db05e6478e37711d0e67`.
 If either post-retirement inference canary fails during the eventual apply, the
 same captured Stable/Beta/Serve snapshot is automatically restored.
+
+Before the first Docker/Tailscale mutation, the runner now also seals the exact
+PC1 and PC2 admission receipts into the retirement evidence directory and
+records their SHA-256 values plus the SHA-256 values of the retirement runner
+and gate scripts in `before.json`. If either receipt disappears before this
+sealing step, `apply` aborts before any mutation. This makes the eventual 4.5
+closeout and later rollback evidence self-contained rather than dependent on the
+original client receipt paths remaining available.
 
 This missing receipt is a hard task-4.5 retirement blocker. Idle 2455/2456
 connections do not replace the missing client proof, and Stable/Beta must not be
