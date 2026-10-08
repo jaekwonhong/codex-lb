@@ -253,3 +253,20 @@ Stable/Beta/Serve remain in operation. PC1's previously failing long
 Desktop thread has not yet been manually retried; its outcome and
 remaining response-budget exhaustion handling are independent
 operational validations before declaring the user-facing issue closed.
+
+## 2026-10-08 PC1 GLM real-session acceptance
+
+At 21:03 KST, the user confirmed that the original PC1 Codex Desktop
+GLM5.3 Flash conversation now **works normally** after the guarded
+OpenCodex 10101 field-level replay patch. This user-reported real-session
+acceptance closes the previously outstanding PC1 GLM compatibility
+retest; it is separate from the synthetic OpenAI/GLM canary receipts.
+The separate hypothetical automatic `max_output_tokens` recovery
+feature has not been implemented or validated. Mac 10101 local and
+Tailnet readiness both remained HTTP 200, LaunchAgent PID `64342`
+stayed running, and Stable/Beta remained up.
+
+PC1 acceptance does not supersede PC2's missing real schema-v2 PASS
+receipt, the original PC2 age identity recovery blocker, or the
+retirement prohibition. Task 4.5 remains
+`BLOCKED_PC2_LOCAL_CUTOVER` with `wouldMutate=false`.
