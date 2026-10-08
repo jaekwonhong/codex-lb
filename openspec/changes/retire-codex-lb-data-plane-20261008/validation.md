@@ -151,7 +151,7 @@ PC2 session or malformed canary evidence from opening the data-plane retirement
 gate.
 
 The read-only retirement gate and guarded mutation/rollback runner are isolated
-on `ops/opencodex-retirement-owner-20261008`, currently `63db16c8`. The combined
+on `ops/opencodex-retirement-owner-20261008`, currently `001ca9c6`. The combined
 retirement gate and runner suites pass 28 tests. A live `plan` execution is mutation-free and
 currently reports `BLOCKED_PC2_LOCAL_CUTOVER` with exit 3 while confirming Mac
 direct ingress, PC1 receipt validity, OpenCodex native OpenAI/GLM prerequisites,
@@ -160,6 +160,16 @@ clients, exact preserved container identities/restart policies and the expected
 2455/2456 Serve targets. The runner requires the literal confirmation token plus
 a valid PC2 receipt before it can stop containers or alter Serve state; partial
 apply failures automatically restore the captured container/Serve snapshot.
+
+A temporary **synthetic** schema-v2 PC2 receipt matching the exact pinned
+package, collector, verifier, config-hash shape and model-canary contract was
+then supplied to the read-only `plan` action solely to test whether any hidden
+non-PC2 blocker remained. It returned
+`READY_TO_RETIRE_CODEX_LB_DATA_PLANE`, exit 0, and `wouldMutate=false`; the
+synthetic file was deleted immediately afterwards and is not valid production
+cutover evidence. With the PC2 receipt omitted, the same live plan remains
+`BLOCKED_PC2_LOCAL_CUTOVER`. This proves the real fresh PC2 schema-v2 PASS
+receipt is the only remaining task-4.5 admission blocker.
 
 The preflight now independently verifies control-plane quiescence instead of
 inferring it from idle inference ports. Authenticated WMC `/v1/status` currently
