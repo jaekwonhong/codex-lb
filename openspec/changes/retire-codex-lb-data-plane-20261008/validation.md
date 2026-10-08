@@ -57,13 +57,22 @@ PC2**. It separates the already qualified product revision from the later
 handoff-control revision:
 
 - product source: `eb8f8e38b06b4aaa819b045dd0498ee4ff9681ea`;
-- handoff controls: `041b5551ddc9fe69fd6926747a3d58a78953a047`;
+- canonical handoff source tip:
+  `0a218f5378312758e1af6e0d0778df459a3677a7`;
+- handoff control blob checksum fix:
+  `041b5551ddc9fe69fd6926747a3d58a78953a047`;
 - product version:
   `1.4.19+eb8f8e38b06b4aaa819b045dd0498ee4ff9681ea`;
 - package ZIP SHA-256:
   `fe7b0eb665ad880d2bc36c3a9a0df1beb8f9a2094aa051148b4c108566951e37`;
 - handoff manifest SHA-256:
   `8768d510493d0205e4af5bc65f66a00a1eb7320ad233f06cec0c2e8b31dd1505`.
+
+The seven-file staging directory was additionally packaged into one pending
+handoff archive on PC1 and re-expanded into a scratch directory; every inner
+manifest entry validated again. The outer archive SHA-256 is
+`7985d8bb6a77911f21d0c90ea6b192d399f99dceaa97c188a4a5596040a57e5d`.
+This archive is **staged only** and has not been Taildrop-delivered to PC2.
 
 The exact handoff was staged only on PC1 and all manifest entries validate. A
 Windows `-PlanOnly` execution of that runner on PC1, with PC1 host/credential
@@ -76,12 +85,16 @@ Therefore the remaining PC2 blocker is no longer package preparation. It is the
 explicitly deferred PC2-local human/provider transition and resulting final
 active-session PASS receipt.
 
-The read-only retirement gate is retained in the OpenCodex operations branch at
-`d5838c9a`. Its five unit tests pass. Against the current live runtime and the
-retained PC1 receipt, it reports `BLOCKED_PC2_LOCAL_CUTOVER` with exit 3 while
-confirming Mac direct ingress, PC1 receipt validity, OpenCodex native OpenAI/GLM
-prerequisites, WMC readiness/fences, Stable/Beta running state and current
-Tailscale Serve publication.
+The read-only retirement gate and guarded mutation/rollback runner are retained
+in the OpenCodex operations branch at `f62d372f`. The combined retirement gate
+and runner suites pass 12 tests. A live `plan` execution is mutation-free and
+currently reports `BLOCKED_PC2_LOCAL_CUTOVER` with exit 3 while confirming Mac
+direct ingress, PC1 receipt validity, OpenCodex native OpenAI/GLM prerequisites,
+WMC readiness/fences, Stable/Beta running state, zero established 2455/2456
+clients, exact preserved container identities/restart policies and the expected
+2455/2456 Serve targets. The runner requires the literal confirmation token plus
+a valid PC2 receipt before it can stop containers or alter Serve state; partial
+apply failures automatically restore the captured container/Serve snapshot.
 
 This missing receipt is a hard task-4.5 retirement blocker. Idle 2455/2456
 connections do not replace the missing client proof, and Stable/Beta must not be
