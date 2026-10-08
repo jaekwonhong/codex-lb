@@ -7,8 +7,13 @@
   provider and direct `dgx-glm53` routing.
 - Mac selects `model_provider = "opencodex"` at the 10101 endpoint.
 - PC1 active-session evidence is retained in `evidence/pc1-active-session.json`.
-  All nine ProviderSwitcher checks pass; the receipt SHA-256 is
-  `22b2e70d14f53f4434a0351ef632e79d138062997928ae74de296186aed627b6`.
+  All nine ProviderSwitcher checks pass. The original Windows CRLF receipt
+  SHA-256 is
+  `22b2e70d14f53f4434a0351ef632e79d138062997928ae74de296186aed627b6`;
+  the Git-retained LF copy SHA-256 is
+  `dace76e8264b74bfbc5da1e9ba22e76b7e4b16c46e1b251d5ea03be0f0cc7d01`.
+  Reconstructing CRLF line endings from the retained copy reproduces the
+  original receipt hash exactly; these are not competing PC1 evidence versions.
 - A later PC1 defect qualification found and fixed the missing OpenCodex Desktop
   GLM catalog route. The shared ProviderSwitcher single-ingress branch was
   intentionally frozen after the audited handoff descendants at
