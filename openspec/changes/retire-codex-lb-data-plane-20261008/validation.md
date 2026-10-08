@@ -25,7 +25,8 @@
   event and exit 0. Evidence SHA-256 values are
   `df60d7c19464250dfefba5b82260ad739c87955c3ca14a7731c795ca408d6a45`
   and `bcb265ebd3f0f99e089bf639399aca678fcb1e18af5759016094cfff82ce04a9`.
-- The receipt collector SHA-256 is
+- The retained original PC1 schema-v1 receipt was produced with collector
+  SHA-256
   `44f6b66d1e5125fbac32c76482c757b9d2b19619cdff14274721d96e38cbcb3a`.
 - At the observation point, ports 2455 and 2456 had no established client
   connection, but both Stable/Beta services and their Tailscale Serve entries
@@ -33,14 +34,10 @@
 
 ## Blocking evidence
 
-PC2 has received the qualified ProviderSwitcher package, OpenCodex encrypted
-bundle, rollout runner, and the exact active-session evidence collector. PC2 is
-not yet considered migrated because its local user has not produced a final
-`result=PASS` active-session receipt after selecting and confirming
-`OpenCodex · 10101`.
+### Historical pre-fix handoff — superseded
 
-The final local handoff was additionally reduced to one interactive finalizer
-and Taildrop-delivered to `jaekwonhong` with the exact checksum manifest:
+An earlier PC2 handoff was Taildrop-delivered before the PC1 OpenCodex GLM
+catalog defect was found. It contained:
 
 - collector PS1:
   `44f6b66d1e5125fbac32c76482c757b9d2b19619cdff14274721d96e38cbcb3a`;
@@ -49,44 +46,16 @@ and Taildrop-delivered to `jaekwonhong` with the exact checksum manifest:
 - finalizer CMD:
   `8d44ef860482343f553f5d967011daeb6c622c0236d2e1b5ba2312f51cb20294`.
 
-That PC2 handoff was produced before the PC1 OpenCodex GLM catalog defect was
-fixed. It is therefore **superseded as a final cutover artifact** and SHALL NOT
-be executed while PC2 remains Pending. The collector/finalizer logic may be
-reused only after the PC2 rollout package is rebuilt/requalified from the
-canonical ProviderSwitcher branch at or after `94fae09f`.
+That delivered handoff is **superseded** and SHALL NOT be executed. The later
+intermediate replacement bundles are also superseded by the collector-bound
+schema-v2 bundle below.
 
-The replacement handoff has now been prepared but **not sent to or executed on
-PC2**. It separates the already qualified product revision from the later
-handoff-control revision:
+### Current PC2 pending handoff
 
-- product source: `eb8f8e38b06b4aaa819b045dd0498ee4ff9681ea`;
-- canonical handoff source tip:
-  `0a218f5378312758e1af6e0d0778df459a3677a7`;
-- handoff control blob checksum fix:
-  `041b5551ddc9fe69fd6926747a3d58a78953a047`;
-- product version:
-  `1.4.19+eb8f8e38b06b4aaa819b045dd0498ee4ff9681ea`;
-- package ZIP SHA-256:
-  `fe7b0eb665ad880d2bc36c3a9a0df1beb8f9a2094aa051148b4c108566951e37`;
-- handoff manifest SHA-256:
-  `8768d510493d0205e4af5bc65f66a00a1eb7320ad233f06cec0c2e8b31dd1505`.
-
-The seven-file staging directory was additionally packaged into one pending
-handoff archive on PC1 and re-expanded into a scratch directory; every inner
-manifest entry validated again. The outer archive SHA-256 is
-`7985d8bb6a77911f21d0c90ea6b192d399f99dceaa97c188a4a5596040a57e5d`.
-This archive is **staged only** and has not been Taildrop-delivered to PC2.
-
-The exact handoff was staged only on PC1 and all manifest entries validate. A
-Windows `-PlanOnly` execution of that runner on PC1, with PC1 host/credential
-pins substituted only for static exercise, returned `PLAN_PASS`: package
-self-test PASS, install PlanOnly PASS, OpenCodex readiness HTTP 200, no
-credential decryption and no config mutation. Evidence SHA-256:
-`4e809a592269ae4daa10500b917427708301c323078a1a54ac7cdb11b85b2099`.
-
-Therefore the remaining PC2 blocker is no longer package preparation. It is the
-explicitly deferred PC2-local human/provider transition and resulting final
-active-session PASS receipt.
+The current handoff is fully prepared and qualified but **has not been sent to
+or executed on PC2**. Therefore the remaining PC2 blocker is no longer package
+preparation; it is only the explicitly deferred PC2-local transition and the
+resulting fresh schema-v2 PASS receipt.
 
 The currently valid pending handoff is **collector-bound schema version 2**. It
 supersedes the originally delivered pre-fix files, schema-v1 staging, and the
