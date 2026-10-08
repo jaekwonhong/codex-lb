@@ -10,8 +10,11 @@
   All nine ProviderSwitcher checks pass; the receipt SHA-256 is
   `22b2e70d14f53f4434a0351ef632e79d138062997928ae74de296186aed627b6`.
 - A later PC1 defect qualification found and fixed the missing OpenCodex Desktop
-  GLM catalog route. The canonical ProviderSwitcher single-ingress branch now
-  fast-forwards to `94fae09f69a94e5780d5dfa9deae339e38b691d6`.
+  GLM catalog route. The shared ProviderSwitcher single-ingress branch was
+  intentionally frozen after the audited handoff descendants at
+  `0a218f5378312758e1af6e0d0778df459a3677a7`; subsequent PC2-pending work is
+  isolated on `ops/provider-switcher-opencodex-owner-20261008`, currently
+  `0aa29e4f`.
 - PC1 currently uses `model_provider="opencodex"` with a managed
   `opencodex-merged-*` catalog containing exactly one routed
   `dgx-glm53/glm5.3-flash` row, no bare/legacy GLM row, hard context 1,048,576,
@@ -85,9 +88,46 @@ Therefore the remaining PC2 blocker is no longer package preparation. It is the
 explicitly deferred PC2-local human/provider transition and resulting final
 active-session PASS receipt.
 
-The read-only retirement gate and guarded mutation/rollback runner are retained
-in the OpenCodex operations branch at `f62d372f`. The combined retirement gate
-and runner suites pass 12 tests. A live `plan` execution is mutation-free and
+The currently valid pending handoff is **schema version 2**. It supersedes both
+the originally delivered pre-fix files and the intermediate schema-v1 staging.
+It remains staged only on PC1 and has not been sent to or executed on PC2:
+
+- qualified product revision:
+  `eb8f8e38b06b4aaa819b045dd0498ee4ff9681ea`;
+- ProviderSwitcher schema-v2 canary-control revision:
+  `d185d00803919f2c6c3cedf7db910974738c0458`;
+- schema-v2 checksum-manifest revision:
+  `f5202e4b86b9f63df22572442e5556b338e5e767`;
+- ProviderSwitcher owner branch documentation tip:
+  `0aa29e4f`;
+- product ZIP SHA-256:
+  `fe7b0eb665ad880d2bc36c3a9a0df1beb8f9a2094aa051148b4c108566951e37`;
+- schema-v2 handoff manifest SHA-256:
+  `712605a98c95e9ff9cbc69207bed7561d2fac48d393b2cf57be10b82f2a85928`;
+- outer pending handoff ZIP SHA-256:
+  `89a961a476b3e7848ef39d3018d90bf0e523a403dff1d947c8ef3d05e72479f6`.
+
+The schema-v2 collector/finalizer requires the original nine active-session
+checks plus real native OpenAI and routed GLM canaries before emitting a final
+PASS receipt. This exact collector was exercised on PC1 without changing the
+current config and produced schema `2`, result `PASS`:
+
+- PC1 schema-v2 receipt SHA-256:
+  `3aec4fa688fe06059b5d204977f606ffd9c52b89d1c64a177238ca214c718cb7`;
+- `gpt-6.1-sol` / `PC_OPENAI_OK`: PASS, `turn.completed`, zero error events,
+  evidence SHA-256
+  `08d06bc182fff49b6b3afa24b19ad8846ddcfca7ca8e416fe4806e6ba33083dd`;
+- `dgx-glm53/glm5.3-flash` / `PC_GLM_OK`: PASS, `turn.completed`, zero error
+  events, evidence SHA-256
+  `7ac421df12dcc6fe2ef972756c20a330a6af00856a86f0d2de776579fb35b654`.
+
+PC2 retirement admission now fail-closes unless the PC2 receipt is schema 2 and
+both model canaries pass. A schema-1 PC2 receipt is intentionally invalid even
+if all nine older active-session checks pass.
+
+The read-only retirement gate and guarded mutation/rollback runner are isolated
+on `ops/opencodex-retirement-owner-20261008`, currently `5a52d4e9`. The combined
+retirement gate and runner suites pass 17 tests. A live `plan` execution is mutation-free and
 currently reports `BLOCKED_PC2_LOCAL_CUTOVER` with exit 3 while confirming Mac
 direct ingress, PC1 receipt validity, OpenCodex native OpenAI/GLM prerequisites,
 WMC readiness/fences, Stable/Beta running state, zero established 2455/2456
@@ -95,6 +135,17 @@ clients, exact preserved container identities/restart policies and the expected
 2455/2456 Serve targets. The runner requires the literal confirmation token plus
 a valid PC2 receipt before it can stop containers or alter Serve state; partial
 apply failures automatically restore the captured container/Serve snapshot.
+
+The runner now also requires real inference after the structural retirement
+check. It reads the existing Mac command-backed OpenCodex credential only into
+memory and calls the Responses surface directly. This exact non-mutating canary
+path was live-qualified before retirement: `gpt-6.1-sol` returned
+`RETIRE_OPENAI_OK` with response SHA-256
+`3ad9cb92ed9a353c73f83e2af3efd8ac2348de87b789fa504bb7efdd776dd790`,
+and `dgx-glm53/glm5.3-flash` returned `RETIRE_GLM_OK` with response SHA-256
+`849da118ac74bfc8b756361904e5c44686b1812db834db05e6478e37711d0e67`.
+If either post-retirement inference canary fails during the eventual apply, the
+same captured Stable/Beta/Serve snapshot is automatically restored.
 
 This missing receipt is a hard task-4.5 retirement blocker. Idle 2455/2456
 connections do not replace the missing client proof, and Stable/Beta must not be
