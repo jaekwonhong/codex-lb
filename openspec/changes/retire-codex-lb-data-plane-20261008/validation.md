@@ -14,7 +14,7 @@
   intentionally frozen after the audited handoff descendants at
   `0a218f5378312758e1af6e0d0778df459a3677a7`; subsequent PC2-pending work is
   isolated on `ops/provider-switcher-opencodex-owner-20261008`, currently
-  `0aa29e4f`.
+  `dfe84e91`.
 - PC1 currently uses `model_provider="opencodex"` with a managed
   `opencodex-merged-*` catalog containing exactly one routed
   `dgx-glm53/glm5.3-flash` row, no bare/legacy GLM row, hard context 1,048,576,
@@ -88,38 +88,47 @@ Therefore the remaining PC2 blocker is no longer package preparation. It is the
 explicitly deferred PC2-local human/provider transition and resulting final
 active-session PASS receipt.
 
-The currently valid pending handoff is **schema version 2**. It supersedes both
-the originally delivered pre-fix files and the intermediate schema-v1 staging.
-It remains staged only on PC1 and has not been sent to or executed on PC2:
+The currently valid pending handoff is **collector-bound schema version 2**. It
+supersedes the originally delivered pre-fix files, schema-v1 staging, and the
+intermediate schema-v2 bundle whose manifest/outer hashes were
+`712605a9...` / `89a961a4...`. It remains staged only on PC1 and has not been
+sent to or executed on PC2:
 
 - qualified product revision:
   `eb8f8e38b06b4aaa819b045dd0498ee4ff9681ea`;
-- ProviderSwitcher schema-v2 canary-control revision:
-  `d185d00803919f2c6c3cedf7db910974738c0458`;
-- schema-v2 checksum-manifest revision:
-  `f5202e4b86b9f63df22572442e5556b338e5e767`;
+- collector-bound handoff/manifest revision:
+  `81a4da70cd2e8883500688e282bd5683db507962`;
 - ProviderSwitcher owner branch documentation tip:
-  `0aa29e4f`;
+  `dfe84e91`;
 - product ZIP SHA-256:
   `fe7b0eb665ad880d2bc36c3a9a0df1beb8f9a2094aa051148b4c108566951e37`;
+- packaged `Test-ActiveDesktopSession.ps1` SHA-256:
+  `36251ead0f645bdad5ea6d92fc7e98e5ca3af2c603486a27b9041829eb1c498a`;
+- schema-v2 collector SHA-256:
+  `8434759d20ad4527c9a426c85c7c6f6a4af9bcd00d8d95d332ad3062df6d4655`;
+- schema-v2 finalizer SHA-256:
+  `81469d845023d99a85246bc3a6ef170240c19bcbe7d7b90cc9b53d73968db53a`;
 - schema-v2 handoff manifest SHA-256:
-  `712605a98c95e9ff9cbc69207bed7561d2fac48d393b2cf57be10b82f2a85928`;
+  `2b102dff9d7bfdf0e3f781443146dd10ac87ed01d0e8ac4940e31d5509d8ce3a`;
 - outer pending handoff ZIP SHA-256:
-  `89a961a476b3e7848ef39d3018d90bf0e523a403dff1d947c8ef3d05e72479f6`.
+  `052c184d0a52816d9b31b9872077419c29ca64c66819017496d17d657670501d`.
 
-The schema-v2 collector/finalizer requires the original nine active-session
-checks plus real native OpenAI and routed GLM canaries before emitting a final
-PASS receipt. This exact collector was exercised on PC1 without changing the
-current config and produced schema `2`, result `PASS`:
+The exact staged schema-v2 collector bytes were exercised on PC1 without
+changing the current config. The collector/finalizer requires the original nine
+active-session checks plus real native OpenAI and routed GLM canaries before
+emitting a final PASS receipt, and the receipt now includes the collector's own
+SHA-256. The PC1 qualification produced schema `2`, result `PASS`:
 
 - PC1 schema-v2 receipt SHA-256:
-  `3aec4fa688fe06059b5d204977f606ffd9c52b89d1c64a177238ca214c718cb7`;
+  `290574ab6f5b70bdd9ddba3e7da941d93759b220435398438ca8cc2cee30886f`;
+- `collectorSha256`:
+  `8434759d20ad4527c9a426c85c7c6f6a4af9bcd00d8d95d332ad3062df6d4655`;
 - `gpt-6.1-sol` / `PC_OPENAI_OK`: PASS, `turn.completed`, zero error events,
   evidence SHA-256
-  `08d06bc182fff49b6b3afa24b19ad8846ddcfca7ca8e416fe4806e6ba33083dd`;
+  `bc113eecfdc69a7b7f23d69d2101d0571ca2348cfd295365978e05b1281f15c3`;
 - `dgx-glm53/glm5.3-flash` / `PC_GLM_OK`: PASS, `turn.completed`, zero error
   events, evidence SHA-256
-  `7ac421df12dcc6fe2ef972756c20a330a6af00856a86f0d2de776579fb35b654`.
+  `4322747dcdd3ee12a96f8a217783672c19c6213a76cfc7e87f6b0595d7254503`.
 
 PC2 retirement admission now fail-closes unless the PC2 receipt is schema 2 and
 both model canaries pass. A schema-1 PC2 receipt is intentionally invalid even
@@ -128,6 +137,8 @@ to the exact qualified PC2 product before it can authorize retirement:
 
 - product version must equal
   `1.4.19+eb8f8e38b06b4aaa819b045dd0498ee4ff9681ea`;
+- `collectorSha256` must equal
+  `8434759d20ad4527c9a426c85c7c6f6a4af9bcd00d8d95d332ad3062df6d4655`;
 - packaged `Test-ActiveDesktopSession.ps1` SHA-256 must equal
   `36251ead0f645bdad5ea6d92fc7e98e5ca3af2c603486a27b9041829eb1c498a`;
 - the final Codex config and both model-canary evidence hashes must be valid
@@ -140,8 +151,8 @@ PC2 session or malformed canary evidence from opening the data-plane retirement
 gate.
 
 The read-only retirement gate and guarded mutation/rollback runner are isolated
-on `ops/opencodex-retirement-owner-20261008`, currently `93935c4a`. The combined
-retirement gate and runner suites pass 27 tests. A live `plan` execution is mutation-free and
+on `ops/opencodex-retirement-owner-20261008`, currently `63db16c8`. The combined
+retirement gate and runner suites pass 28 tests. A live `plan` execution is mutation-free and
 currently reports `BLOCKED_PC2_LOCAL_CUTOVER` with exit 3 while confirming Mac
 direct ingress, PC1 receipt validity, OpenCodex native OpenAI/GLM prerequisites,
 WMC readiness/fences, Stable/Beta running state, zero established 2455/2456
