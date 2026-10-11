@@ -166,6 +166,28 @@ def test_completed_response_event_must_match_durable_operation_id() -> None:
     assert _rebuild(transcript=[foreign]) is None
 
 
+@pytest.mark.parametrize("second_terminal_type", ["response.completed", "response.failed", "response.incomplete"])
+def test_matching_terminal_followed_by_conflicting_terminal_cannot_rebuild(
+    second_terminal_type: str,
+) -> None:
+    original = _turn()
+    appended = replace(
+        original,
+        events=(
+            *original.events,
+            "data: "
+            + json.dumps(
+                {
+                    "type": second_terminal_type,
+                    "response": {"id": "resp_foreign", "output": [_answer("foreign answer")]},
+                },
+            )
+            + "\n\n",
+        ),
+    )
+    assert _rebuild(transcript=[appended]) is None
+
+
 def test_earlier_transcript_turn_from_another_owner_is_rejected() -> None:
     original = _turn()
     older = replace(

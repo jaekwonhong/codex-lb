@@ -37,29 +37,15 @@ def rebuild_verified_fresh_reattach(
     """
 
     if (
-        not response_id
-        or not owner_account_id
-        or not durable_session_id
-        or payload.previous_response_id is not None
+        payload.previous_response_id is not None
         or payload.conversation
         or not isinstance(payload.input, list)
         or not payload.input
-        or not transcript
-    ):
-        return None
-    last_operation = getattr(transcript[-1], "operation", None)
-    if (
-        getattr(last_operation, "response_id", None) != response_id
-        or getattr(last_operation, "session_id", None) != durable_session_id
-        or getattr(last_operation, "account_id", None) != owner_account_id
-        # An incomplete response is not an authoritative last answer even
-        # when the spool contains a syntactically valid terminal event.
-        or any(
-            getattr(getattr(turn, "operation", None), "state", None) != "completed"
-            or getattr(getattr(turn, "operation", None), "session_id", None) != durable_session_id
-            or getattr(getattr(turn, "operation", None), "account_id", None) != owner_account_id
-            or not _has_matching_completed_response_event(turn)
-            for turn in transcript
+        or not completed_transcript_matches_owner(
+            response_id=response_id,
+            owner_account_id=owner_account_id,
+            durable_session_id=durable_session_id,
+            transcript=transcript,
         )
     ):
         return None
@@ -91,6 +77,35 @@ def rebuild_verified_fresh_reattach(
     return rebuilt
 
 
+def completed_transcript_matches_owner(
+    *,
+    response_id: str,
+    owner_account_id: str,
+    durable_session_id: str,
+    transcript: Sequence[object] | None,
+) -> bool:
+    """Prove exact origin and complete terminal evidence for every durable turn.
+
+    A structurally replayable chain is not necessarily the requested OAuth
+    owner's chain. Both same-owner reattachment and cross-account quota
+    recovery must independently bind every retained operation to the same
+    durable session and owner before carrying any of its historical output.
+    """
+    if not response_id or not owner_account_id or not durable_session_id or not transcript:
+        return False
+    final_operation = getattr(transcript[-1], "operation", None)
+    if getattr(final_operation, "response_id", None) != response_id:
+        return False
+    return all(
+        getattr(operation := getattr(turn, "operation", None), "state", None) == "completed"
+        and getattr(operation, "event_spool_complete", False) is True
+        and getattr(operation, "session_id", None) == durable_session_id
+        and getattr(operation, "account_id", None) == owner_account_id
+        and _has_matching_completed_response_event(turn)
+        for turn in transcript
+    )
+
+
 def _has_matching_completed_response_event(turn: object) -> bool:
     """No partial or foreign event can impersonate the completed turn record.
 
@@ -111,7 +126,7 @@ def _has_matching_completed_response_event(turn: object) -> bool:
         event = parse_sse_data_json(event_text)
         if not isinstance(event, dict):
             continue
-        if event.get("type") == "response.incomplete":
+        if event.get("type") in {"response.incomplete", "response.failed", "error"}:
             return False
         if event.get("type") != "response.completed":
             continue

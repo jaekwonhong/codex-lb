@@ -137,7 +137,10 @@ from app.modules.proxy._service.http_bridge.quarantine import (
     _http_bridge_session_key_poison_quarantined,
     _http_bridge_session_key_quarantined,
 )
-from app.modules.proxy._service.http_bridge.reattach_recovery import rebuild_verified_fresh_reattach
+from app.modules.proxy._service.http_bridge.reattach_recovery import (
+    completed_transcript_matches_owner,
+    rebuild_verified_fresh_reattach,
+)
 from app.modules.proxy._service.http_bridge.retry_circuit import (
     _HTTP_BRIDGE_RETRY_CIRCUIT_ANCHOR_ABANDONED_DETAIL,
     _http_bridge_retry_circuit_suppression_message,
@@ -1632,6 +1635,7 @@ class _HTTPBridgeStreamingMixin:
         fresh_reattach_anchor_suppressed = False
         reattach_transcript = None
         reattach_transcript_response_id: str | None = None
+        fresh_reattach_rebuilt_from_durable_history = False
 
         def replay_projection_retains_required_context(
             replay_projection: AccountNeutralReplayProjection,
@@ -1917,6 +1921,7 @@ class _HTTPBridgeStreamingMixin:
                     effective_payload = recovered_payload
                     fresh_reattach_can_use_durable_anchor = False
                     fresh_reattach_anchor_suppressed = True
+                    fresh_reattach_rebuilt_from_durable_history = True
                     _log_http_bridge_event(
                         "fresh_reattach_durable_transcript_rebuilt",
                         bridge_session_key,
@@ -2855,6 +2860,63 @@ class _HTTPBridgeStreamingMixin:
                         f"definitive_owner_quota:{verdict.decline_reason or 'unrelocatable'}"
                     )
                 return False
+            if verdict.source == "durable_transcript" or fresh_reattach_rebuilt_from_durable_history:
+                # The common verdict validates portable content and parent
+                # links, not whether a replayable chain came from THIS durable
+                # owner or was superseded. A chain already rebuilt for the
+                # original fresh-socket attempt can appear as 'client_input'
+                # here; it still needs a fresh head proof after owner admission
+                # instead of trusting the earlier snapshot.
+                proof_response_id = (
+                    reattach_transcript_response_id
+                    if fresh_reattach_rebuilt_from_durable_history
+                    else anchor_response_id
+                )
+                proof_transcript = reattach_transcript if fresh_reattach_rebuilt_from_durable_history else transcript
+                transcript_rejection: str | None = None
+                if (
+                    durable_lookup is None
+                    or proof_response_id != durable_lookup.latest_response_id
+                    or durable_lookup.account_id is None
+                    or durable_lookup.account_id != request_state.preferred_account_id
+                    or not completed_transcript_matches_owner(
+                        response_id=proof_response_id or "",
+                        owner_account_id=durable_lookup.account_id,
+                        durable_session_id=durable_lookup.session_id,
+                        transcript=proof_transcript,
+                    )
+                ):
+                    transcript_rejection = "unverified_durable_origin"
+                else:
+                    try:
+                        uninterrupted_head = (
+                            await self._durable_bridge.completed_response_is_uninterrupted_session_head(
+                                session_id=durable_lookup.session_id,
+                                account_id=durable_lookup.account_id,
+                                response_id=proof_response_id,
+                            )
+                        )
+                    except Exception:
+                        uninterrupted_head = False
+                        logger.warning(
+                            "Definitive owner-quota transcript head check failed; declining relocation",
+                            exc_info=True,
+                        )
+                    if not uninterrupted_head:
+                        transcript_rejection = "unverified_latest_completed_head"
+                if transcript_rejection is not None:
+                    _log_http_bridge_event(
+                        "owner_quota_relocation_declined",
+                        bridge_session_key,
+                        account_id=request_state.preferred_account_id,
+                        model=effective_payload.model,
+                        detail=f"reason={transcript_rejection}",
+                        cache_key_family=bridge_session_key.affinity_kind,
+                        model_class=_extract_model_class(effective_payload.model) if effective_payload.model else None,
+                    )
+                    if native_explicit_anchor_requires_local_recovery() or native_delta_requires_owner():
+                        raise local_history_recovery_refusal(f"definitive_owner_quota:{transcript_rejection}")
+                    return False
             try:
                 relocated_payload = ResponsesRequest.model_validate(dict(verdict.body))
             except Exception:

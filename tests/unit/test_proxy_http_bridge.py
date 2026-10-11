@@ -29895,7 +29895,9 @@ async def test_stream_via_http_bridge_rebuilds_delta_after_definitive_owner_quot
         state=HttpBridgeSessionState.ACTIVE,
         latest_turn_state=None,
         latest_response_id="resp-quota-parent",
-        latest_input_item_count=1,
+        # Historical hard-owner rows can lack this field even when their
+        # complete, owner-bound durable transcript is available.
+        latest_input_item_count=None,
         latest_input_full_fingerprint=None,
         model="gpt-6-astra",
     )
@@ -29904,6 +29906,9 @@ async def test_stream_via_http_bridge_rebuilds_delta_after_definitive_owner_quot
             operation=SimpleNamespace(
                 parent_response_id=None,
                 response_id="resp-quota-parent",
+                session_id="durable-quota-relocation",
+                account_id="acc-quota-owner",
+                state="completed",
                 event_spool_complete=True,
                 request_text=(
                     '{"type":"response.create","model":"gpt-6-astra","instructions":"continue",'
@@ -29953,6 +29958,8 @@ async def test_stream_via_http_bridge_rebuilds_delta_after_definitive_owner_quot
     monkeypatch.setattr(service._durable_bridge, "lookup_request_targets", AsyncMock(return_value=durable_lookup))
     get_replayable_transcript = AsyncMock(return_value=transcript)
     monkeypatch.setattr(service._durable_bridge, "get_replayable_transcript", get_replayable_transcript)
+    head = AsyncMock(return_value=True)
+    monkeypatch.setattr(service._durable_bridge, "completed_response_is_uninterrupted_session_head", head)
     monkeypatch.setattr(service, "_http_bridge_has_live_local_session", AsyncMock(return_value=False))
     monkeypatch.setattr(service, "_http_bridge_can_forward_to_active_owner", AsyncMock(return_value=False))
     monkeypatch.setattr(service, "_resolve_file_account_for_responses", AsyncMock(return_value=None))
@@ -29982,6 +29989,7 @@ async def test_stream_via_http_bridge_rebuilds_delta_after_definitive_owner_quot
 
     assert chunks == ['data: {"type":"response.completed","response":{"id":"resp-relocated"}}\n\n']
     assert get_or_create.await_count == 2
+    assert durable_lookup.latest_input_item_count is None
     first_call, second_call = get_or_create.await_args_list
     assert first_call.kwargs["preferred_account_id"] == "acc-quota-owner"
     assert second_call.kwargs["preferred_account_id"] is None
@@ -29998,6 +30006,12 @@ async def test_stream_via_http_bridge_rebuilds_delta_after_definitive_owner_quot
         max_turns=http_bridge_streaming_module.RELOCATION_TRANSCRIPT_MAX_TURNS,
         max_bytes=http_bridge_streaming_module.RELOCATION_TRANSCRIPT_MAX_BYTES,
     )
+    assert head.await_count >= 1
+    assert head.await_args_list[-1].kwargs == {
+        "session_id": "durable-quota-relocation",
+        "account_id": "acc-quota-owner",
+        "response_id": "resp-quota-parent",
+    }
     assert len(captured_request_states) == 1
     assert captured_request_states[0].durable_relocation_root is True
     assert captured_request_states[0].previous_response_id is None
@@ -30050,6 +30064,9 @@ def _quota_relocation_fail_closed_material() -> tuple[
             operation=SimpleNamespace(
                 parent_response_id=None,
                 response_id="resp-quota-parent",
+                session_id="durable-quota-fail-closed",
+                account_id="acc-quota-owner",
+                state="completed",
                 event_spool_complete=True,
                 request_text=(
                     '{"type":"response.create","model":"gpt-6-astra","instructions":"continue",'
@@ -30092,6 +30109,11 @@ def _patch_quota_relocation_fail_closed_context(
     monkeypatch.setattr(service._durable_bridge, "get_replayable_transcript", get_replayable_transcript)
     monkeypatch.setattr(
         service._durable_bridge,
+        "completed_response_is_uninterrupted_session_head",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(
+        service._durable_bridge,
         "retire_continuity_owner_if_unavailable",
         AsyncMock(return_value=False),
     )
@@ -30106,6 +30128,133 @@ def _patch_quota_relocation_fail_closed_context(
     monkeypatch.setattr(service, "_get_or_create_http_bridge_session", get_or_create)
     monkeypatch.setattr(http_bridge_streaming_module, "_http_bridge_capacity_wait_plan", lambda *_args, **_kwargs: None)
     return get_replayable_transcript
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "untrusted_proof",
+    [
+        "foreign_account",
+        "foreign_session",
+        "not_completed",
+        "incomplete_spool",
+        "foreign_terminal",
+        "intervening_operation",
+        "head_lookup_error",
+        "stale_anchor",
+    ],
+)
+async def test_http_bridge_definitive_quota_refuses_unowned_or_interrupted_durable_history(
+    monkeypatch: pytest.MonkeyPatch,
+    untrusted_proof: str,
+) -> None:
+    """A structurally replayable transcript is not necessarily THIS owner's
+    completed history, or the uninterrupted latest turn. No alternate dispatch
+    may run until that independent ownership proof is checked."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    payload, durable_lookup, transcript = _quota_relocation_fail_closed_material()
+    if untrusted_proof == "foreign_account":
+        transcript[0].operation.account_id = "acc-not-our-owner"
+    elif untrusted_proof == "foreign_session":
+        transcript[0].operation.session_id = "session-not-in-request"
+    elif untrusted_proof == "not_completed":
+        transcript[0].operation.state = "submitted"
+    elif untrusted_proof == "incomplete_spool":
+        transcript[0].operation.event_spool_complete = False
+    elif untrusted_proof == "foreign_terminal":
+        transcript[0].events = (
+            *transcript[0].events,
+            'data: {"type":"response.completed","response":{"id":"foreign_response"}}\n\n',
+        )
+    elif untrusted_proof == "stale_anchor":
+        durable_lookup = replace(durable_lookup, latest_response_id="resp-other-anchor")
+    quota = http_bridge_helpers_module._http_bridge_previous_response_owner_unavailable_error(
+        definitive_usage_exhaustion=True,
+    )
+    get_or_create = AsyncMock(side_effect=[quota, AssertionError("untrusted cross-account dispatch")])
+    _patch_quota_relocation_fail_closed_context(
+        monkeypatch,
+        service,
+        durable_lookup=durable_lookup,
+        transcript=transcript,
+        get_or_create=get_or_create,
+    )
+    head = AsyncMock(
+        side_effect=RuntimeError("head lookup unavailable") if untrusted_proof == "head_lookup_error" else None,
+        return_value=untrusted_proof != "intervening_operation",
+    )
+    monkeypatch.setattr(service._durable_bridge, "completed_response_is_uninterrupted_session_head", head)
+    with pytest.raises(ProxyResponseError) as exc_info:
+        async for _ in service._stream_via_http_bridge(
+            payload,
+            headers={"x-codex-session-id": "thread-quota-fail-closed"},
+            codex_session_affinity=True,
+            propagate_http_errors=True,
+            openai_cache_affinity=True,
+            api_key=None,
+            api_key_reservation=None,
+            suppress_text_done_events=False,
+            idle_ttl_seconds=120.0,
+            codex_idle_ttl_seconds=1800.0,
+            max_sessions=8,
+            queue_limit=4,
+        ):
+            pass
+    assert exc_info.value is quota
+    assert get_or_create.await_count == 1
+    if untrusted_proof in {"intervening_operation", "head_lookup_error"}:
+        # The fresh-socket same-owner proof may consult this head before
+        # admission. The quota branch must independently consult it again.
+        assert head.await_count == 2
+        assert head.await_args_list[-1].kwargs == {
+            "session_id": "durable-quota-fail-closed",
+            "account_id": "acc-quota-owner",
+            "response_id": "resp-quota-parent",
+        }
+
+
+@pytest.mark.asyncio
+async def test_http_bridge_quota_rechecks_completed_head_after_valid_fresh_reattach(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same-owner socket may prove a complete transcript initially; if a
+    newer operation lands while owner admission is waiting, the second-account
+    relocation MUST re-check the head, even when its shared verdict later calls
+    that already rebuilt body client_input rather than durable_transcript."""
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    payload, durable_lookup, transcript = _quota_relocation_fail_closed_material()
+    owner_quota = http_bridge_helpers_module._http_bridge_previous_response_owner_unavailable_error(
+        definitive_usage_exhaustion=True,
+    )
+    get_or_create = AsyncMock(side_effect=[owner_quota, AssertionError("stale-head cross-account dispatch")])
+    _patch_quota_relocation_fail_closed_context(
+        monkeypatch,
+        service,
+        durable_lookup=durable_lookup,
+        transcript=transcript,
+        get_or_create=get_or_create,
+    )
+    head = AsyncMock(side_effect=[True, False])
+    monkeypatch.setattr(service._durable_bridge, "completed_response_is_uninterrupted_session_head", head)
+    with pytest.raises(ProxyResponseError) as exc_info:
+        async for _ in service._stream_via_http_bridge(
+            payload,
+            headers={"x-codex-session-id": "thread-quota-fail-closed"},
+            codex_session_affinity=True,
+            propagate_http_errors=True,
+            openai_cache_affinity=True,
+            api_key=None,
+            api_key_reservation=None,
+            suppress_text_done_events=False,
+            idle_ttl_seconds=120.0,
+            codex_idle_ttl_seconds=1800.0,
+            max_sessions=8,
+            queue_limit=4,
+        ):
+            pass
+    assert exc_info.value is owner_quota
+    assert get_or_create.await_count == 1
+    assert head.await_count == 2
 
 
 @pytest.mark.asyncio
