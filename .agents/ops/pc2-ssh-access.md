@@ -19,6 +19,9 @@ to reach PC2; the user should **not** need to repeat the connection path.
 The script works from both the main checkout and any project worktree, because
 its credentials stay in the PC1 user's SSH directory. To run another command,
 pass its arguments, e.g. `bash .agents/ops/ssh-pc2.sh whoami`.
+The wrapper uses SSH `-n` to close stdin. Without it, Codex CLI can wait
+indefinitely at `Reading additional input from stdin...` in DevSpace. For
+intentionally piped input, use a separate, explicitly reviewed SSH invocation.
 
 ## Operational boundaries
 
@@ -49,6 +52,14 @@ pass its arguments, e.g. `bash .agents/ops/ssh-pc2.sh whoami`.
 - An older PC2 npm CLI `0.130.0-alpha.5` could not parse the current
   `service_tier` and model catalog. Use the tested Desktop-bundled binary
   when doing controlled client verification; do not rewrite user profiles.
+- After promoting Beta recovery commit `a3dc6eba0`, at 21:04 and 21:05 KST,
+  PC2's Desktop-bundled CLI `0.162.0-alpha.17.2` completed a real fresh turn
+  and same-thread resume for `gpt-6.1-sol` / `high`. Beta DB confirmed two
+  `success` request rows, upstream transport `http`, no error. A CLI-only
+  `-c service_tier=fast` override was used; the profile was not edited.
+- Both post-promotion requests were logged as `request_stage=first_turn`,
+  so the earlier WebSocket previous-response owner failure was not reproduced
+  in real operation. The native WS failure-phase diagnostics remain enabled.
 
 ## New-session recovery
 

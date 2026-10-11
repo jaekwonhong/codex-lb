@@ -8,7 +8,9 @@ if [[ ! -r "$identity" ]]; then
   exit 2
 fi
 
-exec ssh -i "$identity" \
+# Remote Codex CLI reads stdin until EOF; close the inherited DevSpace pipe.
+# Commands intentionally consuming stdin should use a separately reviewed SSH call.
+exec ssh -n -i "$identity" \
   -o IdentitiesOnly=yes \
   -o BatchMode=yes \
   -o StrictHostKeyChecking=yes \
