@@ -3908,6 +3908,7 @@ def _log_http_bridge_event(
     upstream_close_code: int | None = None,
     response_events_seen: int | None = None,
     transport_classification: str | None = None,
+    native_failure_phase: str | None = None,
 ) -> None:
     if event in {"create", "reuse", "reconnect", "close", "evict_idle"} and http_bridge_connections_total is not None:
         http_bridge_connections_total.labels(event=event).inc()
@@ -3937,7 +3938,7 @@ def _log_http_bridge_event(
         "http_bridge_event event=%s bridge_kind=%s bridge_key=%s account_id=%s"
         " model=%s pending=%s detail=%s cache_key_family=%s model_class=%s"
         " key_strength=%s owner_check_applied=%s error_message=%s upstream_close_code=%s"
-        " response_events_seen=%s transport_classification=%s",
+        " response_events_seen=%s transport_classification=%s%s",
         event,
         key.affinity_kind,
         _hash_identifier(key.affinity_key),
@@ -3953,6 +3954,7 @@ def _log_http_bridge_event(
         upstream_close_code,
         response_events_seen,
         transport_classification,
+        f" native_failure_phase={native_failure_phase}" if event == "reader_failure" else "",
     )
 
 

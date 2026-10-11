@@ -33056,6 +33056,41 @@ async def test_http_bridge_reader_exception_captures_attempt_before_lifecycle_wa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("native_phase", ["transport", "consumer_backpressure", None])
+async def test_http_bridge_reader_logs_native_phase_without_changing_failure_contract(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    native_phase: str | None,
+) -> None:
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    session = _make_bridge_session(key_value="native-phase-attribution")
+    session.upstream = cast(
+        UpstreamWebSocket,
+        SimpleNamespace(
+            receive=AsyncMock(
+                return_value=UpstreamWebSocketMessage(
+                    kind="error",
+                    error="Upstream websocket receive failed",
+                    native_failure_phase=native_phase,
+                )
+            ),
+            close=AsyncMock(),
+        ),
+    )
+    service._http_bridge_sessions[session.key] = session
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: _make_app_settings())
+    monkeypatch.setattr(service, "_retry_http_bridge_precreated_request", AsyncMock(return_value=False))
+
+    with caplog.at_level(logging.WARNING):
+        await service._relay_http_bridge_upstream_messages(session)
+
+    assert "http_bridge_event event=reader_failure" in caplog.text
+    assert f"native_failure_phase={native_phase}" in caplog.text
+    assert "transport_classification=websocket_transport_error" in caplog.text
+    assert session.closed is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("routed", [False, True], ids=["direct-close", "routed-receive-error"])
 async def test_http_bridge_reader_maps_ordinary_websocket_receive_failure_to_stream_incomplete(
     monkeypatch: pytest.MonkeyPatch,

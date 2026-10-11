@@ -1737,6 +1737,7 @@ class _HTTPBridgeUpstreamEventsMixin:
         upstream_close_code: int | None = None,
         response_events_seen: int | None = None,
         transport_classification: str | None = None,
+        native_failure_phase: str | None = None,
         retry_circuit_attempt_selection: _HTTPBridgeRetryCircuitAttemptSelection | None = None,
         account_neutral_transport_drop: bool = False,
     ) -> bool:
@@ -1796,6 +1797,7 @@ class _HTTPBridgeUpstreamEventsMixin:
             ),
             cache_key_family=session.key.affinity_kind,
             model_class=_extract_model_class(session.request_model) if session.request_model else None,
+            native_failure_phase=native_failure_phase,
         )
         # Draining-only requests no longer count against the queue, but their
         # event-batcher contexts still belong to the disconnected operation
@@ -2400,6 +2402,7 @@ class _HTTPBridgeUpstreamEventsMixin:
                             if close_classification is not None
                             else "websocket_transport_error"
                         ),
+                        native_failure_phase=message.native_failure_phase,
                         retry_circuit_attempt_selection=reader_failure_retry_circuit_attempt_selection,
                         penalize_account=(
                             not account_neutral

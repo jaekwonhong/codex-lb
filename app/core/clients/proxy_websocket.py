@@ -34,6 +34,7 @@ from app.core.clients.codex import (
 from app.core.clients.http import _shared_system_ssl_context
 from app.core.clients.native_egress import (
     NativeEgressError,
+    NativeEgressProtocolError,
     NativeEgressTransportError,
     NativeEgressUnavailable,
     NativeEgressWebSocket,
@@ -201,6 +202,8 @@ class UpstreamWebSocketMessage:
     event_type: str | None = None
     payload: dict[str, JsonValue] | None = None
     routing: NativeWebSocketRoutingMetadata | None = None
+    # Diagnostic-only metadata; keep positional compatibility for prior fields.
+    native_failure_phase: str | None = None
 
 
 class UpstreamWebSocketTransportError(RuntimeError):
@@ -419,6 +422,33 @@ class WebsocketsUpstreamWebSocket:
         return str(value)
 
 
+_NATIVE_WEBSOCKET_FAILURE_PHASES = frozenset(
+    {
+        "transport",
+        "protocol",
+        "liveness_timeout",
+        "helper_exit",
+        "helper_read",
+        "helper_write",
+        "shutdown",
+        "consumer_backpressure",
+        "websocket_receive",
+        "websocket_send",
+        "cancelled",
+        "setup",
+        "connect",
+    }
+)
+
+
+def _native_websocket_failure_phase(exc: NativeEgressError) -> str | None:
+    """Preserve only helper-defined, low-cardinality diagnostic provenance."""
+    if isinstance(exc, NativeEgressProtocolError):
+        return "protocol"
+    phase = exc.failure_phase if isinstance(exc, NativeEgressTransportError) else None
+    return phase if phase in _NATIVE_WEBSOCKET_FAILURE_PHASES else None
+
+
 class NativeUpstreamWebSocket:
     """Expose a native-helper WebSocket through the existing relay protocol."""
 
@@ -446,6 +476,7 @@ class NativeUpstreamWebSocket:
                 kind="error",
                 error=str(error),
                 error_code=_relay_receive_error_code(error.error_code),
+                native_failure_phase=_native_websocket_failure_phase(exc),
             )
         return UpstreamWebSocketMessage(
             kind=message.kind,
