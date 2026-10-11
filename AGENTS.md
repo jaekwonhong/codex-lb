@@ -59,6 +59,15 @@ Prompting cue (use when writing docs):
 - Sync delta specs → main specs: `/opsx:sync <change>`
 - Archive: `/opsx:archive <change>`
 
+## PC2 remote access
+
+For PC2 SSH or Codex/ProviderSwitcher remote checks, connect to the PC1
+DevSpace project and follow
+[.agents/ops/pc2-ssh-access.md](.agents/ops/pc2-ssh-access.md).
+Use `bash .agents/ops/ssh-pc2.sh hostname` for the already-authorized PC1
+key route; never request the host, account, or key path again unless it fails
+revalidation. Never copy the PC1 private key.
+
 ## Contributing & Merge Gates
 
 When authoring or merging a PR (as a human contributor, a collaborator,

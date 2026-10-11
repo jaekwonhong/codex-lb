@@ -1,0 +1,2 @@
+# Git Bash scripts must keep LF line endings on Windows clones.
+.agents/ops/ssh-pc2.sh text eol=lf
