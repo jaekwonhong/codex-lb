@@ -30,9 +30,22 @@ pass its arguments, e.g. `bash .agents/ops/ssh-pc2.sh whoami`.
   must be cleaned up. Do not replace this PC1 key with it.
 - PC2's Codex-LB Beta uses port 2456, and the PC2 API-key policy is
   `always_http` after a WebSocket stream incident. Preserve that policy.
-- On 2026-10-11, PC2 Desktop-bundled Codex CLI `0.162.0-alpha.17.2` reached
-  Beta with `gpt-6.1-sol`/`high` over HTTP but received upstream quota
-  `usage_limit_reached` (429). Recheck available quota before any repeat.
+- At 17:58 KST on 2026-10-11, PC2's `gpt-6.1-sol`/`high` request reached
+  Beta over HTTP but received `usage_limit_reached` (429).
+- At approximately 18:32 and 18:36 KST, **PC2 Windows** Desktop-bundled
+  Codex CLI `0.162.0-alpha.17.2` completed a new conversation and a
+  `codex exec resume` turn. Both Beta request-log rows are `success` over
+  HTTP with reasoning `high`. The server classified both as
+  `request_stage=first_turn`; this proves CLI resume, **not** restoration
+  of a missing server-side `previous_response_id` owner.
+- At that time all six Team OAuth rows warned `reauth_required` even though
+  stored access-token expirations were still in the future. Distinguish
+  temporary token routability from safe long-term refresh; coordinate
+  reauthentication with the owning account manager rather than looping 429
+  probes or rotating tokens independently in multiple services.
+- The Mac-only temporary SSH key was deleted, and the PC2 auto-cleanup
+  scheduled task disappeared after its 18:31 KST trigger. The original
+  PC1-to-PC2 permanent key continued to authenticate successfully.
 - An older PC2 npm CLI `0.130.0-alpha.5` could not parse the current
   `service_tier` and model catalog. Use the tested Desktop-bundled binary
   when doing controlled client verification; do not rewrite user profiles.
