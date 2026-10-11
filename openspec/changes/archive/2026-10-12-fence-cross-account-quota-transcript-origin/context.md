@@ -59,3 +59,34 @@ candidate may be promoted only after offline hash/import validation,
 single-writer cutover lock, zero recent ingress, zero live leases and zero
 unsafe durable operations. Keep the exact predecessor stopped and
 restart-fenced for rollback. Never force real token-quota exhaustion.
+
+## 2026-10-12 Beta production qualification
+
+- Fork source commit: `82f5ee90fdebd3694dfb0317bdb20d935a91533e`
+  (`fix/hard-owner-quota-transcript-fence-20261012`).
+- Immutable Docker overlay based on current live Beta:
+  `sha256:020ea6895fa7c273f87a5920419ca390b5f4b1e82e7c4bf7b4db837b98565d2b`.
+  Candidate promoted:
+  `sha256:d357045072188dd0be83b8c428a68284011d7409f315fee9b493101cedaf407f`.
+- Both overlaid production file checksums matched the committed source and
+  running container. Imports, inherited first-turn OAuth failover, WebSocket
+  diagnostics, same-owner reattach and WMC ownership labels passed.
+- Single-writer promotion passed a fresh preflight of zero recent requests,
+  active leases and unsafe durable operations; one prior container was stopped
+  and restart-fenced for rollback. The new Beta has restart count zero and
+  exactly matches the predecessor configuration (except the deliberate
+  predecessor restart fence).
+- Stable 2455, Beta 2456, WMC 2461 and OpenCodex 10101 returned HTTP 200,
+  while PostgreSQL identity/schema and PC2's `always_http` override remained
+  unchanged.
+- PC2's live bundled Codex CLI, using **command-local**
+  `model_provider=codex-lb` so that its default OpenCodex provider was not
+  altered, returned the expected sentinel and exit status 0. The Beta request
+  database independently recorded `gpt-6.1-sol`, `high`, `http`,
+  `success` at 2026-10-11T21:56:22.539516Z.
+- No actual `usage_limit_reached` occurred post-promotion. Automatic
+  same-thread cross-account recovery under a *natural* quota event therefore
+  remains unobserved. Historic absent context remains unavailable, not
+  retroactively reconstructed.
+- Local deployment receipt:
+  `artifacts/pc2-gpt61-sol-high-incident-20261011/hard-owner-quota-transcript-fence-20261012/deployment-result.json`.

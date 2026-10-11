@@ -10,4 +10,4 @@
 - [x] Preserve safe, complete transcript migration even when old anchor item-count metadata is unavailable.
 - [x] Verify independently portable full-resend path, single-account/file/turn ownership and existing pre-visible safety gates.
 - [x] Run OpenSpec strict, unit and bridge/WebSocket/stream regressions; attest fork-only commit.
-- [ ] Re-qualify immutable current-Beta-overlay image, safe rollback and PC2 session policy; deploy only if all production gates pass.
+- [x] Re-qualify immutable current-Beta-overlay image, safe rollback and PC2 session policy; deploy only if all production gates pass.
