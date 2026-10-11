@@ -49,3 +49,14 @@ dashboard routing settings, Stable 2455, WMC 2461 or OpenCodex. Do not
 intentionally exhaust real quota for a smoke test. Any Beta cutover requires
 the existing 5-minute quiet/zero active leases/zero unsafe operation hard gate,
 single-writer lock, preserved rollback predecessor and independent attestation.
+
+Candidate attestation: code revision `dc2de65a04b0b2d5f5110ff450a5cfbda13c47ec`,
+parent image `sha256:6dea6351fee0fb25b18279a50ce6fd0a042545c67f63ac2adfc5af4978ffb214`,
+candidate image
+`sha256:020ea6895fa7c273f87a5920419ca390b5f4b1e82e7c4bf7b4db837b98565d2b`.
+Offline candidate imports and production-module SHA-256 both passed.
+The pinned Beta-only single-writer promoter reused the previously proven
+rollback transaction and passed its read-only `check` gate: five-minute
+traffic zero, active session leases zero and unsafe durable operations zero.
+No live quota exhaustion was induced. This qualification does not prove a
+real upstream quota switch until an organic 429 occurs.
