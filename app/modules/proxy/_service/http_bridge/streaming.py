@@ -137,6 +137,7 @@ from app.modules.proxy._service.http_bridge.quarantine import (
     _http_bridge_session_key_poison_quarantined,
     _http_bridge_session_key_quarantined,
 )
+from app.modules.proxy._service.http_bridge.reattach_recovery import rebuild_verified_fresh_reattach
 from app.modules.proxy._service.http_bridge.retry_circuit import (
     _HTTP_BRIDGE_RETRY_CIRCUIT_ANCHOR_ABANDONED_DETAIL,
     _http_bridge_retry_circuit_suppression_message,
@@ -1628,7 +1629,9 @@ class _HTTPBridgeStreamingMixin:
         # session-level anchor injection further down must honor it so the
         # dispatch genuinely goes unanchored instead of rebuilding the same
         # wedged reattach through the session-state side door.
-        fresh_reattach_anchor_suppressed_quarantined = False
+        fresh_reattach_anchor_suppressed = False
+        reattach_transcript = None
+        reattach_transcript_response_id: str | None = None
 
         def replay_projection_retains_required_context(
             replay_projection: AccountNeutralReplayProjection,
@@ -1840,7 +1843,7 @@ class _HTTPBridgeStreamingMixin:
                 # hydration, session-level injection, and recovery injection
                 # paths below.
                 fresh_reattach_can_use_durable_anchor = False
-                fresh_reattach_anchor_suppressed_quarantined = True
+                fresh_reattach_anchor_suppressed = True
                 _log_http_bridge_event(
                     "fresh_reattach_anchor_skipped_quarantined",
                     bridge_session_key,
@@ -1850,6 +1853,80 @@ class _HTTPBridgeStreamingMixin:
                     cache_key_family=bridge_session_key.affinity_kind,
                     model_class=_extract_model_class(payload.model) if payload.model else None,
                 )
+            # A completed response id belongs to the original upstream
+            # conversation, but that does NOT prove it is addressable on a
+            # newly created WebSocket. First try carrying the complete,
+            # durable, same-owner transcript instead of sending a socket-local
+            # anchor that the new socket may reject as not found. A failed
+            # proof does not permit us to strip an anchor or abandon its owner.
+            if (
+                fresh_reattach_can_use_durable_anchor
+                # A provably complete client resend already has its own path.
+                # Do not use the durable transcript to reinterpret ambiguous
+                # full-resend bodies that failed the existing prefix proof.
+                and not payload_looks_like_full_resend
+                and durable_lookup.account_id is not None
+                and durable_lookup.latest_response_id is not None
+            ):
+                reattach_transcript = None
+                try:
+                    reattach_transcript = await self._durable_bridge.get_replayable_transcript(
+                        response_id=durable_lookup.latest_response_id,
+                        max_turns=RELOCATION_TRANSCRIPT_MAX_TURNS,
+                        max_bytes=RELOCATION_TRANSCRIPT_MAX_BYTES,
+                    )
+                    # Also cache a successful *absence* result. A definitive
+                    # owner-quota decline later in the same pre-dispatch turn
+                    # must not race a second read into claiming context that
+                    # the first bounded snapshot did not provide.
+                    reattach_transcript_response_id = durable_lookup.latest_response_id
+                except Exception:
+                    logger.warning(
+                        "Failed to load verified durable transcript for same-owner fresh reattach",
+                        exc_info=True,
+                    )
+                recovered_payload = rebuild_verified_fresh_reattach(
+                    payload=payload,
+                    response_id=durable_lookup.latest_response_id,
+                    owner_account_id=durable_lookup.account_id,
+                    durable_session_id=durable_lookup.session_id,
+                    transcript=reattach_transcript,
+                )
+                if recovered_payload is not None:
+                    # Even a complete parent chain cannot justify forgetting
+                    # a *later* interrupted turn whose output the client may
+                    # already have seen. Prove the completed anchor is still
+                    # this session's latest operation before going unanchored.
+                    try:
+                        no_unresolved_newer_turn = (
+                            await self._durable_bridge.completed_response_is_uninterrupted_session_head(
+                                session_id=durable_lookup.session_id,
+                                account_id=durable_lookup.account_id,
+                                response_id=durable_lookup.latest_response_id,
+                            )
+                        )
+                    except Exception:
+                        no_unresolved_newer_turn = False
+                        logger.warning(
+                            "Durable bridge latest-operation proof failed at fresh reattach; refusing reconstruction",
+                            exc_info=True,
+                        )
+                else:
+                    no_unresolved_newer_turn = False
+                if recovered_payload is not None and no_unresolved_newer_turn:
+                    effective_payload = recovered_payload
+                    fresh_reattach_can_use_durable_anchor = False
+                    fresh_reattach_anchor_suppressed = True
+                    _log_http_bridge_event(
+                        "fresh_reattach_durable_transcript_rebuilt",
+                        bridge_session_key,
+                        account_id=durable_lookup.account_id,
+                        model=payload.model,
+                        detail="outcome=full_context_no_previous_response_id",
+                        cache_key_family=bridge_session_key.affinity_kind,
+                        model_class=_extract_model_class(payload.model) if payload.model else None,
+                        owner_check_applied=True,
+                    )
             if (
                 fresh_reattach_can_use_durable_anchor
                 and payload_looks_like_full_resend
@@ -2715,17 +2792,25 @@ class _HTTPBridgeStreamingMixin:
             anchor_response_id = request_state.previous_response_id
             transcript = None
             if isinstance(anchor_response_id, str) and anchor_response_id.strip():
-                try:
-                    transcript = await self._durable_bridge.get_replayable_transcript(
-                        response_id=anchor_response_id,
-                        max_turns=RELOCATION_TRANSCRIPT_MAX_TURNS,
-                        max_bytes=RELOCATION_TRANSCRIPT_MAX_BYTES,
-                    )
-                except Exception:
-                    logger.warning(
-                        "Durable transcript lookup failed during definitive owner-quota relocation; failing closed",
-                        exc_info=True,
-                    )
+                if anchor_response_id == reattach_transcript_response_id:
+                    # This pre-dispatch request already loaded the identical
+                    # durable chain for same-owner recovery. A definitive
+                    # quota rejection changes eligibility, not the completed
+                    # parent transcript; avoid racing the next read against
+                    # a concurrent purge or owner change.
+                    transcript = reattach_transcript
+                else:
+                    try:
+                        transcript = await self._durable_bridge.get_replayable_transcript(
+                            response_id=anchor_response_id,
+                            max_turns=RELOCATION_TRANSCRIPT_MAX_TURNS,
+                            max_bytes=RELOCATION_TRANSCRIPT_MAX_BYTES,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Durable transcript lookup failed during definitive owner-quota relocation; failing closed",
+                            exc_info=True,
+                        )
             verdict = decide_relocation(
                 RelocationInputs(
                     transport="http_bridge",
@@ -3379,7 +3464,7 @@ class _HTTPBridgeStreamingMixin:
                     # The quarantine skip (#1534) applies to the local recovery
                     # rebind as well: re-injecting the suppressed anchor here
                     # would rebuild the same wedged reattach.
-                    and not fresh_reattach_anchor_suppressed_quarantined
+                    and not fresh_reattach_anchor_suppressed
                     and not durable_full_resend_has_safe_fresh_context
                     and recovery_payload.previous_response_id is None
                     and durable_lookup is not None
@@ -3548,7 +3633,7 @@ class _HTTPBridgeStreamingMixin:
             # into the session either: doing so would let the session-level
             # injection below re-add the exact anchor the quarantine skipped
             # and trim the prefix, rebuilding the wedged reattach.
-            not fresh_reattach_anchor_suppressed_quarantined
+            not fresh_reattach_anchor_suppressed
             and not durable_full_resend_has_safe_fresh_context
             and durable_full_resend_anchor_count is not None
             and durable_full_resend_anchor_fingerprint is not None
@@ -3614,7 +3699,7 @@ class _HTTPBridgeStreamingMixin:
             session.codex_session
             # Honor the quarantine decision end to end: the durable anchor
             # skipped above must not come back as a session-level injection.
-            and not fresh_reattach_anchor_suppressed_quarantined
+            and not fresh_reattach_anchor_suppressed
             and not proxy_injected_previous_response_id
             and effective_payload.previous_response_id is None
             and not effective_payload.conversation

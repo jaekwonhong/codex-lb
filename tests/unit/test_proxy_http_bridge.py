@@ -30209,7 +30209,11 @@ async def test_stream_via_http_bridge_nondefinitive_failures_never_enter_quota_r
             pass
 
     assert exc_info.value is failure
-    get_replayable_transcript.assert_not_awaited()
+    # The new pre-dispatch same-owner fresh-reattach proof may read the
+    # transcript once, independently of whether the later owner selection
+    # fails. Nondefinitive admission failure must still neither dispatch a
+    # second request nor enter cross-account quota relocation.
+    get_replayable_transcript.assert_awaited_once()
     assert get_or_create.await_count == 1
 
 
@@ -38663,6 +38667,176 @@ async def test_retire_stale_pending_http_bridge_session_quarantines_wedged_reatt
     assert (
         http_bridge_quarantine_module._http_bridge_session_key_quarantined(service, session.key) is expect_quarantined
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("transcript_complete", "head_proven"),
+    [
+        pytest.param(True, True, id="proven-context"),
+        pytest.param(False, False, id="missing-proof"),
+        pytest.param(True, False, id="interrupted-newer-turn"),
+    ],
+)
+async def test_fresh_websocket_reattach_with_durable_context_dispatches_same_owner_unanchored(
+    monkeypatch: pytest.MonkeyPatch,
+    transcript_complete: bool,
+    head_proven: bool,
+) -> None:
+    """The actual bridge dispatch must use the rebuilt body, not the old ID.
+
+    This is the production incident shape: a newly opened upstream socket,
+    one prior completed response on a different socket, and a delta-only turn.
+    """
+    service = proxy_service.ProxyService(cast(Any, nullcontext()))
+    key = proxy_service._HTTPBridgeSessionKey("session_header", "fresh-ws-reconnect-proof", None)
+    old_user = {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "prior question"}]}
+    old_answer = {
+        "type": "message",
+        "role": "assistant",
+        "status": "completed",
+        "content": [{"type": "output_text", "text": "prior answer"}],
+    }
+    new_user = {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "next question"}]}
+    request = proxy_service.ResponsesRequest.model_validate(
+        {"model": "gpt-6.1-sol", "instructions": "test", "input": [new_user]}
+    )
+    durable_lookup = proxy_service.DurableBridgeLookup(
+        session_id="durable-fresh-reattach",
+        canonical_kind="session_header",
+        canonical_key=key.affinity_key,
+        api_key_scope="__anonymous__",
+        account_id="acc-bridge",
+        owner_instance_id="prior-instance",
+        owner_epoch=1,
+        lease_expires_at=proxy_service.utcnow() + timedelta(seconds=60),
+        state=HttpBridgeSessionState.ACTIVE,
+        latest_turn_state=None,
+        latest_response_id="resp_prior_socket",
+        latest_input_item_count=1,
+        latest_input_full_fingerprint=None,
+        model="gpt-6.1-sol",
+    )
+    prior_turn = SimpleNamespace(
+        operation=SimpleNamespace(
+            session_id=durable_lookup.session_id,
+            account_id=durable_lookup.account_id,
+            state="completed",
+            response_id=durable_lookup.latest_response_id,
+            parent_response_id=None,
+            event_spool_complete=True,
+            request_text=json.dumps({"type": "response.create", "model": "gpt-6.1-sol", "input": [old_user]}),
+        ),
+        events=(
+            "data: "
+            + json.dumps(
+                {
+                    "type": "response.completed",
+                    "response": {"id": "resp_prior_socket", "output": [old_answer]},
+                }
+            )
+            + "\n\n",
+        ),
+    )
+    new_session = _make_bridge_session(key=key, key_value=key.affinity_key)
+    new_session.request_model = "gpt-6.1-sol"
+    new_session.codex_session = True
+
+    def fake_prepare(
+        prepared: proxy_service.ResponsesRequest, _headers: Any, **kwargs: Any
+    ) -> tuple[proxy_service._WebSocketRequestState, str]:
+        del kwargs
+        state = proxy_service._WebSocketRequestState(
+            request_id="req-proofed-reattach",
+            model=prepared.model,
+            service_tier=None,
+            reasoning_effort=None,
+            api_key_reservation=None,
+            started_at=time.monotonic(),
+            event_queue=asyncio.Queue(),
+            transport="http",
+        )
+        state.previous_response_id = prepared.previous_response_id
+        return state, json.dumps(dict(prepared.to_payload()), separators=(",", ":"))
+
+    upstream_frames: list[dict[str, Any]] = []
+
+    async def fake_stream_events(
+        session: proxy_service._HTTPBridgeSession, *, text_data: str, **kwargs: Any
+    ) -> AsyncIterator[str]:
+        del kwargs
+        assert session.account.id == "acc-bridge"
+        upstream_frames.append(json.loads(text_data))
+        yield 'data: {"type":"response.completed"}\n\n'
+
+    async def fake_get_or_create(
+        session_key: proxy_service._HTTPBridgeSessionKey, **kwargs: Any
+    ) -> proxy_service._HTTPBridgeSession:
+        assert session_key == key
+        assert kwargs["previous_response_id"] == (None if transcript_complete and head_proven else "resp_prior_socket")
+        assert kwargs["preferred_account_id"] == "acc-bridge"
+        assert kwargs["durable_lookup"] == durable_lookup
+        return new_session
+
+    dashboard = SimpleNamespace(sticky_threads_enabled=False, openai_cache_affinity_max_age_seconds=1800)
+    runtime = SimpleNamespace(
+        enabled=True,
+        idle_ttl_seconds=120.0,
+        codex_idle_ttl_seconds=1800.0,
+        max_sessions=8,
+        queue_limit=4,
+        prompt_cache_idle_ttl_seconds=120.0,
+        gateway_safe_mode=False,
+    )
+    monkeypatch.setattr(
+        http_bridge_streaming_module,
+        "_service_get_settings_cache",
+        lambda: SimpleNamespace(get=AsyncMock(return_value=dashboard)),
+    )
+    monkeypatch.setattr(http_bridge_streaming_module, "_service_get_settings", _make_app_settings)
+    monkeypatch.setattr(http_bridge_streaming_module, "_http_bridge_runtime_config", lambda *args: runtime)
+    monkeypatch.setattr(service, "_resolve_file_account_for_responses", AsyncMock(return_value=None))
+    monkeypatch.setattr(service._durable_bridge, "lookup_request_targets", AsyncMock(return_value=durable_lookup))
+    transcript_loader = AsyncMock(return_value=[prior_turn] if transcript_complete else [])
+    monkeypatch.setattr(service._durable_bridge, "get_replayable_transcript", transcript_loader)
+    head_proof = AsyncMock(return_value=head_proven)
+    monkeypatch.setattr(service._durable_bridge, "completed_response_is_uninterrupted_session_head", head_proof)
+    monkeypatch.setattr(service, "_http_bridge_has_live_local_session", AsyncMock(return_value=False))
+    monkeypatch.setattr(service, "_http_bridge_can_forward_to_active_owner", AsyncMock(return_value=False))
+    monkeypatch.setattr(service, "_resolve_websocket_previous_response_owner", AsyncMock(return_value="acc-bridge"))
+    monkeypatch.setattr(service, "_prepare_http_bridge_request", fake_prepare)
+    monkeypatch.setattr(service, "_get_or_create_http_bridge_session", fake_get_or_create)
+    monkeypatch.setattr(service, "_stream_http_bridge_session_events", fake_stream_events)
+
+    events = [
+        chunk
+        async for chunk in service._stream_http_bridge_or_retry(
+            request,
+            {"x-codex-session-id": key.affinity_key},
+            codex_session_affinity=True,
+            propagate_http_errors=True,
+            openai_cache_affinity=False,
+            api_key=None,
+            api_key_reservation=None,
+            suppress_text_done_events=False,
+        )
+    ]
+    assert len(events) == 1
+    assert len(upstream_frames) == 1
+    if transcript_complete and head_proven:
+        assert "previous_response_id" not in upstream_frames[0]
+        assert upstream_frames[0]["input"] == [old_user, old_answer, new_user]
+    else:
+        # A missing transcript cannot turn a delta into a fresh question.
+        # Keep the old owner-bound anchor and its existing error path.
+        assert upstream_frames[0]["previous_response_id"] == "resp_prior_socket"
+        assert upstream_frames[0]["input"] == [new_user]
+    assert new_session.last_completed_response_id is None
+    transcript_loader.assert_awaited_once()
+    if transcript_complete:
+        head_proof.assert_awaited_once()
+    else:
+        head_proof.assert_not_awaited()
 
 
 @pytest.mark.asyncio

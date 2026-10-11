@@ -726,6 +726,20 @@ class DurableBridgeSessionCoordinator:
                 max_bytes=max_bytes,
             )
 
+    async def completed_response_is_uninterrupted_session_head(
+        self,
+        *,
+        session_id: str,
+        account_id: str,
+        response_id: str,
+    ) -> bool:
+        async with self._session() as session:
+            return await DurableBridgeRepository(session).completed_response_is_uninterrupted_session_head(
+                session_id=session_id,
+                account_id=account_id,
+                response_id=response_id,
+            )
+
     async def purge_operation_spool(
         self,
         *,

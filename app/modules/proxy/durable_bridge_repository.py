@@ -15,6 +15,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.core.utils.time import naive_utc_to_epoch, to_utc_naive, utcnow
 from app.db.models import (
@@ -2465,6 +2466,50 @@ class DurableBridgeRepository:
             )
         )
         return _to_operation_snapshot(operation) if operation is not None else None
+
+    async def completed_response_is_uninterrupted_session_head(
+        self,
+        *,
+        session_id: str,
+        account_id: str,
+        response_id: str,
+    ) -> bool:
+        """Prove no intervening persisted turn might own missing context.
+
+        In particular, a session may record response.completed from turn N,
+        then stream *partial* turn N+1 before its socket drops. Rebuilding the
+        next delta from N alone silently loses N+1's visible output. We refuse
+        even failed or ambiguous later operations: their absence of output is
+        not proven by an operation status alone.
+
+        The one read-only anti-join is evaluated in one SQL statement snapshot;
+        no operation states, claims, leases or anchors are updated here.
+        """
+
+        anchor = aliased(HttpBridgeOperationRecord)
+        later = aliased(HttpBridgeOperationRecord)
+        eligible = await self._session.scalar(
+            select(anchor.operation_id)
+            .where(
+                anchor.session_id == session_id,
+                anchor.account_id == account_id,
+                anchor.response_id == response_id,
+                anchor.state == "completed",
+                anchor.event_spool_complete.is_(True),
+                ~exists(
+                    select(later.operation_id).where(
+                        later.session_id == session_id,
+                        later.operation_id != anchor.operation_id,
+                        or_(
+                            later.created_at >= anchor.created_at,
+                            later.updated_at >= anchor.updated_at,
+                        ),
+                    )
+                ),
+            )
+            .limit(1)
+        )
+        return eligible is not None
 
     async def get_replayable_transcript(
         self,
