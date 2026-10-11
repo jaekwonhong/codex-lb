@@ -27,6 +27,7 @@ from app.modules.proxy.replay_safety import (
     _tail_overlap_length,
     _terminal_response_output_items,
     _transcript_turn_input_items,
+    project_account_neutral_fresh_request,
     project_durable_transcript_for_account_neutral_fresh_replay,
     project_responses_input_for_account_neutral_fresh_replay,
     responses_input_suffix_matches_pending_tool_calls,
@@ -34,6 +35,60 @@ from app.modules.proxy.replay_safety import (
     responses_payload_is_account_neutral_fresh_replay,
     responses_request_frame_payload,
 )
+
+
+def test_fresh_quota_fallback_projection_strips_only_known_codex_transport_identity() -> None:
+    original = {
+        "model": "gpt-6.1-sol",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "a new turn"}]}],
+        "reasoning": {"effort": "high"},
+        "client_metadata": {
+            "thread_id": "downstream-thread-only",
+            "turn_id": "downstream-turn-only",
+            "root_turn_id": "downstream-root-turn-only",
+            "session_id": "downstream-session-only",
+            "x-openai-subagent": "worker",
+        },
+    }
+    projected = project_account_neutral_fresh_request(original)
+    assert projected is not None
+    assert projected["client_metadata"] == {"x-openai-subagent": "worker"}
+    assert projected["input"] == original["input"]
+    assert original["client_metadata"]["thread_id"] == "downstream-thread-only"
+    assert responses_payload_is_account_neutral_fresh_replay(projected)
+
+
+@pytest.mark.parametrize(
+    ("modification", "reason"),
+    [
+        ({"previous_response_id": "resp_owned"}, "response anchor"),
+        ({"conversation": "conv_owned"}, "conversation owner"),
+        ({"prompt": {"id": "prompt_account_owned"}}, "stored prompt"),
+        ({"client_metadata": {"unrecognized": "x"}}, "unknown metadata"),
+        ({"client_metadata": {"thread_id": 17}}, "malformed identity"),
+        ({"input": [{"type": "reasoning", "encrypted_content": "reasoning_owner"}]}, "owner reasoning"),
+        (
+            {"input": [{"role": "user", "content": [{"type": "input_file", "file_id": "file_account_owned"}]}]},
+            "account file",
+        ),
+        ({"tools": [{"type": "code_interpreter"}]}, "hosted account tool"),
+        (
+            {"input": [{"type": "custom_tool_call_output", "call_id": "call_missing", "output": "maybe executed"}]},
+            "orphan tool output",
+        ),
+    ],
+)
+def test_fresh_quota_fallback_refuses_account_owned_or_unknown_request(
+    modification: dict[str, Any], reason: str
+) -> None:
+    del reason
+    original: dict[str, Any] = {
+        "model": "gpt-6.1-sol",
+        "input": [{"role": "user", "content": "hello"}],
+        "client_metadata": {"thread_id": "new-thread-only"},
+    }
+    original.update(modification)
+    assert project_account_neutral_fresh_request(original) is None
 
 
 @pytest.mark.parametrize(

@@ -56536,6 +56536,154 @@ async def test_stream_responses_coded_429_keeps_rate_limit_failover_path(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_stream_http_first_turn_usage_quota_with_codex_transient_metadata_fails_over(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """PC2 17:58 regression: a fresh request must not become immovable solely
+    because Codex included transport-local client thread/turn metadata."""
+    service, scheduler = _burst_stream_service(monkeypatch)
+    exhausted = _make_account("acc_fresh_quota_exhausted")
+    available = _make_account("acc_fresh_quota_available")
+    choose = AsyncMock(
+        side_effect=[
+            AccountSelection(account=exhausted, error_message=None),
+            AccountSelection(account=available, error_message=None),
+        ]
+    )
+    monkeypatch.setattr(service._load_balancer, "select_account", choose)
+    attempted: list[tuple[str, dict[str, Any]]] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, *args, **kwargs):
+        del headers, access_token, args, kwargs
+        attempted.append((account_id, payload.to_replay_safety_payload()))
+        if account_id == exhausted.chatgpt_account_id:
+            raise proxy_module.ProxyResponseError(
+                429,
+                openai_error("usage_limit_reached", "The usage limit has been reached"),
+                failure_phase="status",
+            )
+        yield 'data: {"type":"response.completed","response":{"id":"resp_fresh_quota_recovered"}}\n\n'
+
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+    payload = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-6.1-sol",
+            "instructions": "Do not use tools",
+            "prompt_cache_key": "PC2-first-turn-prompt-cache",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "fresh first turn"}]}],
+            "client_metadata": {
+                "thread_id": "downstream-thread-identity",
+                "turn_id": "transport-local-turn-id",
+            },
+            "stream": True,
+        }
+    )
+    caplog.set_level(logging.INFO, logger="app.modules.proxy.service")
+    chunks = [
+        chunk
+        async for chunk in service.stream_responses(
+            payload,
+            {"session_id": "sid-first-turn-prompt-cache-soft"},
+            propagate_http_errors=True,
+            openai_cache_affinity=True,
+        )
+    ]
+
+    assert any("resp_fresh_quota_recovered" in chunk for chunk in chunks)
+    assert [id for id, _ in attempted] == [exhausted.chatgpt_account_id, available.chatgpt_account_id]
+    assert attempted[0][1]["client_metadata"]["thread_id"] == "downstream-thread-identity"
+    assert "client_metadata" not in attempted[1][1]
+    assert choose.await_count == 2
+    assert exhausted.id in (choose.await_args_list[1].kwargs.get("exclude_account_ids") or set())
+    assert "failure_class=rate_limit action=failover_next" in caplog.text
+    assert "sticky_kind=prompt_cache" in caplog.text
+    assert scheduler.sleeps == []
+    cast(AsyncMock, service._load_balancer.mark_rate_limit).assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_stream_http_quota_does_not_move_unknown_client_metadata(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    service, _scheduler = _burst_stream_service(monkeypatch)
+    owner = _make_account("acc_unknown_metadata_owner")
+    choose = AsyncMock(return_value=AccountSelection(account=owner, error_message=None))
+    monkeypatch.setattr(service._load_balancer, "select_account", choose)
+    attempted: list[str] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, *args, **kwargs):
+        del payload, headers, access_token, args, kwargs
+        attempted.append(account_id)
+        raise proxy_module.ProxyResponseError(
+            429,
+            openai_error("usage_limit_reached", "The usage limit has been reached"),
+            failure_phase="status",
+        )
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+    caplog.set_level(logging.INFO, logger="app.modules.proxy.service")
+    request = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-6.1-sol",
+            "instructions": "retain unknown client metadata",
+            "input": [{"role": "user", "content": "hello"}],
+            "client_metadata": {"thread_id": "thread", "unknown_account_state": "do_not_drop"},
+        }
+    )
+    with pytest.raises(proxy_module.ProxyResponseError) as raised:
+        await _collect_burst_stream(service, request)
+
+    assert raised.value.status_code == 429
+    assert attempted == [owner.chatgpt_account_id]
+    assert choose.await_count == 1
+    assert "failure_class=rate_limit action=surface" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_stream_http_quota_after_response_created_never_replays_on_another_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, _scheduler = _burst_stream_service(monkeypatch)
+    first = _make_account("acc_response_started_owner")
+    second = _make_account("acc_response_started_candidate")
+    choose = AsyncMock(
+        side_effect=[
+            AccountSelection(account=first, error_message=None),
+            AccountSelection(account=second, error_message=None),
+        ]
+    )
+    monkeypatch.setattr(service._load_balancer, "select_account", choose)
+    attempted: list[str] = []
+
+    async def fake_stream(payload, headers, access_token, account_id, *args, **kwargs):
+        del payload, headers, access_token, args, kwargs
+        attempted.append(account_id)
+        yield 'data: {"type":"response.created","response":{"id":"resp_already_started","status":"in_progress"}}\n\n'
+        raise proxy_module.ProxyResponseError(
+            429,
+            openai_error("usage_limit_reached", "The usage limit has been reached"),
+            failure_phase="status",
+        )
+
+    monkeypatch.setattr(proxy_service, "core_stream_responses", fake_stream)
+    request = ResponsesRequest.model_validate(
+        {
+            "model": "gpt-6.1-sol",
+            "instructions": "never rerun once accepted",
+            "input": [{"role": "user", "content": "hello"}],
+            "client_metadata": {"thread_id": "not-a-hard-owner", "turn_id": "current"},
+        }
+    )
+    try:
+        await _collect_burst_stream(service, request)
+    except proxy_module.ProxyResponseError as error:
+        assert error.status_code == 429
+    assert attempted == [first.chatgpt_account_id]
+    assert choose.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_stream_responses_owner_bound_coded_429_surfaces_without_same_account_backoff(monkeypatch, caplog):
     service, scheduler = _burst_stream_service(monkeypatch)
     account = _make_account("acc_coded_429_owner")

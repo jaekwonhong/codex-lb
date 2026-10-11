@@ -997,6 +997,20 @@ def responses_payload_is_account_neutral_fresh_replay(payload: Mapping[str, Json
     return _tools_are_account_neutral(tools)
 
 
+def project_account_neutral_fresh_request(payload: Mapping[str, JsonValue]) -> dict[str, JsonValue] | None:
+    """Only remove transport-local Codex client metadata from an otherwise
+    complete, self-contained request before considering a cross-account retry.
+
+    Unlike durable-transcript projection, this performs NO output rebuilding,
+    drops NO model input or unknown metadata, and never removes any anchor.
+    The common replay validator enforces all other account-scoped boundaries.
+    """
+    projected = _without_transient_client_metadata(payload)
+    if projected is None or not responses_payload_is_account_neutral_fresh_replay(projected):
+        return None
+    return projected
+
+
 def _reasoning_config_is_account_neutral(reasoning: JsonValue | None) -> bool:
     if reasoning is None:
         return True

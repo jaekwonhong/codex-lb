@@ -123,6 +123,7 @@ from app.modules.proxy.replay_relocation import (
     decide_relocation,
 )
 from app.modules.proxy.replay_safety import (
+    project_account_neutral_fresh_request,
     project_responses_input_for_account_neutral_fresh_replay,
     responses_input_suffix_matches_pending_tool_calls,
     responses_input_suffix_retains_prior_output,
@@ -908,6 +909,64 @@ class _StreamingRetryMixin:
                 or account.id == file_preferred_account_id
                 or turn_state_owner_account_id is not None
             )
+
+        def _release_provisional_owner_after_fresh_usage_quota(
+            account: Account,
+            *,
+            error_code: str,
+            error_message: str | None,
+            failure: ProxyResponseError,
+            attempt: int,
+        ) -> bool:
+            """Permit one bounded fresh-account selection after a *rejected* turn.
+
+            The stream dispatcher conservatively binds an unknown payload to
+            its first account even if the HTTP status rejected the request
+            before response creation. Remove that provisional claim ONLY after
+            the definitive upstream usage-limit status and complete portable
+            body have independently been proven. Never reinterpret account-
+            owned input, tool side effects or a visible response as fresh.
+            """
+            nonlocal payload, payload_replay_required_account_id, affinity
+            if (
+                not resilience.deterministic_failover_enabled
+                or request_transport != _REQUEST_TRANSPORT_HTTP
+                or upstream_stream_transport != _REQUEST_TRANSPORT_HTTP
+                or failure.status_code != 429
+                or failure.failure_phase != "status"
+                or not is_upstream_usage_limit_rejection(error_code=error_code, message=error_message)
+                or attempt >= max_attempts - 1
+                or routing_strategy == "single_account"
+                or settlement.downstream_visible
+                or settlement.response_id is not None
+                or payload.previous_response_id is not None
+                or require_preferred_account
+                or preferred_account_id is not None
+                or turn_state_owner_account_id is not None
+                or file_preferred_account_id is not None
+                or affinity.codex_session_source is not None
+                or payload_replay_required_account_id not in (None, account.id)
+            ):
+                return False
+            portable = project_account_neutral_fresh_request(payload.to_replay_safety_payload())
+            if portable is None:
+                return False
+            try:
+                fresh_payload = ResponsesRequest.model_validate(portable)
+            except ValueError:
+                return False
+            payload = fresh_payload
+            payload_replay_required_account_id = None
+            # This is a fresh unbound request, not a continuation of the
+            # old account's cache: the selector must not restore the rejected
+            # account through its soft sticky row on the next attempt.
+            affinity = replace(affinity, reallocate_sticky=True)
+            logger.info(
+                "Definitive precreated usage-limit released portable first-turn account request_id=%s attempt=%d",
+                request_id,
+                attempt + 1,
+            )
+            return True
 
         def _burst_same_account_retry_available(account: Account, *, burst: bool) -> bool:
             if not burst:
@@ -2966,6 +3025,13 @@ class _StreamingRetryMixin:
                                 burst = is_upstream_burst_rejection(
                                     failure_class=classified["failure_class"],
                                     http_status=tex.status_code,
+                                )
+                                _release_provisional_owner_after_fresh_usage_quota(
+                                    account,
+                                    error_code=code,
+                                    error_message=error.message if error else None,
+                                    failure=tex,
+                                    attempt=attempt,
                                 )
                                 if resilience.deterministic_failover_enabled:
                                     action = failover_decision(
